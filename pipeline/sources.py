@@ -1,0 +1,135 @@
+from __future__ import annotations
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+import grib
+
+@dataclass
+class Source:
+    id: str
+    label: str
+    runs: tuple[int, ...]
+    max_fhour: int
+    levels: tuple[int, ...]
+    level_vars: dict[str, str]
+    surface: dict[str, tuple[str, str]]
+    idx_kind: str = 'noaa'
+    omega: bool = True
+    moisture: str = 'td'
+    grid: str = 'latlon'
+    fstep: callable = None
+    windowed: dict[str, str] = field(default_factory=dict)
+    zs_geopotential: bool = False
+    zs_step0_only: bool = False
+    hub_m: float = 100.0
+    gust_window: bool = False
+    cloud_levels: tuple[int, ...] = ()
+    alias: dict[str, str] = field(default_factory=dict)
+    workers = 8
+    notes: list[str] = field(default_factory=list)
+
+    def url(self, run: datetime, fh: int) -> str:
+        raise NotImplementedError
+
+    def idx_url(self, run: datetime, fh: int) -> str:
+        return self.url(run, fh) + '.idx'
+
+    def fetch(self, run, fh, sel):
+        return grib.fetch_messages(self.url(run, fh), sel, workers=self.workers)
+
+    def wanted(self):
+        w = [(g, lev) for g, lev in self.surface.values()]
+        for lv in self.levels:
+            for g in self.level_vars.values():
+                w.append((g, f'{lv} mb'))
+        for lv in self.cloud_levels:
+            for c in self.cloud_vars():
+                w.append((self.level_vars[c], f'{lv} mb'))
+        return w
+
+    def cloud_vars(self):
+        return [c for c in ('t', 'td', 'rh', 'clw', 'cc') if c in self.level_vars]
+    inventory_tries = 6
+
+    def inventory(self, run, fh, wanted=None):
+        text = grib.http_get(self.idx_url(run, fh), tries=self.inventory_tries).decode()
+        rows = grib.parse_noaa_idx(text) if self.idx_kind == 'noaa' else grib.parse_ecmwf_idx(text)
+        for r in rows:
+            r['var'] = self.alias.get(r['var'], r['var'])
+        return grib.select(rows, wanted or self.wanted())
+
+class HRRR(Source):
+
+    def url(self, run, fh):
+        return f'https://noaa-hrrr-bdp-pds.s3.amazonaws.com/hrrr.{run:%Y%m%d}/conus/hrrr.t{run:%H}z.wrfprsf{fh:02d}.grib2'
+
+class GFS(Source):
+
+    def url(self, run, fh):
+        return f'https://noaa-gfs-bdp-pds.s3.amazonaws.com/gfs.{run:%Y%m%d}/{run:%H}/atmos/gfs.t{run:%H}z.pgrb2.0p25.f{fh:03d}'
+
+class IFS(Source):
+    MIRRORS = ('https://ecmwf-forecasts.s3.eu-central-1.amazonaws.com', 'https://data.ecmwf.int/forecasts')
+    mirror = 0
+    workers = 4
+    inventory_tries = 2
+
+    def url(self, run, fh, mirror=None):
+        m = self.MIRRORS[self.mirror if mirror is None else mirror]
+        return f'{m}/{run:%Y%m%d}/{run:%H}z/ifs/0p25/oper/{run:%Y%m%d%H}0000-{fh}h-oper-fc.grib2'
+
+    def idx_url(self, run, fh):
+        return self.url(run, fh)[:-len('.grib2')] + '.index'
+
+    def _each_mirror(self, call):
+        last = None
+        start = IFS.mirror
+        for k in range(len(self.MIRRORS)):
+            m = (start + k) % len(self.MIRRORS)
+            self.mirror = m
+            try:
+                out = call()
+                IFS.mirror = m
+                return out
+            except Exception as e:
+                last = e
+        raise last
+
+    def inventory(self, run, fh, wanted=None):
+        return self._each_mirror(lambda: Source.inventory(self, run, fh, wanted))
+
+    def fetch(self, run, fh, sel):
+        return self._each_mirror(lambda: grib.fetch_messages(self.url(run, fh), sel, workers=self.workers, gap=1 << 20, tries=2))
+GA_NCEP = {'ceil': ('HGT', 'cloud ceiling'), 'vis': ('VIS', 'surface'), 'frz': ('HGT', '0C isotherm'), 'refc': ('REFC', 'entire atmosphere'), 'crain': ('CRAIN', 'surface'), 'csnow': ('CSNOW', 'surface'), 'cfrzr': ('CFRZR', 'surface'), 'cicep': ('CICEP', 'surface')}
+BAND_RAIN = {'refd1': ('REFD', '1000 m above ground')}
+GFS_HOURLY_TO = 96
+GFS_3H_TO = 216
+PAUSED = ('ecmwf',)
+GFS_RUNS = (0, 12)
+LEVELS_FINE = (1000, 975, 950, 925, 900, 875, 850, 800, 750, 700, 650, 600, 550, 500, 400, 300)
+SOURCES = {'hrrr': HRRR(id='hrrr', label='HRRR', runs=(0, 6, 12, 18), max_fhour=48, grid='lambert', levels=LEVELS_FINE, level_vars={'t': 'TMP', 'td': 'DPT', 'u': 'UGRD', 'v': 'VGRD', 'z': 'HGT', 'w': 'VVEL', 'clw': 'CLMR'}, surface={'zs': ('HGT', 'surface'), 'ps': ('PRES', 'surface'), 't2': ('TMP', '2 m above ground'), 'td2': ('DPT', '2 m above ground'), 'u10': ('UGRD', '10 m above ground'), 'v10': ('VGRD', '10 m above ground'), 'uh': ('UGRD', '80 m above ground'), 'vh': ('VGRD', '80 m above ground'), 'ustar': ('FRICV', 'surface'), 'gust': ('GUST', 'surface'), 'hpbl': ('HPBL', 'surface'), 'shf': ('SHTFL', 'surface'), 'sw': ('DSWRF', 'surface'), 'cape': ('CAPE', 'surface'), 'tcc': ('TCDC', 'entire atmosphere'), 'lcc': ('LCDC', 'low cloud layer'), 'mcc': ('MCDC', 'middle cloud layer'), 'hcc': ('HCDC', 'high cloud layer'), 'prate': ('APCP', 'surface ([1-9]\\d*-\\d+|0-1) hour acc fcst'), 'prate_now': ('PRATE', 'surface'), 'mslp': ('MSLMA', 'mean sea level'), 'smoke': ('MASSDEN', '8 m above ground'), 'tsfc': ('TMP', 'surface'), 'lsm': ('LAND', 'surface'), 'ice': ('ICEC', 'surface'), 'snod': ('SNOD', 'surface'), **GA_NCEP, 'ctop': ('HGT', 'cloud top'), **BAND_RAIN}, windowed={'prate': 'acc1h'}, fstep=lambda fh: True, hub_m=80.0, cloud_levels=(250, 200)), 'gfs': GFS(id='gfs', label='GFS', runs=GFS_RUNS, max_fhour=384, levels=(1000, 975, 950, 925, 900, 850, 800, 750, 700, 650, 600, 550, 500, 400, 300), level_vars={'t': 'TMP', 'rh': 'RH', 'u': 'UGRD', 'v': 'VGRD', 'z': 'HGT', 'w': 'VVEL', 'clw': 'CLMR', 'cc': 'TCDC'}, moisture='rh', surface={'zs': ('HGT', 'surface'), 'ps': ('PRES', 'surface'), 't2': ('TMP', '2 m above ground'), 'td2': ('DPT', '2 m above ground'), 'u10': ('UGRD', '10 m above ground'), 'v10': ('VGRD', '10 m above ground'), 'uh': ('UGRD', '100 m above ground'), 'vh': ('VGRD', '100 m above ground'), 'ustar': ('FRICV', 'surface'), 'gust': ('GUST', 'surface'), 'hpbl': ('HPBL', 'surface'), 'shf': ('SHTFL', 'surface'), 'sw': ('DSWRF', 'surface'), 'cape': ('CAPE', 'surface'), 'tcc': ('TCDC', 'entire atmosphere'), 'lcc': ('LCDC', 'low cloud layer'), 'mcc': ('MCDC', 'middle cloud layer'), 'hcc': ('HCDC', 'high cloud layer'), 'prate': ('PRATE', 'surface \\d+-\\d+ hour ave fcst'), 'prate_now': ('PRATE', 'surface'), 'mslp': ('PRMSL', 'mean sea level'), 'lsm': ('LAND', 'surface'), 'tsfc': ('TMP', 'surface'), 'ice': ('ICEC', 'surface'), 'snod': ('SNOD', 'surface'), **GA_NCEP, **BAND_RAIN}, windowed={'shf': 'avg6', 'sw': 'avg6', 'prate': 'avg6'}, fstep=lambda fh: fh <= GFS_HOURLY_TO or (fh % 3 == 0 if fh <= GFS_3H_TO else fh % 6 == 0), cloud_levels=(250, 200)), 'ecmwf': IFS(id='ecmwf', label='ECMWF', runs=(0, 12), max_fhour=240, idx_kind='ecmwf', omega=True, moisture='rh', levels=(1000, 925, 850, 700, 600, 500, 400, 300), level_vars={'t': 't', 'rh': 'r', 'u': 'u', 'v': 'v', 'z': 'gh', 'w': 'w'}, surface={'t2': ('2t', 'sfc'), 'td2': ('2d', 'sfc'), 'u10': ('10u', 'sfc'), 'v10': ('10v', 'sfc'), 'uh': ('100u', 'sfc'), 'vh': ('100v', 'sfc'), 'ps': ('sp', 'sfc'), 'mslp': ('msl', 'sfc'), 'cape': ('mucape', 'sfc'), 'tcc': ('tcc', 'sfc'), 'lcc': ('lcc', 'sfc'), 'mcc': ('mcc', 'sfc'), 'hcc': ('hcc', 'sfc'), 'prate': ('tp', 'sfc'), 'prate_now': ('tprate', 'sfc'), 'zs': ('z', 'sfc'), 'gust': ('10fg', 'sfc'), 'sw': ('ssrd', 'sfc'), 'lsm': ('lsm', 'sfc'), 'ptype': ('ptype', 'sfc')}, windowed={'sw': 'acc', 'prate': 'accw'}, gust_window=True, alias={'10fg3': '10fg', '10fg6': '10fg'}, cloud_levels=(250, 200), zs_geopotential=True, zs_step0_only=True, fstep=lambda fh: fh % 3 == 0 if fh <= 144 else fh % 6 == 0, notes=["no boundary-layer height or heat flux in open data: parcel method, and heat flux from the model's sunshine and humidity", 'no ceiling, visibility, cloud-top or cloud-water fields in open data: ceiling from the cloud cover diagnosed on each level, the rest from the humidity profile, 2 m humidity and precipitation'])}
+
+def candidate_runs(src: Source, now: datetime | None=None, back_hours: int=30):
+    now = now or datetime.now(timezone.utc)
+    t = now.replace(minute=0, second=0, microsecond=0)
+    for h in range(back_hours):
+        r = t - timedelta(hours=h)
+        if r.hour in src.runs:
+            yield r
+DAYS = {'hrrr': 2, 'gfs': 14, 'ecmwf': 10}
+DAY_UTC = range(10, 34)
+
+def needed_times(src: Source, days: int | None=None, now: datetime | None=None):
+    now = now or datetime.now(timezone.utc)
+    today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    return [today + timedelta(days=d, hours=h) for d in range(-1, days or DAYS[src.id]) for h in DAY_UTC]
+
+def latest_complete_run(src: Source, needed, log=print):
+    for run in candidate_runs(src):
+        fhs = [int((v - run).total_seconds() // 3600) for v in needed]
+        fhs = [f for f in fhs if 0 <= f <= src.max_fhour and src.fstep(f)]
+        if not fhs:
+            continue
+        if grib.exists(src.idx_url(run, max(fhs))):
+            return (run, fhs)
+        log(f'{src.id} {run:%Y-%m-%d %HZ} not complete yet')
+    return (None, [])

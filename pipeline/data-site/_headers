@@ -1,0 +1,14 @@
+/hrrr/20*
+  Cache-Control: public, max-age=31536000, immutable
+/gfs/20*
+  Cache-Control: public, max-age=31536000, immutable
+/ecmwf/20*
+  Cache-Control: public, max-age=31536000, immutable
+/free/*/20*
+  Cache-Control: public, max-age=31536000, immutable
+/*/latest.json
+  Cache-Control: public, max-age=120
+/airspace/*
+  Cache-Control: public, max-age=3600
+/*
+  X-Robots-Tag: noindex, nofollow
