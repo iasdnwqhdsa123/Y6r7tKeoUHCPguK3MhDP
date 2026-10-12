@@ -95,29 +95,30 @@ class WindowedFields(unittest.TestCase):
 
     def test_gfs_six_hour_mean_is_split(self):
         asked = []
-        m, hrs = self.b._window_mean(self.S['gfs'], None, 102, 'shf', np.array([100.0]), lambda f, k: asked.append(f) or np.array([60.0]))
+        m, hrs = self.b._window_mean(self.S['gfs'], None, 126, 'shf', np.array([100.0]), lambda f, k: asked.append(f) or np.array([60.0]))
         self.assertEqual(float(m[0]), 140.0)
-        self.assertEqual((hrs, asked), (3, [99]))
-        m, hrs = self.b._window_mean(self.S['gfs'], None, 105, 'shf', np.array([80.0]), lambda f, k: None)
+        self.assertEqual((hrs, asked), (3, [123]))
+        m, hrs = self.b._window_mean(self.S['gfs'], None, 129, 'shf', np.array([80.0]), lambda f, k: None)
         self.assertEqual((float(m[0]), hrs), (80.0, 3))
-        m, hrs = self.b._window_mean(self.S['gfs'], None, 99, 'shf', np.array([70.0]), lambda f, k: self.fail('no earlier file needed'))
+        m, hrs = self.b._window_mean(self.S['gfs'], None, 123, 'shf', np.array([70.0]), lambda f, k: self.fail('no earlier file needed'))
         self.assertEqual((float(m[0]), hrs), (70.0, 3))
+        m, hrs = self.b._window_mean(self.S['gfs'], None, 120, 'shf', np.array([100.0]), lambda f, k: np.array([96.0]))
+        self.assertEqual((float(m[0]), hrs), (120.0, 1))
 
     def test_gfs_six_hourly_tail_is_its_own_window(self):
-        m, hrs = self.b._window_mean(self.S['gfs'], None, 222, 'prate', np.array([2.0]), lambda f, k: self.fail('no earlier file needed'))
+        m, hrs = self.b._window_mean(self.S['gfs'], None, 246, 'prate', np.array([2.0]), lambda f, k: self.fail('no earlier file needed'))
         self.assertEqual((float(m[0]), hrs), (2.0, 6))
-        m, hrs = self.b._window_mean(self.S['gfs'], None, 216, 'shf', np.array([100.0]), lambda f, k: np.array([60.0]))
+        m, hrs = self.b._window_mean(self.S['gfs'], None, 240, 'shf', np.array([100.0]), lambda f, k: np.array([60.0]))
         self.assertEqual((float(m[0]), hrs), (140.0, 3))
 
-    def test_gfs_hourly_to_96_then_3_hourly_then_6_hourly(self):
+    def test_gfs_hourly_to_120_then_3_hourly_to_240_then_6_hourly_to_384(self):
         gfs = self.S['gfs']
-        self.assertTrue(all((gfs.fstep(f) for f in range(0, 97))))
-        self.assertTrue(gfs.fstep(99) and gfs.fstep(168) and (not gfs.fstep(97)) and (not gfs.fstep(100)))
-        self.assertTrue(gfs.fstep(213) and gfs.fstep(216) and (not gfs.fstep(219)) and gfs.fstep(222) and gfs.fstep(348))
-        self.assertFalse(any((gfs.fstep(f) for f in range(217, 385) if f % 6)))
-        self.assertEqual([self.b.prev_step(gfs, f) for f in (1, 6, 7, 96, 99, 102, 216, 222, 228)], [0, 5, 6, 95, 96, 99, 213, 216, 222])
-        ec = self.S['ecmwf']
-        self.assertEqual([self.b.prev_step(ec, f) for f in (3, 144, 150, 240)], [0, 141, 144, 234])
+        self.assertTrue(all((gfs.fstep(f) for f in range(0, 121))))
+        self.assertTrue(gfs.fstep(123) and gfs.fstep(168) and (not gfs.fstep(121)) and (not gfs.fstep(124)))
+        self.assertTrue(gfs.fstep(237) and gfs.fstep(240) and (not gfs.fstep(243)) and gfs.fstep(246) and gfs.fstep(384))
+        self.assertFalse(any((gfs.fstep(f) for f in range(241, 385) if f % 6)))
+        self.assertEqual(sum((gfs.fstep(f) for f in range(385))), 185)
+        self.assertEqual([self.b.prev_step(gfs, f) for f in (1, 6, 7, 120, 123, 126, 240, 246, 252)], [0, 5, 6, 119, 120, 123, 237, 240, 246])
 
     def test_gfs_hourly_rain_from_the_means_since_the_reset(self):
         rate = [0, 2.0, 0.5, 1.0, 3.0, 0.0, 4.0, 1.5, 0.2, 0.0, 6.0, 2.0, 1.0]
@@ -284,11 +285,11 @@ class WindowedFields(unittest.TestCase):
         o = outputs(site(maps=False), '--missing-only')
         self.assertEqual((o['models'], o['airspace'], o['any']), ('', 'true', 'true'))
 
-    def test_gfs_fourteen_days_and_ecmwf_paused(self):
+    def test_gfs_sixteen_days_and_ecmwf_paused(self):
         from datetime import datetime, timezone
         from sources import DAYS, PAUSED, needed_times
         gfs = self.S['gfs']
-        self.assertEqual(DAYS['gfs'], 14)
+        self.assertEqual(DAYS['gfs'], 16)
         self.assertIn('ecmwf', PAUSED)
         from sources import candidate_runs
         self.assertEqual(gfs.runs, (0, 6, 12, 18))
@@ -296,9 +297,9 @@ class WindowedFields(unittest.TestCase):
         now = datetime(2026, 9, 27, 2, 10, tzinfo=timezone.utc)
         run = datetime(2026, 9, 26, 18, tzinfo=timezone.utc)
         last = int((max(needed_times(gfs, now=now)) - run).total_seconds() // 3600)
-        self.assertEqual(last, 351)
-        built = max((f for f in range(last + 1) if gfs.fstep(f)))
-        self.assertTrue(built == 348 and built <= gfs.max_fhour)
+        self.assertEqual(last, 399)
+        built = max((f for f in range(last + 1) if f <= gfs.max_fhour and gfs.fstep(f)))
+        self.assertEqual(built, 384)
 
     def test_instant_factor_follows_the_sun(self):
         from datetime import datetime, timezone

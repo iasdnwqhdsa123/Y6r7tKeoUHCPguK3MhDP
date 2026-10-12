@@ -101,8 +101,8 @@ class IFS(Source):
         return self._each_mirror(lambda: grib.fetch_messages(self.url(run, fh), sel, workers=self.workers, gap=1 << 20, tries=2))
 GA_NCEP = {'ceil': ('HGT', 'cloud ceiling'), 'vis': ('VIS', 'surface'), 'frz': ('HGT', '0C isotherm'), 'refc': ('REFC', 'entire atmosphere'), 'crain': ('CRAIN', 'surface'), 'csnow': ('CSNOW', 'surface'), 'cfrzr': ('CFRZR', 'surface'), 'cicep': ('CICEP', 'surface')}
 BAND_RAIN = {'refd1': ('REFD', '1000 m above ground')}
-GFS_HOURLY_TO = 96
-GFS_3H_TO = 216
+GFS_HOURLY_TO = 120
+GFS_3H_TO = 240
 PAUSED = ('ecmwf',)
 GFS_RUNS = (0, 6, 12, 18)
 LEVELS_FINE = (1000, 975, 950, 925, 900, 875, 850, 800, 750, 700, 650, 600, 550, 500, 400, 300)
@@ -115,7 +115,7 @@ def candidate_runs(src: Source, now: datetime | None=None, back_hours: int=30):
         r = t - timedelta(hours=h)
         if r.hour in src.runs:
             yield r
-DAYS = {'hrrr': 2, 'gfs': 14, 'ecmwf': 10}
+DAYS = {'hrrr': 2, 'gfs': 16, 'ecmwf': 10}
 DAY_UTC = range(10, 34)
 
 def needed_times(src: Source, days: int | None=None, now: datetime | None=None):
