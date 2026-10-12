@@ -7,7 +7,7 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 from airspace import VERSION as AIRSPACE_VERSION
 from aviation import VERSION as AVIATION_VERSION
-from sources import PAUSED, REQUIRED, SOURCES, candidate_runs, latest_complete_run, needed_times
+from sources import OPEN_AHEAD_H, OPEN_SLACK_H, PAUSED, REQUIRED, SOURCES, candidate_runs, latest_complete_run, needed_times
 AIRSPACE_MAX_AGE = timedelta(days=7)
 WAIT_MAX = timedelta(minutes=30)
 WAIT_STEP = timedelta(minutes=2)
@@ -75,10 +75,13 @@ def main():
         if want and (args.force or want != have) and (not args.missing_only or have is None):
             todo.append(mid)
     free_due = False
-    for mid in ('hrrr', 'gfs'):
+    for mid, ahead in OPEN_AHEAD_H.items():
+        if mid in PAUSED:
+            continue
         fm = published(f'{open_base}/free/{mid}/latest.json')
         until = fm and fm.get('freeUntil')
-        behind = not until or (not args.missing_only and datetime.now(timezone.utc) + timedelta(hours=30) >= datetime.fromisoformat(until))
+        span = timedelta(hours=ahead + OPEN_SLACK_H - 1)
+        behind = not until or (not args.missing_only and datetime.now(timezone.utc) + span >= datetime.fromisoformat(until))
         print(f'free {mid}: until {until or '-'}{(' → refresh' if behind else '')}')
         free_due = free_due or behind
     now = datetime.now(timezone.utc)

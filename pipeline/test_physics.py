@@ -358,10 +358,11 @@ class FreeWindow(unittest.TestCase):
         with open(os.path.join(out, 'free', 'now', 'hrrr', 'latest.json')) as f:
             nm = json.load(f)
         now_hours = sorted((s for d in nm['days'].values() for s in d))
-        self.assertEqual((now_hours[0], now_hours[-1]), ('2026092512', '2026092521'))
+        self.assertEqual((now_hours[0], now_hours[-1]), ('2026092512', '2026092618'))
         self.assertIn('wstar', nm['fields'])
         self.assertTrue(build.NOW_FIELDS > build.FREE_FIELDS and 'twidth' in build.NOW_FIELDS)
         self.assertIsNone(build.write_free(out, 'ecmwf'))
+        self.assertEqual([build.free_ahead(m).total_seconds() / 3600 for m in ('hrrr', 'gfs', 'icon')], [24, 48, 24])
 
 class ReuseHours(unittest.TestCase):
 
@@ -1872,7 +1873,8 @@ class IconOpenMeteo(unittest.TestCase):
         self.assertEqual((ny, nx), (len(lats), len(lons)))
         self.assertEqual((ny % build.TILE['icon'], -(-nx // build.TILE['icon'])), (0, 14))
         self.assertEqual(build.KEEP['icon'], build.KEEP['gfs'])
-        self.assertNotIn('icon', build.FREE_MODELS)
+        self.assertIn('icon', build.FREE_MODELS)
+        self.assertEqual(build.free_ahead('icon'), build.free_ahead('hrrr'))
 
 class EuropeAirspace(unittest.TestCase):
     XML = b'<?xml version="1.0"?><OFMX-Snapshot version="0.1" origin="test">\n    <Ase><AseUid region="LF"><codeType>TMA</codeType><codeId>T1</codeId></AseUid><txtName>STRASBOURG 9</txtName><codeClass>D</codeClass>\n      <codeDistVerUpper>STD</codeDistVerUpper><valDistVerUpper>145</valDistVerUpper><uomDistVerUpper>FL</uomDistVerUpper>\n      <codeDistVerLower>ALT</codeDistVerLower><valDistVerLower>4500</valDistVerLower><uomDistVerLower>FT</uomDistVerLower></Ase>\n    <Abd><AbdUid><AseUid region="LF"><codeType>TMA</codeType><codeId>T1</codeId></AseUid></AbdUid>\n      <Avx><codeType>GRC</codeType><geoLat>49.00000000N</geoLat><geoLong>008.00000000E</geoLong></Avx>\n      <Avx><codeType>CWA</codeType><geoLat>49.00000000N</geoLat><geoLong>008.50000000E</geoLong><geoLatArc>48.75000000N</geoLatArc><geoLongArc>008.50000000E</geoLongArc></Avx>\n      <Avx><codeType>GRC</codeType><geoLat>48.50000000N</geoLat><geoLong>008.50000000E</geoLong></Avx>\n      <Avx><codeType>FNT</codeType><geoLat>48.50000000N</geoLat><geoLong>008.00000000E</geoLong></Avx></Abd>\n    <Ase><AseUid region="LF"><codeType>CLASS</codeType><codeId>T1_D</codeId></AseUid><codeClass>D</codeClass>\n      <codeDistVerUpper>STD</codeDistVerUpper><valDistVerUpper>145</valDistVerUpper><uomDistVerUpper>FL</uomDistVerUpper>\n      <codeDistVerLower>ALT</codeDistVerLower><valDistVerLower>4500</valDistVerLower><uomDistVerLower>FT</uomDistVerLower></Ase>\n    <Adg><AdgUid><AseUid region="LF"><codeType>CLASS</codeType><codeId>T1_D</codeId></AseUid></AdgUid>\n      <AseUidSameExtent region="LF"><codeType>TMA</codeType><codeId>T1</codeId></AseUidSameExtent></Adg>\n    <Ase><AseUid region="LF"><codeType>R</codeType><codeId>R1</codeId></AseUid><txtName>LF-R 1</txtName>\n      <codeDistVerUpper>HEI</codeDistVerUpper><valDistVerUpper>300</valDistVerUpper><uomDistVerUpper>M</uomDistVerUpper>\n      <codeDistVerLower>HEI</codeDistVerLower><valDistVerLower>0</valDistVerLower><uomDistVerLower>FT</uomDistVerLower><Att><codeWorkHr>H24</codeWorkHr></Att></Ase>\n    <Abd><AbdUid><AseUid region="LF"><codeType>R</codeType><codeId>R1</codeId></AseUid></AbdUid>\n      <Circle><geoLatCen>48.00000000N</geoLatCen><geoLongCen>007.00000000E</geoLongCen><valRadius>2</valRadius><uomRadius>NM</uomRadius></Circle></Abd>\n    <Ase><AseUid region="LF"><codeType>FIR</codeType><codeId>F</codeId></AseUid><codeClass>G</codeClass></Ase>\n    </OFMX-Snapshot>'

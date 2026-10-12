@@ -14,7 +14,7 @@ import physics
 import physics as P
 import pack
 import tiles
-from sources import SOURCES, candidate_runs, latest_complete_run, needed_times
+from sources import OPEN_AHEAD_H, OPEN_SLACK_H, SOURCES, candidate_runs, latest_complete_run, needed_times
 from tiles import downsample
 REGIONS = {'hrrr': (-125.0, 24.0, -66.5, 50.0, 0.03), 'gfs': (-170.0, -54.75, 179.75, 70.0, 0.25), 'ecmwf': (-130.0, 20.0, -60.0, 55.0, 0.25), 'icon': (-170.0, -54.875, 179.75, 70.0, 0.125)}
 KEEP = {'gfs': ((-130.0, 20.25, -52.0, 56.0), (-168.0, 59.0, -130.25, 70.0), (-163.0, 54.5, -148.0, 59.0), (-137.0, 54.5, -130.25, 59.0), (-25.0, 34.0, 44.75, 70.0), (-13.0, 27.0, 12.0, 34.0), (-76.0, -54.75, -53.0, -16.0), (-53.0, -34.0, -34.0, -2.0), (-82.0, -16.0, -66.0, 12.5), (11.0, -35.0, 36.0, -16.0), (166.0, -48.0, 179.0, -34.0), (114.0, -35.5, 120.5, -28.5), (131.5, -26.0, 136.5, -21.5), (144.0, -27.0, 154.0, -18.5), (136.0, -39.5, 154.0, -27.0), (143.5, -44.0, 148.75, -39.5))}
@@ -1154,9 +1154,11 @@ def write_points(rdir, hours_dir, times, elev_time, only=None, workers=1, block=
     os.remove(tmp)
     pack.pack_folder(folder, keys, keep=png_too())
     return {'block': B, 'fields': names, 'stamps': stamps, 'tiles': keys}
-FREE_MODELS = ('hrrr', 'gfs')
-FREE_AHEAD = timedelta(hours=24)
-FREE_SLACK = timedelta(hours=7)
+FREE_MODELS = tuple(OPEN_AHEAD_H)
+FREE_SLACK = timedelta(hours=OPEN_SLACK_H)
+
+def free_ahead(model):
+    return timedelta(hours=OPEN_AHEAD_H[model])
 
 def hour_token(model, run_id, stamp, secret=None):
     import hashlib
@@ -1171,7 +1173,7 @@ def hour_token(model, run_id, stamp, secret=None):
     return tok
 _MASKED: set = set()
 FREE_FIELDS = {'wstar', 'depth', 'zi', 'cubase', 'cudepth', 'overdev', 'rain', 'ptype', 'cape', 'bs', 'densalt', 'cloud', 'cloudlow', 'cloudmid', 'cloudhigh', *(f'cc{p}' for p in P.CC_LEVELS), 'u_sfc', 'v_sfc', 'u_blavg', 'v_blavg', 'bumpy', 'ceil', 'vis', 'fltcat', 't2', 'td2', 'sst', 'mslp', 'gust', 'pm25', *(f'{c}_a{ft}' for ft in WIND_ALTS_FT for c in ('u', 'v'))}
-NOW_AHEAD = timedelta(hours=8)
+NOW_AHEAD = timedelta(hours=24) + FREE_SLACK
 NOW_FIELDS = FREE_FIELDS | {'twidth', 'sinkth', 'heat', 'ctop', 'wtrap', 'wlam', 'thml', 'thx', *(f'{k}_m{dz}' for dz in ML_TOP_DZ for k in ('dth', 'q')), *(f'wv{ft}' for ft in (8000, 10000, 12000, 14000, 18000, 24000)), *(f'dpd{ft}' for ft in (8000, 10000, 12000, 14000, 18000, 24000)), *(f't{ft}' for ft in (8000, 10000, 12000, 14000, 18000, 24000)), *(f'{c}_g{m}' for m in (100, 300) for c in ('u', 'v')), *(f'{c}_a{ft}' for ft in (2000, 3000, 4000, 5000, 6000, 8000, 10000, 12000, 15000) for c in ('u', 'v'))}
 
 def write_free(out, model, now=None, workers=1):
@@ -1186,18 +1188,19 @@ def write_free(out, model, now=None, workers=1):
         return None
     hours_dir = os.path.join(base, '_hours')
     now = (now or datetime.now(timezone.utc)).replace(minute=0, second=0, microsecond=0)
-    cutoff = now + FREE_AHEAD + FREE_SLACK
+    ahead = free_ahead(model)
+    cutoff = now + ahead + FREE_SLACK
     stamps = sorted((s for d in full['days'].values() for s in d))
     times = [datetime.strptime(s, '%Y%m%d%H').replace(tzinfo=timezone.utc) for s in stamps]
     times = [t for t in times if t <= cutoff and os.path.exists(os.path.join(hours_dir, f'{t:%Y%m%d%H}.npz'))]
-    hourly = [t for t in times if t > now + FREE_AHEAD]
+    hourly = [t for t in times if t > now + ahead]
     manifest = _publish_open(out, os.path.join(out, 'free', model), model, full, times, FREE_FIELDS, cutoff, workers, points=True, hourly=hourly)
     if manifest:
         log(f'{model}: free window to {cutoff:%Y-%m-%d %HZ}: {len(times)} hours ({len(hourly)} by the hour), {len(manifest['fields'])} fields')
     now_times = [t for t in times if now - timedelta(hours=1) <= t <= now + NOW_AHEAD]
     nm = _publish_open(out, os.path.join(out, 'free', 'now', model), model, full, now_times, NOW_FIELDS, now + NOW_AHEAD, workers)
     if nm:
-        log(f'{model}: 3D now window: {len(now_times)} hours, {len(nm['fields'])} fields')
+        log(f'{model}: 3D window: {len(now_times)} hours, {len(nm['fields'])} fields')
     return manifest
 
 def _publish_open(out, fbase, model, full, times, fields, cutoff, workers, points=False, hourly=()):
