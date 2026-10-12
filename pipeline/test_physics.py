@@ -291,7 +291,7 @@ class WindowedFields(unittest.TestCase):
         self.assertEqual(DAYS['gfs'], 14)
         self.assertIn('ecmwf', PAUSED)
         from sources import candidate_runs
-        self.assertEqual(gfs.runs, (0, 12))
+        self.assertEqual(gfs.runs, (0, 6, 12, 18))
         self.assertEqual([r.hour for r in candidate_runs(gfs, datetime(2026, 9, 27, 23, 30, tzinfo=timezone.utc), back_hours=24)], [12, 0])
         now = datetime(2026, 9, 27, 2, 10, tzinfo=timezone.utc)
         run = datetime(2026, 9, 26, 18, tzinfo=timezone.utc)
