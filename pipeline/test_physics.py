@@ -1802,7 +1802,8 @@ class IconOpenMeteo(unittest.TestCase):
         steps = [fh for fh in range(0, 400) if src.fstep(fh)]
         self.assertEqual(len(steps), 78 + 34)
         self.assertEqual((steps[0], steps[77], steps[78], steps[-1]), (1, 78, 81, 180))
-        self.assertEqual(src.runs, (0, 12))
+        self.assertEqual(src.runs, (0, 6, 12, 18))
+        self.assertEqual([src.last_fh(datetime(2026, 10, 12, h, tzinfo=timezone.utc)) for h in src.runs], [180, 120, 180, 120])
         self.assertEqual(DAYS['icon'], 8)
         run = datetime(2026, 10, 12, 12, tzinfo=timezone.utc)
         self.assertEqual(src.url(run, 81), 'https://openmeteo.s3.amazonaws.com/data_spatial/dwd_icon/2026/10/12/1200Z/2026-10-15T2100.om')
@@ -1834,8 +1835,32 @@ class IconOpenMeteo(unittest.TestCase):
         run = datetime(2026, 10, 12, 12, tzinfo=timezone.utc)
         with tempfile.TemporaryDirectory() as d:
             jobs = build.backfill_jobs(SOURCES['icon'], run, [run - timedelta(hours=1), run, run + timedelta(hours=1)], d)
-            self.assertEqual(jobs, [(run - timedelta(hours=12), 11), (run - timedelta(hours=12), 12)])
+            self.assertEqual(jobs, [(run - timedelta(hours=6), 5), (run - timedelta(hours=6), 6)])
             self.assertEqual(build.backfill_jobs(SOURCES['gfs'], run, [run], d), [])
+
+    def test_short_runs_take_days_5_to_7_from_the_run_before(self):
+        import tempfile
+        from datetime import datetime, timedelta, timezone
+        import build
+        from sources import SOURCES, latest_complete_run
+        src = SOURCES['icon']
+        run = datetime(2026, 10, 12, 6, tzinfo=timezone.utc)
+        h = lambda n: run + timedelta(hours=n)
+        with tempfile.TemporaryDirectory() as d:
+            open(os.path.join(d, f'{h(123):%Y%m%d%H}.npz'), 'w').close()
+            jobs = build.backfill_jobs(src, run, [h(119), h(120), h(123), h(174), h(177), h(180)], d)
+            r0 = run - timedelta(hours=6)
+            self.assertEqual(jobs, [(r0, 129), (r0, 180)])
+        import sources
+        seen = []
+        orig = sources.grib.exists
+        sources.grib.exists = lambda url: seen.append(url) or True
+        try:
+            r, fhs = latest_complete_run(src, [h(1), h(120), h(126)], log=lambda *a: None)
+        finally:
+            sources.grib.exists = orig
+        self.assertEqual(r.hour % 6, 0)
+        self.assertLessEqual(max(fhs), src.last_fh(r))
 
     def test_grid_is_on_the_files_lines_and_kept_like_gfs(self):
         import build

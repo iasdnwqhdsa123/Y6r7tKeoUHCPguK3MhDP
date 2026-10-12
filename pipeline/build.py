@@ -1282,13 +1282,18 @@ def store_fits(hours_dir, region, src_id=None):
 
 def backfill_jobs(src, run, needed, hours_dir):
     have = {f[:-4] for f in os.listdir(hours_dir) if f.endswith('.npz') and (not f.endswith('.tmp.npz'))}
+    end = run + timedelta(hours=src.last_fh(run))
     jobs = []
     for t in needed:
-        if (t > run or (t == run and src.fstep(0))) or f'{t:%Y%m%d%H}' in have:
+        if t > end:
+            runs = candidate_runs(src, run, back_hours=25)
+        elif (t > run or (t == run and src.fstep(0))) or f'{t:%Y%m%d%H}' in have:
             continue
-        for r in candidate_runs(src, t, back_hours=24):
+        else:
+            runs = candidate_runs(src, t, back_hours=24)
+        for r in runs:
             fh = int((t - r).total_seconds() // 3600)
-            if r < run and 0 <= fh <= src.max_fhour and src.fstep(fh):
+            if r < run and 0 <= fh <= src.last_fh(r) and src.fstep(fh):
                 jobs.append((r, fh))
                 break
     return jobs
@@ -1367,7 +1372,7 @@ def main():
     rest = fhs[1:]
     back = backfill_jobs(src, run, needed, hours_dir) if not args.max_hours else []
     if back:
-        log(f'{src.id}: backfilling {len(back)} earlier hours from runs ' + ', '.join(sorted({f'{r:%d %HZ}' for r, _ in back})))
+        log(f'{src.id}: backfilling {len(back)} hours from earlier runs ' + ', '.join(sorted({f'{r:%d %HZ}' for r, _ in back})))
     rest += back
     if rest:
         workers = max(1, min(args.workers, len(rest)))
