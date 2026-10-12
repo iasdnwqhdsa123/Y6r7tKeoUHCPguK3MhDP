@@ -216,7 +216,7 @@ jobs:
           if [ -f dist-data/.changed ]; then mv dist-data/.changed "dist-data/.changed-$M"; echo "changed=true" >> "$GITHUB_OUTPUT"; fi
           [ -f "dist-data/$M/latest.json" ] || { echo "::warning::$M has nothing to publish"; exit 0; }
           mkdir -p /tmp/hand
-          parts=$(cd dist-data && ls -d "$M" "free/$M" "free/now/$M" ".changed-$M" 2> /dev/null)
+          parts=$(cd dist-data && ls -d "$M" "free/$M" "free/now/$M" ".changed-$M" 2> /dev/null || true)
           pack() { tar -C dist-data --exclude=_hours --exclude=_quarters --exclude='*.building' -cf - $parts; }
           if [ -n "$DATA_PATH_SECRET" ]; then pack | openssl enc -aes-256-ctr -pbkdf2 -pass env:DATA_PATH_SECRET -out "/tmp/hand/$M.tar.enc"
           else pack > "/tmp/hand/$M.tar"; fi
