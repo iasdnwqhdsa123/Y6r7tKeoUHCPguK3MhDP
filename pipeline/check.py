@@ -7,11 +7,11 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 from airspace import VERSION as AIRSPACE_VERSION
 from aviation import VERSION as AVIATION_VERSION
-from sources import PAUSED, SOURCES, candidate_runs, latest_complete_run, needed_times
+from sources import PAUSED, REQUIRED, SOURCES, candidate_runs, latest_complete_run, needed_times
 AIRSPACE_MAX_AGE = timedelta(days=7)
 WAIT_MAX = timedelta(minutes=30)
 WAIT_STEP = timedelta(minutes=2)
-DUE = {'hrrr': timedelta(hours=1, minutes=45), 'gfs': timedelta(hours=5)}
+DUE = {'hrrr': timedelta(hours=1, minutes=45), 'gfs': timedelta(hours=5), 'icon': timedelta(hours=4, minutes=45)}
 LATE_FOR = timedelta(hours=2)
 
 def late_run(src, now=None):
@@ -97,6 +97,8 @@ def main():
         with open(out, 'a') as f:
             f.write(f'models={' '.join(todo)}\n')
             f.write(f'matrix={json.dumps(todo)}\n')
+            f.write(f'active={json.dumps([m for m in SOURCES if m not in PAUSED])}\n')
+            f.write(f'required={json.dumps([m for m in REQUIRED if m not in PAUSED])}\n')
             f.write(f'airspace={('true' if airspace else 'false')}\n')
             f.write(f'aviation={('true' if aviation else 'false')}\n')
             f.write(f'free={('true' if free_due or todo else 'false')}\n')

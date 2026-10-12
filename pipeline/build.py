@@ -16,8 +16,9 @@ import pack
 import tiles
 from sources import SOURCES, candidate_runs, latest_complete_run, needed_times
 from tiles import downsample
-REGIONS = {'hrrr': (-125.0, 24.0, -66.5, 50.0, 0.05), 'gfs': (-170.0, -54.75, 179.75, 70.0, 0.25), 'ecmwf': (-130.0, 20.0, -60.0, 55.0, 0.25)}
+REGIONS = {'hrrr': (-125.0, 24.0, -66.5, 50.0, 0.03), 'gfs': (-170.0, -54.75, 179.75, 70.0, 0.25), 'ecmwf': (-130.0, 20.0, -60.0, 55.0, 0.25), 'icon': (-170.0, -54.875, 179.75, 70.0, 0.125)}
 KEEP = {'gfs': ((-130.0, 20.25, -52.0, 56.0), (-168.0, 59.0, -130.25, 70.0), (-163.0, 54.5, -148.0, 59.0), (-137.0, 54.5, -130.25, 59.0), (-25.0, 34.0, 44.75, 70.0), (-13.0, 27.0, 12.0, 34.0), (-76.0, -54.75, -53.0, -16.0), (-53.0, -34.0, -34.0, -2.0), (-82.0, -16.0, -66.0, 12.5), (11.0, -35.0, 36.0, -16.0), (166.0, -48.0, 179.0, -34.0), (114.0, -35.5, 120.5, -28.5), (131.5, -26.0, 136.5, -21.5), (144.0, -27.0, 154.0, -18.5), (136.0, -39.5, 154.0, -27.0), (143.5, -44.0, 148.75, -39.5))}
+KEEP['icon'] = KEEP['gfs']
 
 def keep_mask(src_id, lat2d, lon2d):
     boxes = KEEP.get(src_id)
@@ -81,8 +82,8 @@ def analyse_kept(s, lv, levels, grid_step, lat2d, lon2d, valid, windows):
     shape = lat2d.shape
     cut = [lambda a, w=w: _crop(a, *w, shape) for w, _ in windows]
     return analyse_parts([(c(s), c(lv), levels) for c in cut], [(c(lat2d), c(lon2d)) for c in cut], grid_step, valid, windows, shape)
-TILE = {'hrrr': 100, 'gfs': 100, 'ecmwf': 100}
-OVERVIEW = {'hrrr': (2, 4)}
+TILE = {'hrrr': 100, 'gfs': 100, 'ecmwf': 100, 'icon': 200}
+OVERVIEW = {'hrrr': (2, 4, 8)}
 LEVEL_TILE = 200
 CLASS_FIELDS = {'ptype', 'fltcat', 'sinkby'}
 WIND_ALTS_FT = [2000, 3000, 4000, 5000, 6000, 8000, 10000, 12000, 15000, 18000, 24000, 30000]
@@ -173,6 +174,18 @@ class Regridder:
             keep = np.isfinite(vals) & ~self.outside.reshape(-1)[tgt]
             flat[tgt[keep]] = vals[keep]
         return out
+
+    @classmethod
+    def identity(cls, region):
+        r = object.__new__(cls)
+        r.lons, r.lats = target_grid(region)
+        r.shape = (len(r.lats), len(r.lons))
+        n = r.shape[0] * r.shape[1]
+        r.index = np.arange(n)
+        r.outside = np.zeros(n, bool)
+        r.cell = np.arange(n)
+        r._plan = None
+        return r
 
     def part(self, y0, y1, x0, x1):
         p = object.__new__(Regridder)
@@ -515,6 +528,11 @@ def general_aviation(s, lv, levels, prof, rain, grid_step, ddx, ddy, cc=None, zi
         slr = np.where(snowing, P.kuchera_ratio(prof), np.nan)
     return {'ceil': ceil, 'vis': vis, 'fltcat': P.flight_category(ceil, vis), 'ptype': nan(ptype), 'slr': slr, 'refc': nan(refc), 'frzl': nan(frzl), 'ctop': nan(ctop), 'icing': nan(icing), 'icebase': icebase, 'icetop': icetop, 'turb': nan(turb), 'turbz': np.where(turb >= 2, turbz, np.nan), 'turbbase': turbbase, 'turbtop': turbtop, 'llws': nan(llws)}
 
+def _decode(m, region=None, boxes=None):
+    if hasattr(m, 'read'):
+        return m.read(region, boxes)
+    return grib.decode(m)[0]
+
 def _fetch(src, run, fh, keys):
     raw = src.fetch(run, fh, src.inventory(run, fh, keys))
     return {k: grib.decode(m)[0] for k, m in raw.items()}
@@ -541,6 +559,9 @@ def _window_mean(src, run, fh, canon, now_vals, earlier):
         return (((fh - start) * now_vals - (prev - start) * a_prev) / (fh - prev), fh - prev)
     if kind == 'acc1h':
         return (now_vals / 3600, 1)
+    if kind in ('mean', 'sum'):
+        step = fh - prev_step(src, fh)
+        return (now_vals if kind == 'mean' else now_vals / (step * 3600), step)
     if kind in ('acc', 'accw'):
         prev = prev_step(src, fh)
         a_prev = earlier(prev, key)
@@ -567,6 +588,8 @@ def fetch_hour(src, run, fh):
 
 def load_hour(src, run, fh, regrid_holder, region, valid, raw=None):
     raw = fetch_hour(src, run, fh) if raw is None else raw
+    if regrid_holder.get('r') is None and hasattr(src, 'static_url'):
+        regrid_holder['r'], regrid_holder['rot'] = (Regridder.identity(region), None)
     if regrid_holder.get('r') is None:
         any_msg = next(iter(raw.values()))
         lat, lon = grib.latlons(any_msg)
@@ -578,9 +601,11 @@ def load_hour(src, run, fh, regrid_holder, region, valid, raw=None):
     if 'parts' not in regrid_holder:
         windows = regrid_holder['windows'] = keep_windows(src.id, region)
         regrid_holder['parts'] = [rg] if windows is None else [rg.part(*w) for w, _ in windows]
+        regrid_holder['boxes'] = None if windows is None else [w for w, _ in windows]
     windows, parts = (regrid_holder['windows'], regrid_holder['parts'])
+    boxes = regrid_holder['boxes']
     coords = [np.meshgrid(p.lats, p.lons, indexing='ij') for p in parts]
-    native = {name: None if raw.get(k) is None else grib.decode(raw[k])[0] for name, k in src.surface.items()}
+    native = {name: None if raw.get(k) is None else _decode(raw[k], region, boxes) for name, k in src.surface.items()}
     cache = {}
 
     def earlier(pfh, key):
@@ -623,7 +648,7 @@ def load_hour(src, run, fh, regrid_holder, region, valid, raw=None):
         m = raw.get(key)
         if m is None:
             return [None] * len(parts)
-        f = grib.decode(m)[0]
+        f = _decode(m, region, boxes)
         return [p(f) for p in parts]
     lvp = {canon: [get((gname, f'{l} mb')) for l in src.levels] for canon, gname in src.level_vars.items()}
     hip = {c: [get((src.level_vars[c], f'{l} mb')) for l in src.cloud_levels] for c in src.cloud_vars()}
@@ -1219,7 +1244,8 @@ def _publish_open(out, fbase, model, full, times, fields, cutoff, workers, point
             shutil.rmtree(os.path.join(fbase, old), ignore_errors=True)
     open(os.path.join(out, '.changed'), 'w').close()
     return manifest
-STORE_AHEAD_H = {'gfs': 60}
+STORE_AHEAD_H = {'gfs': 60, 'icon': 60}
+STORE_AFTER_FREE_H = {'hrrr': 12}
 
 def prune_store(hours_dir, ahead_h, now=None):
     cut = (now or datetime.now(timezone.utc)) + timedelta(hours=ahead_h)
@@ -1258,7 +1284,7 @@ def backfill_jobs(src, run, needed, hours_dir):
     have = {f[:-4] for f in os.listdir(hours_dir) if f.endswith('.npz') and (not f.endswith('.tmp.npz'))}
     jobs = []
     for t in needed:
-        if t >= run or f'{t:%Y%m%d%H}' in have:
+        if (t > run or (t == run and src.fstep(0))) or f'{t:%Y%m%d%H}' in have:
             continue
         for r in candidate_runs(src, t, back_hours=24):
             fh = int((t - r).total_seconds() // 3600)
@@ -1292,6 +1318,10 @@ def main():
     args = ap.parse_args()
     if args.free_only:
         write_free(args.out, args.model, workers=args.workers)
+        hours_dir = os.path.join(args.out, args.model, '_hours')
+        if args.model in STORE_AFTER_FREE_H and os.path.isdir(hours_dir):
+            ahead = STORE_AFTER_FREE_H[args.model]
+            log(f'{args.model}: {prune_store(hours_dir, ahead)} stored hours past +{ahead} h dropped (free window written)')
         return 0
     src = SOURCES[args.model]
     region = list(REGIONS[src.id])

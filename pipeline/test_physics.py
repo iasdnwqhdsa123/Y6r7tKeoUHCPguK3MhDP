@@ -252,6 +252,7 @@ class WindowedFields(unittest.TestCase):
 
     def test_a_run_on_a_code_update_builds_only_what_isnt_published(self):
         import io
+        import json
         import os
         import sys
         import tempfile
@@ -268,7 +269,7 @@ class WindowedFields(unittest.TestCase):
                 check.main()
                 return dict((line.strip().split('=', 1) for line in f if '=' in line))
 
-        def site(models=('hrrr', 'gfs'), free=True, maps=True, stale=False):
+        def site(models=('hrrr', 'gfs', 'icon'), free=True, maps=True, stale=False):
 
             def pub(url):
                 if '/free/' in url:
@@ -281,7 +282,11 @@ class WindowedFields(unittest.TestCase):
         self.assertEqual(outputs(site(stale=True))['any'], 'true')
         self.assertEqual(outputs(site(stale=True), '--missing-only')['any'], 'false')
         o = outputs(site(models=(), free=False, maps=False), '--missing-only')
-        self.assertEqual((o['models'], o['free'], o['airspace']), ('hrrr gfs', 'true', 'true'))
+        self.assertEqual((o['models'], o['free'], o['airspace']), ('hrrr gfs icon', 'true', 'true'))
+        from sources import PAUSED, REQUIRED, SOURCES
+        self.assertEqual(o['active'], json.dumps([m for m in SOURCES if m not in PAUSED]))
+        self.assertEqual(json.loads(o['required']), ['hrrr', 'gfs'])
+        self.assertEqual(outputs(site(models=('hrrr', 'gfs')), '--missing-only')['models'], 'icon')
         o = outputs(site(maps=False), '--missing-only')
         self.assertEqual((o['models'], o['airspace'], o['any']), ('', 'true', 'true'))
 
@@ -403,6 +408,24 @@ class PruneStore(unittest.TestCase):
             open(os.path.join(d, 'VERSION'), 'w').close()
             self.assertEqual(build.prune_store(d, 60, now), 2)
             self.assertEqual(sorted(os.listdir(d)), ['2026101100.npz', '2026101100.run', '2026101308.npz', '2026101308.run', '2026101320.npz', '2026101320.run', 'VERSION'])
+
+    def test_hrrr_store_kept_only_to_the_next_run_after_the_free_window(self):
+        import tempfile
+        from unittest import mock
+        from datetime import datetime, timedelta, timezone
+        import build
+        self.assertEqual(build.STORE_AFTER_FREE_H, {'hrrr': 12})
+        now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+        with tempfile.TemporaryDirectory() as out:
+            d = os.path.join(out, 'hrrr', '_hours')
+            os.makedirs(d)
+            stamps = [f'{now + timedelta(hours=h):%Y%m%d%H}' for h in (-20, 0, 11, 14, 40)]
+            for stamp in stamps:
+                open(os.path.join(d, f'{stamp}.npz'), 'wb').close()
+            with mock.patch.object(build, 'write_free') as wf, mock.patch('sys.argv', ['build.py', '--model', 'hrrr', '--out', out, '--free-only']):
+                self.assertEqual(build.main(), 0)
+            wf.assert_called_once()
+            self.assertEqual(sorted((f[:10] for f in os.listdir(d))), stamps[:3])
 
     def test_lanes_download_ahead_and_keep_order(self):
         import build
@@ -1017,7 +1040,11 @@ class OverviewLevels(unittest.TestCase):
         self.assertEqual(g4, {'west': -124.925, 'north': 49.925, 'step': 0.2, 'nx': 293, 'ny': 131, 'tile': 200, 'ntx': 2, 'nty': 1})
         lon = lambda g, i: g['west'] + i * g['step']
         self.assertAlmostEqual(lon(g4, 10), np.mean([lon(hrrr, i) for i in range(40, 44)]), places=9)
-        self.assertEqual(build.OVERVIEW, {'hrrr': (2, 4)})
+        self.assertEqual(build.OVERVIEW, {'hrrr': (2, 4, 8)})
+        lons, lats = build.target_grid(build.REGIONS['hrrr'])
+        fine = {'west': -125.0, 'north': 50.0, 'step': 0.03, 'nx': len(lons), 'ny': len(lats), 'tile': 100, 'ntx': 20, 'nty': 9}
+        self.assertEqual([build.level_grid(fine, k)['step'] for k in build.OVERVIEW['hrrr']], [0.06, 0.12, 0.24])
+        self.assertEqual(build.level_grid(fine, 8), {'west': -124.895, 'north': 49.895, 'step': 0.24, 'nx': 244, 'ny': 109, 'tile': 200, 'ntx': 2, 'nty': 1})
 
     def test_tiles_and_manifest(self):
         import tempfile
@@ -1622,6 +1649,26 @@ class Regions(unittest.TestCase):
         for lat, lon in [(39.3, -77.6), (49.3, -123.1), (61.2, -149.9), (64.8, -147.7), (58.3, -134.4), (48.9, 2.4), (46.5, 9.0), (60.0, 10.7), (36.7, -4.4), (-31.4, -64.2), (-23.9, 17.9), (31.6, -8.0), (-44.5, 169.97)]:
             self.assertTrue(lons[0] <= lon <= lons[-1] and lats[-1] <= lat <= lats[0], (lat, lon))
 
+    def test_hrrr_grid_about_native(self):
+        import build
+        region = build.REGIONS['hrrr']
+        self.assertEqual(region[4], 0.03)
+        lons, lats = build.target_grid(region)
+        self.assertEqual((len(lons), len(lats)), (1951, 868))
+        self.assertEqual((lons[0], lats[0]), (-125.0, 50.0))
+        self.assertAlmostEqual(lons[-1], -66.5, places=6)
+        self.assertLessEqual(region[4], build.WAVE_BAND_MAX_STEP)
+
+    def test_stored_hours_on_the_005_grid_dont_fit_the_003(self):
+        import tempfile
+        import build
+        old = (-125.0, 24.0, -66.5, 50.0, 0.05)
+        lons, lats = build.target_grid(old)
+        with tempfile.TemporaryDirectory() as d:
+            build.tiles.savez(os.path.join(d, '2026101112.npz'), {'wstar': np.zeros((len(lats), len(lons)), np.uint8)})
+            self.assertTrue(build.store_fits(d, old))
+            self.assertFalse(build.store_fits(d, build.REGIONS['hrrr']))
+
     def test_stored_hours_on_another_grid_dont_fit(self):
         import tempfile
         import build
@@ -1675,6 +1722,132 @@ class Regions(unittest.TestCase):
             np.testing.assert_allclose(got[k][keep], full[k][keep], rtol=1e-06, err_msg=k)
             self.assertTrue(np.isnan(got[k][~keep]).all(), k)
         self.assertIsNone(build.keep_windows('hrrr', region))
+
+class IconOpenMeteo(unittest.TestCase):
+
+    def setUp(self):
+        try:
+            import omfiles
+        except ImportError:
+            self.skipTest('omfiles not installed')
+        import tempfile
+        self.dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(getattr(self, 'dir', ''), ignore_errors=True)
+
+    def write(self, name, arrays, units=None):
+        import omfiles
+        path = os.path.join(self.dir, name)
+        w = omfiles.OmFileWriter(path)
+        kids = []
+        for k, a in arrays.items():
+            u = [w.write_scalar((units or {}).get(k, 'm'), name='unit')]
+            kids.append(w.write_array(np.asarray(a, np.float32), chunks=[min(4, n) for n in np.shape(a)], scale_factor=100.0, name=k, children=u))
+        w.close(w.write_group('', children=kids))
+        return path
+
+    def test_the_hour_is_read_onto_the_output_grid_north_first_inside_the_boxes(self):
+        import om
+        a = np.arange(120, dtype=np.float32).reshape(10, 12)
+        hour = om.Hour([om.open_file(self.write('h.om', {'temperature_2m': a}, {'temperature_2m': '°C'}))], om.Grid(0.0, 10.0, 1.0, 10, 12))
+        region = (12.0, 2.0, 15.0, 7.0, 1.0)
+        whole = hour.read('temperature_2m', region)
+        self.assertEqual(whole.shape, (6, 4))
+        np.testing.assert_allclose(whole[0], a[7, 2:6], atol=0.01)
+        np.testing.assert_allclose(whole[-1], a[2, 2:6], atol=0.01)
+        part = hour.read('temperature_2m', region, boxes=[(1, 3, 0, 2)])
+        self.assertTrue(np.isnan(part[0]).all() and np.isnan(part[:, 2:]).all())
+        np.testing.assert_allclose(part[1:3, :2], whole[1:3, :2])
+        np.testing.assert_allclose(om.Field(hour, 'temperature_2m').read(region), whole + 273.15, atol=0.01)
+        with self.assertRaises(ValueError):
+            hour.read('temperature_2m', (12.5, 2.0, 15.0, 7.0, 1.0))
+        with self.assertRaises(ValueError):
+            hour.read('temperature_2m', (12.0, 2.0, 15.0, 7.0, 0.5))
+
+    def test_derived_fields(self):
+        import om
+        n = (1, 4)
+        hs = np.array([[-999.0, 0.0, 500.0, 2500.0]])
+        lv = {}
+        for p in om.PS_LEVELS:
+            z = 44330.8 * (1 - (p / 1013.25) ** 0.190263)
+            lv[f'geopotential_height_{p}hPa'] = np.full(n, z)
+            lv[f'temperature_{p}hPa'] = np.full(n, 15 - 0.0065 * z)
+        units = {k: '°C' if k.startswith('temperature') else 'm' for k in lv}
+        main = self.write('h.om', {**lv, 'temperature_2m': np.full(n, 15.0), 'relative_humidity_2m': np.full(n, 50.0), 'soil_temperature_0cm': np.array([[-3.0, 10.0, 10.0, 10.0]]), 'sensible_heat_flux': np.full(n, -200.0), 'direct_radiation': np.full(n, 500.0), 'diffuse_radiation': np.full(n, 100.0), 'precipitation': np.array([[0.0, 2.0, 2.0, 2.0]]), 'snowfall_water_equivalent': np.array([[0.0, 0.0, 1.0, 2.0]]), 'weather_code': np.array([[0.0, 66.0, 71.0, 73.0]]), 'pressure_msl': np.full(n, 1013.0)}, {**units, 'temperature_2m': '°C', 'soil_temperature_0cm': '°C', 'relative_humidity_2m': '%', 'pressure_msl': 'hPa'})
+        static = om.open_file(self.write('s.om', {'x': hs}))
+        hour = om.Hour([om.open_file(main)], om.Grid(0.0, 0.0, 1.0, 1, 4), arrays={'HSURF': static.get_child_by_name('x')})
+        region = (0.0, 0.0, 3.0, 0.0, 1.0)
+        get = lambda k: om.Field(hour, k).read(region)[0]
+        np.testing.assert_allclose(get('zs'), [0, 0, 500, 2500], atol=0.1)
+        np.testing.assert_array_equal(get('lsm'), [0, 1, 1, 1])
+        np.testing.assert_array_equal(get('ice'), [1, 0, 0, 0])
+        self.assertAlmostEqual(float(get('td2')[0]) - 273.15, 4.6, delta=0.2)
+        np.testing.assert_allclose(get('ps') / 100, [1013.25, 1013.25, 954.6, 746.9], atol=3)
+        np.testing.assert_allclose(get('sw'), 600, atol=0.1)
+        np.testing.assert_allclose(get('shf'), 200, atol=0.1)
+        np.testing.assert_array_equal(get('ptype'), [1, 3, 7, 5])
+        np.testing.assert_allclose(get('pressure_msl'), 101300, atol=1)
+        self.assertEqual(om.om_name(('temperature', '850 mb')), 'temperature_850hPa')
+        self.assertEqual(om.om_name(('cloud_cover', '')), 'cloud_cover')
+        f = om.Field(hour, 'wind_u_component_80m')
+        self.assertFalse(f.available(), 'not in these files')
+
+    def test_steps_days_and_files(self):
+        from datetime import datetime, timezone
+        from sources import DAYS, SOURCES
+        src = SOURCES['icon']
+        steps = [fh for fh in range(0, 400) if src.fstep(fh)]
+        self.assertEqual(len(steps), 78 + 34)
+        self.assertEqual((steps[0], steps[77], steps[78], steps[-1]), (1, 78, 81, 180))
+        self.assertEqual(src.runs, (0, 12))
+        self.assertEqual(DAYS['icon'], 8)
+        run = datetime(2026, 10, 12, 12, tzinfo=timezone.utc)
+        self.assertEqual(src.url(run, 81), 'https://openmeteo.s3.amazonaws.com/data_spatial/dwd_icon/2026/10/12/1200Z/2026-10-15T2100.om')
+        self.assertTrue(src.idx_url(run, 1).endswith('/2026/10/12/1200Z/2026-10-12T1300_model-level.om'))
+        import om
+        files = {'cape', 'cloud_cover', 'cloud_cover_high', 'cloud_cover_low', 'cloud_cover_mid', 'convective_cloud_base', 'convective_cloud_top', 'diffuse_radiation', 'direct_radiation', 'freezing_level_height', 'latent_heat_flux', 'precipitation', 'pressure_msl', 'rain', 'relative_humidity_2m', 'sensible_heat_flux', 'showers', 'snow_depth', 'snowfall_water_equivalent', 'soil_temperature_0cm', 'temperature_2m', 'weather_code', 'wind_gusts_10m', 'wind_u_component_10m', 'wind_v_component_10m', 'wind_u_component_80m', 'wind_v_component_80m', 'HSURF'}
+        files |= {f'{v}_{p}hPa' for p in (1000, 950, 925, 900, 850, 800, 700, 600, 500, 400, 300, 250, 200) for v in ('temperature', 'relative_humidity', 'wind_u_component', 'wind_v_component', 'geopotential_height')}
+        for key in [*src.surface.values(), *((g, f'{lv} mb') for lv in src.levels + src.cloud_levels for g in src.level_vars.values())]:
+            name = om.om_name(key)
+            self.assertTrue(name in files or set(om.RECIPES.get(name, ((None,), None))[0]) <= files, key)
+        for need in ('zs', 'ps', 't2', 'td2', 'u10', 'v10', 'mslp'):
+            self.assertIn(need, src.surface)
+
+    def test_windows_are_the_steps_own(self):
+        import build
+        from sources import SOURCES
+        src = SOURCES['icon']
+        m, hrs = build._window_mean(src, None, 81, 'prate', np.array([3.0]), lambda f, k: self.fail('no earlier file'))
+        self.assertEqual(hrs, 3)
+        self.assertAlmostEqual(float(m[0]) * 3600, 1.0)
+        m, hrs = build._window_mean(src, None, 5, 'sw', np.array([400.0]), lambda f, k: self.fail('no earlier file'))
+        self.assertEqual((float(m[0]), hrs), (400.0, 1))
+
+    def test_the_runs_start_comes_from_the_run_before(self):
+        import tempfile
+        from datetime import datetime, timedelta, timezone
+        import build
+        from sources import SOURCES
+        run = datetime(2026, 10, 12, 12, tzinfo=timezone.utc)
+        with tempfile.TemporaryDirectory() as d:
+            jobs = build.backfill_jobs(SOURCES['icon'], run, [run - timedelta(hours=1), run, run + timedelta(hours=1)], d)
+            self.assertEqual(jobs, [(run - timedelta(hours=12), 11), (run - timedelta(hours=12), 12)])
+            self.assertEqual(build.backfill_jobs(SOURCES['gfs'], run, [run], d), [])
+
+    def test_grid_is_on_the_files_lines_and_kept_like_gfs(self):
+        import build
+        import om
+        from sources import SOURCES
+        region = build.REGIONS['icon']
+        i_n, j_w, ny, nx = om.Grid(*SOURCES['icon'].grid_def).window(region)
+        lons, lats = build.target_grid(region)
+        self.assertEqual((ny, nx), (len(lats), len(lons)))
+        self.assertEqual((ny % build.TILE['icon'], -(-nx // build.TILE['icon'])), (0, 14))
+        self.assertEqual(build.KEEP['icon'], build.KEEP['gfs'])
+        self.assertNotIn('icon', build.FREE_MODELS)
 
 class EuropeAirspace(unittest.TestCase):
     XML = b'<?xml version="1.0"?><OFMX-Snapshot version="0.1" origin="test">\n    <Ase><AseUid region="LF"><codeType>TMA</codeType><codeId>T1</codeId></AseUid><txtName>STRASBOURG 9</txtName><codeClass>D</codeClass>\n      <codeDistVerUpper>STD</codeDistVerUpper><valDistVerUpper>145</valDistVerUpper><uomDistVerUpper>FL</uomDistVerUpper>\n      <codeDistVerLower>ALT</codeDistVerLower><valDistVerLower>4500</valDistVerLower><uomDistVerLower>FT</uomDistVerLower></Ase>\n    <Abd><AbdUid><AseUid region="LF"><codeType>TMA</codeType><codeId>T1</codeId></AseUid></AbdUid>\n      <Avx><codeType>GRC</codeType><geoLat>49.00000000N</geoLat><geoLong>008.00000000E</geoLong></Avx>\n      <Avx><codeType>CWA</codeType><geoLat>49.00000000N</geoLat><geoLong>008.50000000E</geoLong><geoLatArc>48.75000000N</geoLatArc><geoLongArc>008.50000000E</geoLongArc></Avx>\n      <Avx><codeType>GRC</codeType><geoLat>48.50000000N</geoLat><geoLong>008.50000000E</geoLong></Avx>\n      <Avx><codeType>FNT</codeType><geoLat>48.50000000N</geoLat><geoLong>008.00000000E</geoLong></Avx></Abd>\n    <Ase><AseUid region="LF"><codeType>CLASS</codeType><codeId>T1_D</codeId></AseUid><codeClass>D</codeClass>\n      <codeDistVerUpper>STD</codeDistVerUpper><valDistVerUpper>145</valDistVerUpper><uomDistVerUpper>FL</uomDistVerUpper>\n      <codeDistVerLower>ALT</codeDistVerLower><valDistVerLower>4500</valDistVerLower><uomDistVerLower>FT</uomDistVerLower></Ase>\n    <Adg><AdgUid><AseUid region="LF"><codeType>CLASS</codeType><codeId>T1_D</codeId></AseUid></AdgUid>\n      <AseUidSameExtent region="LF"><codeType>TMA</codeType><codeId>T1</codeId></AseUidSameExtent></Adg>\n    <Ase><AseUid region="LF"><codeType>R</codeType><codeId>R1</codeId></AseUid><txtName>LF-R 1</txtName>\n      <codeDistVerUpper>HEI</codeDistVerUpper><valDistVerUpper>300</valDistVerUpper><uomDistVerUpper>M</uomDistVerUpper>\n      <codeDistVerLower>HEI</codeDistVerLower><valDistVerLower>0</valDistVerLower><uomDistVerLower>FT</uomDistVerLower><Att><codeWorkHr>H24</codeWorkHr></Att></Ase>\n    <Abd><AbdUid><AseUid region="LF"><codeType>R</codeType><codeId>R1</codeId></AseUid></AbdUid>\n      <Circle><geoLatCen>48.00000000N</geoLatCen><geoLongCen>007.00000000E</geoLongCen><valRadius>2</valRadius><uomRadius>NM</uomRadius></Circle></Abd>\n    <Ase><AseUid region="LF"><codeType>FIR</codeType><codeId>F</codeId></AseUid><codeClass>G</codeClass></Ase>\n    </OFMX-Snapshot>'

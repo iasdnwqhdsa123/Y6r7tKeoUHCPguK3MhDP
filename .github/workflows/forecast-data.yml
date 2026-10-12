@@ -32,14 +32,20 @@ permissions:
   contents: read
 
 jobs:
-  build:
+
+  check:
     runs-on: ubuntu-24.04
-    timeout-minutes: 150
+    timeout-minutes: 45 # check.py waits up to 30 min for a run that's landing late
     permissions:
       contents: read
-      actions: write # the fallback's look at recent runs; deleting old runs
-    env:
-      WORKERS: "2"
+      actions: write # the fallback's look at recent runs; keeping the schedule on
+    outputs:
+      any: ${{ steps.check.outputs.any }}
+      models: ${{ steps.check.outputs.models }}
+      active: ${{ steps.check.outputs.active }}
+      required: ${{ steps.check.outputs.required }}
+      free: ${{ steps.check.outputs.free }}
+      airspace: ${{ steps.check.outputs.airspace }}
     steps:
       - uses: actions/checkout@v7
 
@@ -65,218 +71,17 @@ jobs:
           d="$(jq -r '.default_domain // empty' <<<"$s")"
           if [ -z "$d" ]; then echo "::error::the data site has no address"; exit 1; fi
           echo "DATA_URL=https://$d" >> "$GITHUB_ENV"
+          if [ -n "$DATA_PATH_SECRET" ]; then
+            if ! [[ "$DATA_PATH_SECRET" =~ ^[A-Za-z0-9_-]{16,}$ ]]; then echo "DATA_PATH_SECRET must be 16+ letters, digits, - or _"; exit 1; fi
+            O="o$(printf '%s:open' "$DATA_PATH_SECRET" | sha256sum | cut -c1-32)"
+            echo "::add-mask::$O"
+            echo "OPEN_DIR=/$O" >> "$GITHUB_ENV"
+          fi
 
       - name: What's new?
         id: check
         if: steps.late.outputs.skip != 'true'
-        run: |
-          if [ -n "$DATA_PATH_SECRET" ] && ! [[ "$DATA_PATH_SECRET" =~ ^[A-Za-z0-9_-]{16,}$ ]]; then
-            echo "DATA_PATH_SECRET must be 16+ letters, digits, - or _"; exit 1
-          fi
-          O=""; if [ -n "$DATA_PATH_SECRET" ]; then O="/o$(printf '%s:open' "$DATA_PATH_SECRET" | sha256sum | cut -c1-32)"; fi
-          if [ -n "$O" ]; then echo "::add-mask::${O#/}"; fi
-          cd pipeline && python3 check.py --data-url "$DATA_URL${DATA_PATH_SECRET:+/$DATA_PATH_SECRET}" --open-url "$DATA_URL$O" ${{ inputs.force && '--force' || '' }} ${{ github.event_name == 'push' && '--missing-only --no-wait' || '' }}
-
-      - uses: actions/setup-python@v7
-        if: steps.check.outputs.any == 'true'
-        with:
-          python-version: "3.12"
-          cache: pip
-          cache-dependency-path: pipeline/requirements.txt
-
-      - if: steps.check.outputs.any == 'true'
-        run: pip install -r pipeline/requirements.txt && cd pipeline && python -m unittest test_physics
-
-      - name: Make room
-        if: steps.check.outputs.any == 'true'
-        run: |
-          df -h /
-          nohup sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/share/swift > /dev/null 2>&1 &
-
-      - name: Restore previous data
-        id: restore_main
-        if: steps.check.outputs.any == 'true'
-        uses: actions/cache/restore@v6
-        with:
-          path: |
-            dist-data
-            !dist-data/gfs
-            !dist-data/hrrr/20*
-          key: forecast-main-${{ github.run_id }}
-          restore-keys: forecast-main-
-      - name: Restore GFS data
-        id: restore_gfs
-        if: steps.check.outputs.any == 'true'
-        uses: actions/cache/restore@v6
-        with:
-          path: dist-data/gfs
-          key: forecast-gfs-${{ github.run_id }}
-          restore-keys: forecast-gfs-
-      - name: Restore previous data (single cache)
-        if: steps.check.outputs.any == 'true' && steps.restore_main.outputs.cache-matched-key == ''
-        uses: actions/cache/restore@v6
-        with:
-          path: dist-data
-          key: forecast-data-none
-          restore-keys: forecast-data-
-
-      - name: Models to build
-        id: models
-        if: steps.check.outputs.any == 'true'
-        run: |
-          list="${{ steps.check.outputs.models }}"
-          for m in hrrr gfs; do
-            run="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['runId'])" "dist-data/$m/latest.json" 2>/dev/null || true)"
-            if [ -z "$run" ] || [ ! -d "dist-data/$m/$run" ]; then
-              rm -f "dist-data/$m/latest.json" # (else build.py finds that run built already)
-              if [[ " $list " != *" $m "* ]]; then list="$list $m"; echo "$m: published run not on hand, building it"; fi
-            fi
-          done
-          echo "list=$(echo $list)" >> "$GITHUB_OUTPUT"
-
-      - name: Map data on hand?
-        id: mapdata
-        if: steps.check.outputs.any == 'true'
-        run: |
-          if [ -f dist-data/airspace/meta.json ] && [ -f dist-data/airspace/aviation/meta.json ]; then echo "missing=false" >> "$GITHUB_OUTPUT"
-          else echo "missing=true" >> "$GITHUB_OUTPUT"; echo "No airspace or aviation map data from the last run: building them"; fi
-
-      - name: Netlify CLI
-        if: steps.models.outputs.list != ''
-        uses: actions/cache@v6
-        with:
-          path: /tmp/netlify-cli
-          key: netlify-cli-17.38.1
-
-      - name: Build ${{ steps.models.outputs.list }}
-        id: build
-        if: steps.models.outputs.list != ''
-        env:
-          NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
-          NETLIFY_SITE_ID: ${{ secrets.NETLIFY_DATA_SITE_ID }}
-        run: |
-          cd pipeline
-          built=""
-          for m in ${{ steps.models.outputs.list }}; do
-            echo "::group::$m"
-            if timeout 75m python build.py --model "$m" --out ../dist-data ${{ inputs.force && '--force' || '' }} ${{ inputs.recompute && '--recompute' || '' }}; then
-              (cd .. && .github/scripts/pre-upload.sh "$m")
-              built="$built $m"
-            else
-              echo "::warning::$m failed or timed out: its previous run stays published"
-            fi
-            echo "::endgroup::"
-          done
-          echo "built=$built " >> "$GITHUB_OUTPUT"
-          df -h / && du -sh ../dist-data ../dist-data/*/_hours ../dist-data/*/20*/pt 2>/dev/null || true
-
-      - name: Drop paused models
-        if: steps.check.outputs.any == 'true'
-        run: |
-          for m in $(cd pipeline && python -c 'from sources import PAUSED; print(" ".join(PAUSED))'); do
-            if [ -d "dist-data/$m" ] || [ -d "dist-data/free/$m" ] || [ -d "dist-data/free/now/$m" ]; then
-              rm -rf "dist-data/$m" "dist-data/free/$m" "dist-data/free/now/$m"
-              touch dist-data/.changed
-              echo "$m: dropped"
-            fi
-          done
-
-      - name: Free 24-hour window
-        if: steps.check.outputs.free == 'true'
-        continue-on-error: true
-        env:
-          NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
-          NETLIFY_SITE_ID: ${{ secrets.NETLIFY_DATA_SITE_ID }}
-        run: |
-          (cd pipeline && python build.py --model hrrr --out ../dist-data --free-only && python build.py --model gfs --out ../dist-data --free-only)
-          [ -x /tmp/netlify-cli/node_modules/.bin/netlify ] && .github/scripts/pre-upload.sh free || true
-
-      - name: Airspace
-        if: steps.check.outputs.airspace == 'true' || steps.mapdata.outputs.missing == 'true'
-        continue-on-error: true
-        timeout-minutes: 25
-        env:
-          OPENAIP_API_KEY: ${{ secrets.OPENAIP_API_KEY }}
-        run: cd pipeline && python airspace.py --out ../dist-data
-
-      - name: Aviation map data
-        if: steps.check.outputs.aviation == 'true' || steps.mapdata.outputs.missing == 'true'
-        continue-on-error: true
-        timeout-minutes: 20
-        run: cd pipeline && python aviation.py --out ../dist-data
-
-      - name: Anything new?
-        id: changed
-        if: steps.check.outputs.any == 'true'
-        run: |
-          for m in hrrr gfs; do
-            if [ ! -f "dist-data/$m/latest.json" ]; then echo "::warning::$m has nothing to publish: no deploy this time"; exit 0; fi
-          done
-          for f in free/hrrr/latest.json free/gfs/latest.json airspace/meta.json airspace/aviation/meta.json; do
-            if [ ! -f "dist-data/$f" ]; then echo "::warning::no $f: no deploy this time"; exit 0; fi
-          done
-          if [ -f dist-data/.changed ]; then echo "yes=true" >> "$GITHUB_OUTPUT"; rm dist-data/.changed; else echo "Nothing new"; fi
-      - name: Save data for the next run
-        if: steps.changed.outputs.yes == 'true'
-        uses: actions/cache/save@v6
-        with:
-          path: |
-            dist-data
-            !dist-data/gfs
-            !dist-data/hrrr/20*
-          key: forecast-main-${{ github.run_id }}
-      - name: Save GFS data for the next run
-        if: steps.changed.outputs.yes == 'true' && hashFiles('dist-data/gfs/latest.json') != '' && (contains(steps.build.outputs.built, ' gfs ') || steps.restore_gfs.outputs.cache-matched-key == '')
-        uses: actions/cache/save@v6
-        with:
-          path: dist-data/gfs
-          key: forecast-gfs-${{ github.run_id }}
-      - name: Drop replaced caches
-        if: steps.changed.outputs.yes == 'true'
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          mine="$(gh api "repos/${{ github.repository }}/actions/caches?key=forecast-main-${{ github.run_id }}" --jq '.total_count')"
-          [ "$mine" -ge 1 ] || { echo "this job's cache isn't there: nothing deleted"; exit 0; }
-          keep_gfs="$(gh api "repos/${{ github.repository }}/actions/caches?key=forecast-gfs-&sort=created_at&direction=desc&per_page=1" --jq '.actions_caches[0].key // ""')"
-          gh api --paginate "repos/${{ github.repository }}/actions/caches?per_page=100" --jq '.actions_caches[] | "\(.id) \(.key)"' |
-          while read -r id key; do
-            case "$key" in
-              forecast-main-${{ github.run_id }}|"$keep_gfs") ;;
-              forecast-main-*|forecast-gfs-*|forecast-data-*) gh api -X DELETE "repos/${{ github.repository }}/actions/caches/$id" >/dev/null && echo "deleted $key" ;;
-            esac
-          done
-
-      - name: Assemble site
-        if: steps.changed.outputs.yes == 'true'
-        run: |
-          P="${DATA_PATH_SECRET:+/$DATA_PATH_SECRET}"
-          mkdir -p "site$P"
-          OPEN_EX=(); if [ -n "$DATA_PATH_SECRET" ]; then OPEN_EX=(--exclude '/free/' --exclude '/airspace/'); fi
-          rsync -a --delete --link-dest="$PWD/dist-data/" --exclude '_hours/' --exclude '_quarters/' --exclude '*.building/' --exclude '.changed' "${OPEN_EX[@]}" dist-data/ "site$P/"
-          sed "s#^/#$P/#" pipeline/data-site/_headers > site/_headers
-          if [ -n "$DATA_PATH_SECRET" ]; then
-            O="/o$(printf '%s:open' "$DATA_PATH_SECRET" | sha256sum | cut -c1-32)"
-            for d in free airspace; do
-              if [ -d "dist-data/$d" ]; then mkdir -p "site$O/$d"; rsync -a --link-dest="$PWD/dist-data/$d/" --exclude '*.building/' "dist-data/$d/" "site$O/$d/"; fi
-            done
-            printf '%s/free/*/20*\n  Cache-Control: public, max-age=31536000, immutable\n%s/airspace/*\n  Cache-Control: public, max-age=3600\n%s/*\n  X-Robots-Tag: noindex, nofollow\n' "$O" "$O" "$O" >> site/_headers
-          fi
-          printf "User-agent: *\nDisallow: /\n" > site/robots.txt
-          printf '[build]\n  publish = "."\n' > site/netlify.toml
-          du -sh site; find site -type f | wc -l
-
-      - name: Deploy to Netlify data site
-        if: steps.changed.outputs.yes == 'true'
-        env:
-          NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
-          NETLIFY_SITE_ID: ${{ secrets.NETLIFY_DATA_SITE_ID }}
-        working-directory: site
-        run: |
-          ../.github/scripts/pre-upload.sh --wait
-          CLI="$(../.github/scripts/netlify-cli.sh)"
-          "$CLI" deploy --prod --dir . --functions /tmp/no-functions --message "forecast ${{ github.run_id }}"
+        run: cd pipeline && python3 check.py --data-url "$DATA_URL${DATA_PATH_SECRET:+/$DATA_PATH_SECRET}" --open-url "$DATA_URL$OPEN_DIR" ${{ inputs.force && '--force' || '' }} ${{ github.event_name == 'push' && '--missing-only --no-wait' || '' }}
 
       - name: Keep the schedule on
         if: always()
@@ -288,8 +93,398 @@ jobs:
           self="${SELF#*/.github/workflows/}"; self="${self%%@*}"
           gh api -X PUT "repos/${{ github.repository }}/actions/workflows/$self/enable" && echo "kept on"
 
-      - name: Delete old runs
+  model:
+    needs: check
+    if: needs.check.outputs.any == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      actions: write # dropping this model's replaced caches
+    strategy:
+      fail-fast: false
+      matrix:
+        model: ${{ fromJSON(needs.check.outputs.active) }}
+    env:
+      WORKERS: "2"
+      M: ${{ matrix.model }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Data site
+        if: true
+        env:
+          NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
+          NETLIFY_SITE_ID: ${{ secrets.NETLIFY_DATA_SITE_ID }}
+        run: |
+          s="$(curl -fsS --retry 3 --max-time 20 -H "Authorization: Bearer $NETLIFY_AUTH_TOKEN" "https://api.netlify.com/api/v1/sites/$NETLIFY_SITE_ID")" ||
+            { echo "::error::couldn't look up the data site: check NETLIFY_AUTH_TOKEN and NETLIFY_DATA_SITE_ID"; exit 1; }
+          while IFS= read -r v; do
+            if [ -n "$v" ]; then echo "::add-mask::$v"; fi
+          done < <(jq -r '.name, .default_domain, .custom_domain, .url, .ssl_url, .account_slug, .account_name, .account_id, (.domain_aliases // [])[] | select(. != null)' <<<"$s")
+          d="$(jq -r '.default_domain // empty' <<<"$s")"
+          if [ -z "$d" ]; then echo "::error::the data site has no address"; exit 1; fi
+          echo "DATA_URL=https://$d" >> "$GITHUB_ENV"
+          if [ -n "$DATA_PATH_SECRET" ]; then
+            if ! [[ "$DATA_PATH_SECRET" =~ ^[A-Za-z0-9_-]{16,}$ ]]; then echo "DATA_PATH_SECRET must be 16+ letters, digits, - or _"; exit 1; fi
+            O="o$(printf '%s:open' "$DATA_PATH_SECRET" | sha256sum | cut -c1-32)"
+            echo "::add-mask::$O"
+            echo "OPEN_DIR=/$O" >> "$GITHUB_ENV"
+          fi
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pipeline/requirements.txt
+
+      - run: pip install -r pipeline/requirements.txt && cd pipeline && python -m unittest test_physics
+
+      - name: Make room
+        run: |
+          df -h /
+          nohup sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/share/swift > /dev/null 2>&1 &
+
+      - name: Restore ${{ matrix.model }} data
+        id: restore
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            dist-data/${{ matrix.model }}
+            dist-data/free/${{ matrix.model }}
+            dist-data/free/now/${{ matrix.model }}
+          key: forecast-${{ matrix.model }}-${{ github.run_id }}
+          restore-keys: forecast-${{ matrix.model }}-
+      - name: Restore ${{ matrix.model }} data (one-job layout)
+        if: steps.restore.outputs.cache-matched-key == '' && matrix.model == 'gfs'
+        uses: actions/cache/restore@v6
+        with:
+          path: dist-data/gfs
+          key: forecast-gfs-none
+          restore-keys: forecast-gfs-
+
+      - name: Build ${{ matrix.model }}?
+        id: what
+        env:
+          MODELS: ${{ needs.check.outputs.models }}
+        run: |
+          build=false
+          if [[ " $MODELS " == *" $M "* ]]; then build=true; fi
+          run="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['runId'])" "dist-data/$M/latest.json" 2>/dev/null || true)"
+          if [ -z "$run" ] || [ ! -d "dist-data/$M/$run" ]; then
+            rm -f "dist-data/$M/latest.json" # (else build.py finds that run built already)
+            build=true; echo "$M: published run not on hand, building it"
+          fi
+          echo "build=$build" >> "$GITHUB_OUTPUT"
+          echo "keep_runs=$(cd pipeline && python -c "import build; print('true' if '$M' in build.STORE_AHEAD_H else 'false')")" >> "$GITHUB_OUTPUT"
+          echo "free=$(cd pipeline && python -c "import build; print('true' if '$M' in build.FREE_MODELS else 'false')")" >> "$GITHUB_OUTPUT"
+          if [ ! -f "dist-data/free/$M/latest.json" ]; then echo "free_missing=true" >> "$GITHUB_OUTPUT"; fi
+
+      - name: Netlify CLI
+        uses: actions/cache@v6
+        with:
+          path: /tmp/netlify-cli
+          key: netlify-cli-17.38.1
+
+      - name: Build ${{ matrix.model }}
+        id: build
+        if: steps.what.outputs.build == 'true'
+        continue-on-error: true
+        timeout-minutes: 100
+        env:
+          NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
+          NETLIFY_SITE_ID: ${{ secrets.NETLIFY_DATA_SITE_ID }}
+        run: |
+          (cd pipeline && python build.py --model "$M" --out ../dist-data ${{ inputs.force && '--force' || '' }} ${{ inputs.recompute && '--recompute' || '' }})
+          .github/scripts/pre-upload.sh "$M"
+          df -h / && du -sh "dist-data/$M" "dist-data/$M/_hours" 2>/dev/null || true
+
+      - name: Free 24-hour window
+        if: steps.what.outputs.free == 'true' && (needs.check.outputs.free == 'true' || steps.build.outcome == 'success' || steps.what.outputs.free_missing == 'true')
+        continue-on-error: true
+        env:
+          NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
+          NETLIFY_SITE_ID: ${{ secrets.NETLIFY_DATA_SITE_ID }}
+        run: |
+          (cd pipeline && python build.py --model "$M" --out ../dist-data --free-only)
+          .github/scripts/pre-upload.sh free
+
+      - name: Hand ${{ matrix.model }} on
+        id: hand
+        run: |
+          .github/scripts/pre-upload.sh --wait
+          if [ -f dist-data/.changed ]; then mv dist-data/.changed "dist-data/.changed-$M"; echo "changed=true" >> "$GITHUB_OUTPUT"; fi
+          [ -f "dist-data/$M/latest.json" ] || { echo "::warning::$M has nothing to publish"; exit 0; }
+          mkdir -p /tmp/hand
+          parts=$(cd dist-data && ls -d "$M" "free/$M" "free/now/$M" ".changed-$M" 2> /dev/null)
+          pack() { tar -C dist-data --exclude=_hours --exclude=_quarters --exclude='*.building' -cf - $parts; }
+          if [ -n "$DATA_PATH_SECRET" ]; then pack | openssl enc -aes-256-ctr -pbkdf2 -pass env:DATA_PATH_SECRET -out "/tmp/hand/$M.tar.enc"
+          else pack > "/tmp/hand/$M.tar"; fi
+          ls -l /tmp/hand
+          echo "has=true" >> "$GITHUB_OUTPUT"
+
+      - name: Upload ${{ matrix.model }}'s output
+        if: steps.hand.outputs.has == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: model-${{ matrix.model }}
+          path: /tmp/hand
+          retention-days: 1
+          compression-level: 0 # tiles and packs are compressed already; encrypted, it doesn't compress
+
+      - name: Keep only what the cache holds
+        if: steps.hand.outputs.changed == 'true' && steps.what.outputs.keep_runs != 'true'
+        run: rm -rf dist-data/"$M"/20*
+      - name: Save ${{ matrix.model }} data for the next run
+        if: steps.hand.outputs.changed == 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            dist-data/${{ matrix.model }}
+            dist-data/free/${{ matrix.model }}
+            dist-data/free/now/${{ matrix.model }}
+          key: forecast-${{ matrix.model }}-${{ github.run_id }}
+      - name: Drop replaced caches
+        if: steps.hand.outputs.changed == 'true'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mine="$(gh api "repos/${{ github.repository }}/actions/caches?key=forecast-$M-${{ github.run_id }}" --jq '.total_count')"
+          [ "$mine" -ge 1 ] || { echo "this job's cache isn't there: nothing deleted"; exit 0; }
+          gh api --paginate "repos/${{ github.repository }}/actions/caches?key=forecast-$M-&per_page=100" --jq '.actions_caches[] | "\(.id) \(.key)"' |
+          while read -r id key; do
+            [ "$key" = "forecast-$M-${{ github.run_id }}" ] || { gh api -X DELETE "repos/${{ github.repository }}/actions/caches/$id" > /dev/null && echo "deleted $key"; }
+          done
+
+  mapdata:
+    needs: check
+    if: needs.check.outputs.any == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      actions: write # dropping the replaced caches
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pipeline/requirements.txt
+
+      - run: pip install -r pipeline/requirements.txt
+
+      - name: Restore map data
+        id: restore
+        uses: actions/cache/restore@v6
+        with:
+          path: dist-data/airspace
+          key: forecast-mapdata-${{ github.run_id }}
+          restore-keys: forecast-mapdata-
+      - name: Restore map data (one-job layout)
+        if: steps.restore.outputs.cache-matched-key == ''
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            dist-data
+            !dist-data/gfs
+            !dist-data/hrrr/20*
+          key: forecast-main-none
+          restore-keys: forecast-main-
+      - name: Only the map data
+        run: find dist-data -mindepth 1 -maxdepth 1 ! -name airspace -exec rm -rf {} + 2> /dev/null || true
+
+      - name: Map data on hand?
+        id: mapdata
+        run: |
+          if [ -f dist-data/airspace/meta.json ] && [ -f dist-data/airspace/aviation/meta.json ]; then echo "missing=false" >> "$GITHUB_OUTPUT"
+          else echo "missing=true" >> "$GITHUB_OUTPUT"; echo "No airspace or aviation map data on hand: building them"; fi
+
+      - name: Airspace
+        if: needs.check.outputs.airspace == 'true' || steps.mapdata.outputs.missing == 'true'
+        continue-on-error: true
+        timeout-minutes: 25
+        env:
+          OPENAIP_API_KEY: ${{ secrets.OPENAIP_API_KEY }}
+        run: cd pipeline && python airspace.py --out ../dist-data
+
+      - name: Aviation map data
+        if: needs.check.outputs.airspace == 'true' || steps.mapdata.outputs.missing == 'true'
+        continue-on-error: true
+        timeout-minutes: 20
+        run: cd pipeline && python aviation.py --out ../dist-data
+
+      - name: Hand it on
+        id: hand
+        run: |
+          mkdir -p dist-data && touch dist-data/.mapdata # (keeps the artifact's paths under dist-data)
+          if [ -f dist-data/.changed ]; then mv dist-data/.changed dist-data/.changed-mapdata; echo "changed=true" >> "$GITHUB_OUTPUT"; fi
+      - name: Upload map data
+        uses: actions/upload-artifact@v7
+        with:
+          name: mapdata
+          path: |
+            dist-data/airspace
+            dist-data/.changed-mapdata
+            dist-data/.mapdata
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 1
+      - name: Save map data for the next run
+        if: steps.hand.outputs.changed == 'true' || steps.restore.outputs.cache-matched-key == ''
+        uses: actions/cache/save@v6
+        with:
+          path: dist-data/airspace
+          key: forecast-mapdata-${{ github.run_id }}
+      - name: Drop replaced caches
+        if: steps.hand.outputs.changed == 'true' || steps.restore.outputs.cache-matched-key == ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mine="$(gh api "repos/${{ github.repository }}/actions/caches?key=forecast-mapdata-${{ github.run_id }}" --jq '.total_count')"
+          [ "$mine" -ge 1 ] || exit 0
+          gh api --paginate "repos/${{ github.repository }}/actions/caches?per_page=100" --jq '.actions_caches[] | "\(.id) \(.key)"' |
+          while read -r id key; do
+            case "$key" in
+              forecast-mapdata-${{ github.run_id }}) ;;
+              forecast-mapdata-*|forecast-main-*|forecast-data-*) gh api -X DELETE "repos/${{ github.repository }}/actions/caches/$id" > /dev/null && echo "deleted $key" ;;
+            esac
+          done
+
+  publish:
+    needs: [check, model, mapdata]
+    if: ${{ !cancelled() && needs.check.outputs.any == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      actions: write # deleting this run's hand-off artifacts
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Data site
+        if: true
+        env:
+          NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
+          NETLIFY_SITE_ID: ${{ secrets.NETLIFY_DATA_SITE_ID }}
+        run: |
+          s="$(curl -fsS --retry 3 --max-time 20 -H "Authorization: Bearer $NETLIFY_AUTH_TOKEN" "https://api.netlify.com/api/v1/sites/$NETLIFY_SITE_ID")" ||
+            { echo "::error::couldn't look up the data site: check NETLIFY_AUTH_TOKEN and NETLIFY_DATA_SITE_ID"; exit 1; }
+          while IFS= read -r v; do
+            if [ -n "$v" ]; then echo "::add-mask::$v"; fi
+          done < <(jq -r '.name, .default_domain, .custom_domain, .url, .ssl_url, .account_slug, .account_name, .account_id, (.domain_aliases // [])[] | select(. != null)' <<<"$s")
+          d="$(jq -r '.default_domain // empty' <<<"$s")"
+          if [ -z "$d" ]; then echo "::error::the data site has no address"; exit 1; fi
+          echo "DATA_URL=https://$d" >> "$GITHUB_ENV"
+          if [ -n "$DATA_PATH_SECRET" ]; then
+            if ! [[ "$DATA_PATH_SECRET" =~ ^[A-Za-z0-9_-]{16,}$ ]]; then echo "DATA_PATH_SECRET must be 16+ letters, digits, - or _"; exit 1; fi
+            O="o$(printf '%s:open' "$DATA_PATH_SECRET" | sha256sum | cut -c1-32)"
+            echo "::add-mask::$O"
+            echo "OPEN_DIR=/$O" >> "$GITHUB_ENV"
+          fi
+
+      - name: Fetch the models
+        uses: actions/download-artifact@v8
+        with:
+          pattern: model-*
+          path: /tmp/hand
+          merge-multiple: true
+        continue-on-error: true # none: no model had output (the deploy then waits, below)
+      - name: Fetch the map data
+        uses: actions/download-artifact@v8
+        with:
+          name: mapdata
+          path: dist-data
+        continue-on-error: true # none: no map data on hand (the deploy then waits, below)
+
+      - name: Unpack the models
+        run: |
+          mkdir -p dist-data
+          for f in /tmp/hand/*.tar.enc /tmp/hand/*.tar; do
+            [ -f "$f" ] || continue
+            case "$f" in
+              *.enc) openssl enc -d -aes-256-ctr -pbkdf2 -pass env:DATA_PATH_SECRET -in "$f" | tar -C dist-data -xf - ;;
+              *) tar -C dist-data -xf "$f" ;;
+            esac
+            echo "$(basename "$f"): unpacked"
+          done
+          rm -rf /tmp/hand
+          if [ -d dist-data/free ]; then find dist-data/free -mindepth 4 -maxdepth 4 -type d -path '*/h/*' -printf '::add-mask::%f\n'; fi
+
+      - name: Anything new?
+        id: changed
+        env:
+          ACTIVE: ${{ needs.check.outputs.active }}
+          REQUIRED: ${{ needs.check.outputs.required }}
+        run: |
+          for m in $(jq -r '.[]' <<<"$ACTIVE"); do
+            if [ ! -f "dist-data/$m/latest.json" ]; then
+              if jq -e --arg m "$m" 'index($m) != null' <<<"$REQUIRED" > /dev/null; then echo "::warning::$m has nothing to publish: no deploy this time"; exit 0; fi
+              echo "::warning::$m has nothing to publish: deploying without it"
+            fi
+          done
+          for f in free/hrrr/latest.json free/gfs/latest.json airspace/meta.json airspace/aviation/meta.json; do
+            if [ ! -f "dist-data/$f" ]; then echo "::warning::no $f: no deploy this time"; exit 0; fi
+          done
+          if ls dist-data/.changed-* > /dev/null 2>&1; then echo "changed: $(cd dist-data && ls .changed-* | sed 's/^.changed-//' | tr '\n' ' ')"; echo "yes=true" >> "$GITHUB_OUTPUT"; rm -f dist-data/.changed-*
+          else echo "Nothing new"; fi
+
+      - name: Assemble site
+        if: steps.changed.outputs.yes == 'true'
+        run: |
+          P="${DATA_PATH_SECRET:+/$DATA_PATH_SECRET}"
+          mkdir -p "site$P"
+          OPEN_EX=(); if [ -n "$DATA_PATH_SECRET" ]; then OPEN_EX=(--exclude '/free/' --exclude '/airspace/'); fi
+          rsync -a --delete --link-dest="$PWD/dist-data/" --exclude '_hours/' --exclude '_quarters/' --exclude '*.building/' --exclude '.changed*' --exclude '.model-*' --exclude '.mapdata' "${OPEN_EX[@]}" dist-data/ "site$P/"
+          sed "s#^/#$P/#" pipeline/data-site/_headers > site/_headers
+          if [ -n "$DATA_PATH_SECRET" ]; then
+            O="$OPEN_DIR"
+            for d in free airspace; do
+              if [ -d "dist-data/$d" ]; then mkdir -p "site$O/$d"; rsync -a --link-dest="$PWD/dist-data/$d/" --exclude '*.building/' "dist-data/$d/" "site$O/$d/"; fi
+            done
+            printf '%s/free/*/20*\n  Cache-Control: public, max-age=31536000, immutable\n%s/airspace/*\n  Cache-Control: public, max-age=3600\n%s/*\n  X-Robots-Tag: noindex, nofollow\n' "$O" "$O" "$O" >> site/_headers
+          fi
+          printf "User-agent: *\nDisallow: /\n" > site/robots.txt
+          printf '[build]\n  publish = "."\n' > site/netlify.toml
+          du -sh site; find site -type f | wc -l
+
+      - name: Netlify CLI
+        uses: actions/cache@v6
+        with:
+          path: /tmp/netlify-cli
+          key: netlify-cli-17.38.1
+
+      - name: Deploy to Netlify data site
+        if: steps.changed.outputs.yes == 'true'
+        env:
+          NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
+          NETLIFY_SITE_ID: ${{ secrets.NETLIFY_DATA_SITE_ID }}
+        working-directory: site
+        run: |
+          CLI="$(../.github/scripts/netlify-cli.sh)"
+          "$CLI" deploy --prod --dir . --functions /tmp/no-functions --message "forecast ${{ github.run_id }}"
+
+      - name: Drop the hand-off files
         if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts" --jq '.artifacts[] | "\(.id) \(.name)"' |
+          while read -r id name; do gh api -X DELETE "repos/${{ github.repository }}/actions/artifacts/$id" > /dev/null && echo "deleted $name"; done
+
+  cleanup:
+    needs: [check, model, mapdata, publish]
+    if: always() && needs.check.result != 'skipped'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - name: Delete old runs
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
@@ -300,5 +495,5 @@ jobs:
           ids="$(gh api --paginate "repos/${{ github.repository }}/actions/runs?status=completed&per_page=100" \
             --jq ".workflow_runs[] | select((.path | startswith(\".github/workflows/forecast-data\")) and (.path != \"$self\" or .created_at < \"$before\")) | .id")"
           for id in $ids; do
-            gh api -X DELETE "repos/${{ github.repository }}/actions/runs/$id" >/dev/null && echo "deleted $id"
+            gh api -X DELETE "repos/${{ github.repository }}/actions/runs/$id" > /dev/null && echo "deleted $id"
           done
