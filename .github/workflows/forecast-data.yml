@@ -100,7 +100,7 @@ jobs:
     timeout-minutes: 120
     permissions:
       contents: read
-      actions: write # dropping this model's replaced caches
+      actions: write # its store (an artifact of an earlier run); dropping the replaced ones
     strategy:
       fail-fast: false
       matrix:
@@ -145,23 +145,51 @@ jobs:
           df -h /
           nohup sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/share/swift > /dev/null 2>&1 &
 
-      - name: Restore ${{ matrix.model }} data
-        id: restore
+      - name: Find ${{ matrix.model }}'s store
+        id: store
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          a="$(gh api "repos/${{ github.repository }}/actions/artifacts?name=store-$M&per_page=20" \
+            --jq '[.artifacts[] | select(.expired | not)] | sort_by(.created_at) | last | select(. != null) | "\(.workflow_run.id) \(.created_at) \(.size_in_bytes)"')"
+          if [ -n "$a" ]; then read -r run at size <<<"$a"; echo "run=$run" >> "$GITHUB_OUTPUT"; echo "store-$M: run $run, $at, $((size / 1048576)) MB"
+          else echo "no store-$M on hand"; fi
+      - name: Fetch ${{ matrix.model }}'s store
+        if: steps.store.outputs.run != ''
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          name: store-${{ matrix.model }}
+          path: /tmp/store
+          run-id: ${{ steps.store.outputs.run }}
+          github-token: ${{ github.token }}
+      - name: Unpack ${{ matrix.model }}'s store
+        id: unpack
+        if: steps.store.outputs.run != ''
+        run: |
+          mkdir -p dist-data
+          f="$(ls /tmp/store/store-"$M".tar* 2> /dev/null | head -1 || true)"
+          ok=false
+          if [ -n "$f" ]; then
+            case "$f" in
+              *.enc) openssl enc -d -aes-256-ctr -pbkdf2 -pass env:DATA_PATH_SECRET -in "$f" | tar -C dist-data -xf - && ok=true ;;
+              *) tar -C dist-data -xf "$f" && ok=true ;;
+            esac
+          fi
+          rm -rf /tmp/store
+          if [ "$ok" = true ]; then echo "ok=true" >> "$GITHUB_OUTPUT"; du -sh "dist-data/$M"
+          else echo "::warning::store-$M didn't unpack: starting $M from nothing"; rm -rf "dist-data/$M" "dist-data/free/$M" "dist-data/free/now/$M"; fi
+      - name: Restore ${{ matrix.model }} data (cache)
+        if: steps.unpack.outputs.ok != 'true'
         uses: actions/cache/restore@v6
         with:
           path: |
             dist-data/${{ matrix.model }}
             dist-data/free/${{ matrix.model }}
             dist-data/free/now/${{ matrix.model }}
-          key: forecast-${{ matrix.model }}-${{ github.run_id }}
+          key: forecast-${{ matrix.model }}-none
           restore-keys: forecast-${{ matrix.model }}-
-      - name: Restore ${{ matrix.model }} data (one-job layout)
-        if: steps.restore.outputs.cache-matched-key == '' && matrix.model == 'gfs'
-        uses: actions/cache/restore@v6
-        with:
-          path: dist-data/gfs
-          key: forecast-gfs-none
-          restore-keys: forecast-gfs-
 
       - name: Build ${{ matrix.model }}?
         id: what
@@ -232,29 +260,45 @@ jobs:
           retention-days: 1
           compression-level: 0 # tiles and packs are compressed already; encrypted, it doesn't compress
 
-      - name: Keep only what the cache holds
+      - name: Keep only what the store holds
         if: steps.hand.outputs.changed == 'true' && steps.what.outputs.keep_runs != 'true'
         run: rm -rf dist-data/"$M"/20*
-      - name: Save ${{ matrix.model }} data for the next run
+      - name: Pack ${{ matrix.model }}'s store
+        id: pack
         if: steps.hand.outputs.changed == 'true'
-        uses: actions/cache/save@v6
+        continue-on-error: true
+        run: |
+          mkdir -p /tmp/store-out
+          parts=$(cd dist-data && ls -d "$M" "free/$M" "free/now/$M" 2> /dev/null || true)
+          pack() { tar -C dist-data --exclude='*.building' -cf - $parts; }
+          if [ -n "$DATA_PATH_SECRET" ]; then pack | openssl enc -aes-256-ctr -pbkdf2 -pass env:DATA_PATH_SECRET -out "/tmp/store-out/store-$M.tar.enc"
+          else pack > "/tmp/store-out/store-$M.tar"; fi
+          ls -l /tmp/store-out
+      - name: Save ${{ matrix.model }}'s store for the next run
+        id: save
+        if: steps.pack.outcome == 'success'
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
         with:
-          path: |
-            dist-data/${{ matrix.model }}
-            dist-data/free/${{ matrix.model }}
-            dist-data/free/now/${{ matrix.model }}
-          key: forecast-${{ matrix.model }}-${{ github.run_id }}
-      - name: Drop replaced caches
-        if: steps.hand.outputs.changed == 'true'
+          name: store-${{ matrix.model }}
+          path: /tmp/store-out
+          retention-days: 5
+          compression-level: 0
+      - name: Drop replaced stores
+        if: steps.save.outcome == 'success'
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
+          MINE: ${{ steps.save.outputs.artifact-id }}
         run: |
-          mine="$(gh api "repos/${{ github.repository }}/actions/caches?key=forecast-$M-${{ github.run_id }}" --jq '.total_count')"
-          [ "$mine" -ge 1 ] || { echo "this job's cache isn't there: nothing deleted"; exit 0; }
+          [ -n "$MINE" ] || { echo "this job's store has no id: nothing deleted"; exit 0; }
+          gh api "repos/${{ github.repository }}/actions/artifacts?name=store-$M&per_page=100" --jq '.artifacts[] | "\(.id) \(.workflow_run.id)"' |
+          while read -r id run; do
+            [ "$id" = "$MINE" ] || { gh api -X DELETE "repos/${{ github.repository }}/actions/artifacts/$id" > /dev/null && echo "deleted store-$M of run $run"; }
+          done
           gh api --paginate "repos/${{ github.repository }}/actions/caches?key=forecast-$M-&per_page=100" --jq '.actions_caches[] | "\(.id) \(.key)"' |
           while read -r id key; do
-            [ "$key" = "forecast-$M-${{ github.run_id }}" ] || { gh api -X DELETE "repos/${{ github.repository }}/actions/caches/$id" > /dev/null && echo "deleted $key"; }
+            gh api -X DELETE "repos/${{ github.repository }}/actions/caches/$id" > /dev/null && echo "deleted cache $key"
           done
 
   mapdata:
@@ -472,7 +516,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts" --jq '.artifacts[] | "\(.id) \(.name)"' |
+          gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts?per_page=100" --jq '.artifacts[] | select(.name | startswith("store-") | not) | "\(.id) \(.name)"' |
           while read -r id name; do gh api -X DELETE "repos/${{ github.repository }}/actions/artifacts/$id" > /dev/null && echo "deleted $name"; done
 
   cleanup:
@@ -494,6 +538,9 @@ jobs:
           self=".github/workflows/${SELF#*/.github/workflows/}"; self="${self%%@*}"
           ids="$(gh api --paginate "repos/${{ github.repository }}/actions/runs?status=completed&per_page=100" \
             --jq ".workflow_runs[] | select((.path | startswith(\".github/workflows/forecast-data\")) and (.path != \"$self\" or .created_at < \"$before\")) | .id")"
+          keep="$(gh api --paginate "repos/${{ github.repository }}/actions/artifacts?per_page=100" \
+            --jq '.artifacts[] | select((.name | startswith("store-")) and (.expired | not)) | .workflow_run.id')" || { echo "couldn't list the stores: nothing deleted"; exit 0; }
           for id in $ids; do
+            if grep -qx "$id" <<<"$keep"; then echo "kept $id (a store)"; continue; fi
             gh api -X DELETE "repos/${{ github.repository }}/actions/runs/$id" > /dev/null && echo "deleted $id"
           done
