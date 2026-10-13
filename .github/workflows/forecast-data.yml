@@ -282,7 +282,7 @@ jobs:
         with:
           name: store-${{ matrix.model }}
           path: /tmp/store-out
-          retention-days: 5
+          retention-days: 3 # the repo's maximum (Settings → Actions); more is cut to it with a warning
           compression-level: 0
       - name: Drop replaced stores
         if: steps.save.outcome == 'success'
