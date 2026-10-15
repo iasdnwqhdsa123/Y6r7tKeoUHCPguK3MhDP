@@ -502,6 +502,25 @@ def level_heights(levels, z, targets=CC_LEVELS):
         w = 0.0 if i == j else (math.log(pt) - lp[i]) / (lp[j] - lp[i])
         out.append(z[i] + w * (z[j] - z[i]))
     return np.stack(out).astype(np.float32)
+MIX_BANDS = ((0.0, 2000.0), (2000.0, 5000.0), (5000.0, math.inf))
+
+def std_height(p):
+    return 44330.8 * (1 - (p / 1013.25) ** 0.190263)
+
+def cover_mix(bulk, cc, zs):
+    cc = np.asarray(cc, np.float32)
+    agl = np.array([std_height(p) for p in CC_LEVELS], np.float32)[:, None, None] - zs[None]
+    out = []
+    for (lo, hi), b in zip(MIX_BANDS, bulk):
+        inband = (agl >= lo) & (agl < hi) & np.isfinite(cc)
+        lv = np.where(inband, cc, -np.inf).max(axis=0)
+        lv = np.where(np.isfinite(lv), lv, np.nan)
+        if b is None:
+            out.append(None)
+            continue
+        b = np.asarray(b, np.float32)
+        out.append(np.where(np.isfinite(lv) & np.isfinite(b), 0.5 * (b + lv), b).astype(np.float32))
+    return out
 CEIL_COVER = 50.0
 FOG_RH = 97.0
 

@@ -1473,6 +1473,25 @@ class Sink(unittest.TestCase):
 
 class CloudLevels(unittest.TestCase):
 
+    def test_cover_mix(self):
+        zs = np.array([[150.0]], np.float32)
+        cc = np.zeros((len(P.CC_LEVELS), 1, 1), np.float32)
+        for p in (400, 300):
+            cc[P.CC_LEVELS.index(p)] = 70
+        one = lambda v: np.full((1, 1), v, np.float32)
+        low, mid, high = P.cover_mix([one(40), one(0), one(90)], cc, zs)
+        self.assertAlmostEqual(float(low[0, 0]), 20)
+        self.assertAlmostEqual(float(mid[0, 0]), 0)
+        self.assertAlmostEqual(float(high[0, 0]), 80)
+        low, mid, high = P.cover_mix([one(40), None, one(90)], np.full_like(cc, np.nan), zs)
+        self.assertEqual(float(low[0, 0]), 40)
+        self.assertIsNone(mid)
+        cc2 = np.zeros_like(cc)
+        cc2[0] = 100
+        cc2[0][np.full((1, 1), True)] = np.nan
+        low, _, _ = P.cover_mix([one(0), one(0), one(0)], cc2, np.array([[1500.0]], np.float32))
+        self.assertEqual(float(low[0, 0]), 0)
+
     def cf(self, rh, p=850.0, ps=1000.0, clw=None):
         one = lambda v: np.full((1,), v, np.float32)
         return float(P.cloud_fraction(one(rh), p, one(ps), None if clw is None else one(clw / 1000))[0])
