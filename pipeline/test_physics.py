@@ -1473,24 +1473,31 @@ class Sink(unittest.TestCase):
 
 class CloudLevels(unittest.TestCase):
 
-    def test_cover_mix(self):
-        zs = np.array([[150.0]], np.float32)
-        cc = np.zeros((len(P.CC_LEVELS), 1, 1), np.float32)
-        for p in (400, 300):
-            cc[P.CC_LEVELS.index(p)] = 70
+    def test_calibrate_cover(self):
+        L = P.CC_LEVELS
         one = lambda v: np.full((1, 1), v, np.float32)
-        low, mid, high = P.cover_mix([one(40), one(0), one(90)], cc, zs)
-        self.assertAlmostEqual(float(low[0, 0]), 20)
-        self.assertAlmostEqual(float(mid[0, 0]), 0)
-        self.assertAlmostEqual(float(high[0, 0]), 80)
-        low, mid, high = P.cover_mix([one(40), None, one(90)], np.full_like(cc, np.nan), zs)
-        self.assertEqual(float(low[0, 0]), 40)
-        self.assertIsNone(mid)
+        ps = one(1010)
+        cc = np.zeros((len(L), 1, 1), np.float32)
+        rh = np.full((len(L), 1, 1), 50, np.float32)
+        rh[L.index(850)] = 88
+        cc[L.index(300)], cc[L.index(250)] = (70, 35)
+        icon = ('p', 800.0, 400.0)
+        out = P.calibrate_cover(cc, rh, ps, [one(40), one(0), one(90)], icon)
+        self.assertEqual(float(out[L.index(850), 0, 0]), 40)
+        self.assertEqual(float(out[L.index(900), 0, 0]), 0)
+        self.assertAlmostEqual(float(out[L.index(300), 0, 0]), 90, places=3)
+        self.assertAlmostEqual(float(out[L.index(250), 0, 0]), 45, places=3)
+        self.assertEqual(float(np.nanmax(out[L.index(700):L.index(400), 0, 0])), 0)
         cc2 = np.zeros_like(cc)
-        cc2[0] = 100
-        cc2[0][np.full((1, 1), True)] = np.nan
-        low, _, _ = P.cover_mix([one(0), one(0), one(0)], cc2, np.array([[1500.0]], np.float32))
-        self.assertEqual(float(low[0, 0]), 0)
+        cc2[L.index(950)] = 100
+        cc2[0] = np.nan
+        out = P.calibrate_cover(cc2, rh, ps, [one(30), None, one(np.nan)], icon)
+        self.assertAlmostEqual(float(out[L.index(950), 0, 0]), 30, places=3)
+        self.assertTrue(np.isnan(out[0, 0, 0]))
+        cc3 = np.zeros_like(cc)
+        cc3[L.index(700)] = 50
+        out = P.calibrate_cover(cc3, rh, one(850), [one(100), one(0), one(0)], ('sigma', 0.8, 0.45))
+        self.assertAlmostEqual(float(out[L.index(700), 0, 0]), 100, places=3)
 
     def cf(self, rh, p=850.0, ps=1000.0, clw=None):
         one = lambda v: np.full((1,), v, np.float32)

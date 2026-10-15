@@ -463,7 +463,7 @@ def cloud_fraction(rh, p, ps, clw=None):
     with np.errstate(invalid='ignore'):
         return np.where(sigma <= 1, 100 * cf, np.nan).astype(np.float32)
 
-def cloud_cover_levels(levels, rh, ps, rh2, clw=None, targets=CC_LEVELS):
+def cloud_cover_levels(levels, rh, ps, rh2, clw=None, targets=CC_LEVELS, rh_out=None):
     levels = np.asarray(levels, np.float32)
     out = []
     for pt in targets:
@@ -474,6 +474,8 @@ def cloud_cover_levels(levels, rh, ps, rh2, clw=None, targets=CC_LEVELS):
             lower, upper = (np.flatnonzero(levels > pt), np.flatnonzero(levels < pt))
             if not lower.size or not upper.size:
                 out.append(np.full(np.shape(ps), np.nan, np.float32))
+                if rh_out is not None:
+                    rh_out.append(np.full(np.shape(ps), np.nan, np.float32))
                 continue
             i, j = (lower[np.argmin(levels[lower])], upper[np.argmax(levels[upper])])
             under = levels[i] > ps
@@ -487,7 +489,35 @@ def cloud_cover_levels(levels, rh, ps, rh2, clw=None, targets=CC_LEVELS):
             else:
                 c = None
         out.append(cloud_fraction(r, pt, ps, c))
+        if rh_out is not None:
+            rh_out.append(np.asarray(r, np.float32))
     return np.stack(out)
+COVER_TOPS_NCEP = ('p', 642.0, 350.0)
+
+def calibrate_cover(cc, rh, ps, bulk, tops=COVER_TOPS_NCEP, targets=CC_LEVELS):
+    kind, low_top, mid_top = tops
+    p = np.asarray(targets, np.float32)[:, None, None]
+    ps3 = np.asarray(ps, np.float32)[None]
+    lo_t = low_top * ps3 if kind == 'sigma' else np.float32(low_top)
+    mid_t = mid_top * ps3 if kind == 'sigma' else np.float32(mid_top)
+    out = np.array(cc, np.float32, copy=True)
+    rh = np.asarray(rh, np.float32)
+    for inband, target in zip((p >= lo_t, (p < lo_t) & (p >= mid_t), p < mid_t), bulk):
+        if target is None:
+            continue
+        m = np.broadcast_to(inband, out.shape) & np.isfinite(out)
+        t = np.clip(np.asarray(target, np.float32), 0, 100)
+        ok = np.isfinite(t) & m.any(axis=0)
+        peak = np.where(m, out, -np.inf).max(axis=0)
+        with np.errstate(invalid='ignore', divide='ignore'):
+            scaled = np.clip(out * (t / peak)[None], 0, 100)
+        scale = ok & (peak >= 1)
+        out = np.where(m & scale[None], scaled, out)
+        put = ok & (peak < 1) & (t >= 1)
+        k = np.where(m, np.nan_to_num(rh, nan=-1), -np.inf).argmax(axis=0)
+        at = (np.arange(len(targets))[:, None, None] == k[None]) & put[None] & m
+        out = np.where(at, t[None], np.where(m & put[None], 0, out))
+    return out.astype(np.float32)
 
 def level_heights(levels, z, targets=CC_LEVELS):
     levels = np.asarray(levels, np.float32)
@@ -502,25 +532,6 @@ def level_heights(levels, z, targets=CC_LEVELS):
         w = 0.0 if i == j else (math.log(pt) - lp[i]) / (lp[j] - lp[i])
         out.append(z[i] + w * (z[j] - z[i]))
     return np.stack(out).astype(np.float32)
-MIX_BANDS = ((0.0, 2000.0), (2000.0, 5000.0), (5000.0, math.inf))
-
-def std_height(p):
-    return 44330.8 * (1 - (p / 1013.25) ** 0.190263)
-
-def cover_mix(bulk, cc, zs):
-    cc = np.asarray(cc, np.float32)
-    agl = np.array([std_height(p) for p in CC_LEVELS], np.float32)[:, None, None] - zs[None]
-    out = []
-    for (lo, hi), b in zip(MIX_BANDS, bulk):
-        inband = (agl >= lo) & (agl < hi) & np.isfinite(cc)
-        lv = np.where(inband, cc, -np.inf).max(axis=0)
-        lv = np.where(np.isfinite(lv), lv, np.nan)
-        if b is None:
-            out.append(None)
-            continue
-        b = np.asarray(b, np.float32)
-        out.append(np.where(np.isfinite(lv) & np.isfinite(b), 0.5 * (b + lv), b).astype(np.float32))
-    return out
 CEIL_COVER = 50.0
 FOG_RH = 97.0
 
