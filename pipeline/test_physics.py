@@ -510,6 +510,17 @@ class RainDamp(unittest.TestCase):
         np.testing.assert_allclose(sh[:2], [1.0, 0.0])
         self.assertTrue(np.isnan(sh[2]))
 
+class StormsAndDecks(unittest.TestCase):
+
+    def test_rain_needs_a_deck_to_be_steady(self):
+        import build
+        z = np.zeros(3)
+        rain = np.full(3, 1.5)
+        tcc = np.array([45.0, 95, 70])
+        lcc = np.array([30.0, 90, 88])
+        self.assertEqual(build.convective_rain(z, z, None, rain, None, tcc, lcc, None).tolist(), [True, False, False])
+        self.assertEqual(build.convective_rain(z, z, None, rain).tolist(), [False, False, False])
+
 class ThermalWidth(unittest.TestCase):
 
     def test_matches_allen_and_js(self):

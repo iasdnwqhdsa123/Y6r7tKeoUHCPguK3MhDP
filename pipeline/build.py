@@ -252,7 +252,7 @@ def sun_gate(valid, lat, lon):
 CU_MIN_LOW_CLOUD = 5.0
 CU_MARGIN_NO_CLOUD = 200.0
 CU_LOW_SCT = 20.0
-CU_LOW_BROKEN = 50.0
+CU_LOW_BROKEN = 56.25
 CU_OVERSHOOT = 0.3
 CU_OVERSHOOT_MIN = 150.0
 CU_FLAT = 150.0
@@ -276,20 +276,28 @@ def cumulus_forms(ws, zi, lcl, low_cloud=None):
     near = (ws > 0.5) & (lcl >= zi) & (lcl < zi + np.maximum(CU_OVERSHOOT * zi, CU_OVERSHOOT_MIN))
     return reach & (low >= CU_MIN_LOW_CLOUD) | near & (low >= CU_LOW_SCT) & (low < CU_LOW_BROKEN)
 SHOWERS_SHARE = 0.5
+DECK_TOTAL = 80.0
+OVERCAST = 85.0
 
-def convective_rain(overdev, cudepth, refc, rain, showers=None):
-    conv = (overdev >= 30) | (cudepth >= 2500)
+def no_deck(tcc, lcc=None, mcc=None):
+    if tcc is None:
+        return False
+    over = lambda c: np.zeros(np.shape(tcc), bool) if c is None else np.nan_to_num(c, nan=0) >= OVERCAST
+    return np.isfinite(tcc) & (np.nan_to_num(tcc, nan=100) < DECK_TOTAL) & ~over(lcc) & ~over(mcc)
+
+def convective_rain(overdev, cudepth, refc, rain, showers=None, tcc=None, lcc=None, mcc=None):
+    conv = (overdev >= 30) | (cudepth >= 2500) | no_deck(tcc, lcc, mcc)
     if showers is not None:
         return conv | (np.nan_to_num(showers, nan=0) >= SHOWERS_SHARE)
     if refc is None:
         return conv | (rain >= 6.0)
     return conv | (refc >= 45.0) | (refc >= 40.0) & (rain >= 2.5)
 
-def showers_share(cprate, rain, overdev=None, cudepth=None, radar=None):
+def showers_share(cprate, rain, overdev=None, cudepth=None, radar=None, cover=(None, None, None)):
     if cprate is not None:
         share = np.clip(np.nan_to_num(cprate, nan=0) / np.maximum(rain, 1e-06), 0, 1)
     elif radar is not None:
-        share = convective_rain(overdev, cudepth, radar, rain).astype(np.float32)
+        share = convective_rain(overdev, cudepth, radar, rain, None, *cover).astype(np.float32)
     else:
         return None
     return np.where(rain > 0.1, share, np.nan)
@@ -385,13 +393,21 @@ def analyse(s, lv, levels, grid_step, lat2d, lon2d=None, valid=None):
     else:
         cudeep = cudepth
     overdev = np.clip((cudeep - 2000) / 4000, 0, 1) * np.clip(0.4 + cape / 1500, 0, 1) * 100
-    overdev = np.where((rain > 0.5) & (cape > 300), np.maximum(overdev, 60), overdev)
+    wet_unstable = (rain > 0.5) & (cape > 300)
+    if s.get('cprate') is not None:
+        says = np.nan_to_num(s['cprate'], nan=0) >= SHOWERS_SHARE * rain
+    elif s.get('refmax') is not None:
+        says = np.maximum(np.nan_to_num(s['refmax'], nan=0), 0 if refc is None else refc) >= STORM_DBZ - 10
+    else:
+        says = True
+    overdev = np.where(wet_unstable, np.maximum(overdev, np.where(says, 60, 45)), overdev)
     if refc is not None:
         storm = (refc >= STORM_DBZ) | (refc >= STORM_DBZ - 10) & (cape >= 100)
         overdev = np.where(storm, np.maximum(overdev, 70), overdev)
     radar = refc if refc is None or s.get('refmax') is None else np.maximum(refc, np.nan_to_num(s['refmax'], nan=0))
-    showers = showers_share(s.get('cprate'), rain, overdev, cudepth, radar)
-    ws_out = ws * rain_damp(rain, convective_rain(overdev, cudepth, refc, rain, showers), ws)
+    cover = (s.get('tcc'), s.get('lcc'), s.get('mcc'))
+    showers = showers_share(s.get('cprate'), rain, overdev, cudepth, radar, cover)
+    ws_out = ws * rain_damp(rain, convective_rain(overdev, cudepth, refc, rain, showers, *cover), ws)
     thermals_here = ws > 0
     zt = zs + 2 + zi
     thml = P.theta(*prof.at(zs + 2 + 0.5 * zi, 't', 'lnp'))
