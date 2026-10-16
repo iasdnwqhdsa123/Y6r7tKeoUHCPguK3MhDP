@@ -462,8 +462,32 @@ class CumulusOrBlue(unittest.TestCase):
         ws = np.full(5, 2.0)
         zi = np.full(5, 1000.0)
         lcl = np.array([1200.0, 1200, 1200, 1600, 1100])
-        low = np.array([35.0, 10, 60, 35, 20])
+        low = np.array([35.0, 3, 60, 35, 20])
         self.assertEqual(build.cumulus_forms(ws, zi, lcl, low).tolist(), [True, False, False, False, True])
+        far = build.cumulus_forms(np.full(1, 2.0), np.full(1, 1000.0), np.full(1, 1600.0), np.full(1, 35.0))
+        self.assertFalse(far[0], 'LCL 600 m over the thermals: blue (zi + max(0.5 zi, 500))')
+
+    def test_cover_from_the_band_at_the_base(self):
+        import build
+        import physics as P
+        ps = np.full((1, 2), 780.0)
+        p_base = np.array([[600.0, 700.0]])
+        bands = [np.array([[2.0, 30]]), np.array([[40.0, 0]]), np.array([[0.0, 0]])]
+        np.testing.assert_allclose(build.cumulus_cover(p_base, ps, P.COVER_TOPS_NCEP, bands), [[40, 30]])
+        cc = np.zeros((len(P.CC_LEVELS), 1, 2), np.float32)
+        cc[P.CC_LEVELS.index(600)] = 40
+        cc[P.CC_LEVELS.index(700), 0, 1] = 30
+        np.testing.assert_allclose(build.cumulus_cover(p_base, ps, P.COVER_TOPS_NCEP, bands, cc), [[40, 30]])
+        cc[:] = 0
+        cc[P.CC_LEVELS.index(500)] = 40
+        out = build.cumulus_cover(p_base, ps, P.COVER_TOPS_NCEP, bands, cc)
+        self.assertLess(out[0, 0], build.CU_MIN_LOW_CLOUD)
+
+    def test_icon_bands(self):
+        import physics as P
+        lo, mid = P.band_tops(('icon', 0.7895, 0.3948), np.array([1000.0, 750.0]))
+        np.testing.assert_allclose(lo, [789.5, 592.1], atol=0.2)
+        np.testing.assert_allclose(mid, [394.8, 341.9], atol=0.2)
 
     def test_margin_without_low_cloud(self):
         import build
@@ -509,6 +533,34 @@ class RainDamp(unittest.TestCase):
         sh = build.showers_share(None, rain, z, z, np.array([48.0, 20, 50]))
         np.testing.assert_allclose(sh[:2], [1.0, 0.0])
         self.assertTrue(np.isnan(sh[2]))
+
+class BandsAboveGround(unittest.TestCase):
+
+    def test_bands_by_height(self):
+        import build
+        import physics as P
+        L = len(P.CC_LEVELS)
+        ps = np.full((1, 3), 1000.0)
+        h = np.array([110.0, 540, 990, 1460, 1950, 3010, 4200, 5570, 7180, 9160, 10360, 11800], np.float32)[:, None, None] * np.ones((1, 1, 3))
+        cc = np.zeros((L, 1, 3), np.float32)
+        cc[P.CC_LEVELS.index(700), 0, 0] = 80
+        cc[P.CC_LEVELS.index(900), 0, 1] = 70
+        lcc, mcc = (np.array([[80.0, 70, 40]]), np.array([[0.0, 0, 0]]))
+        low, mid = build.bands_agl([lcc, mcc], cc, h, ps, P.COVER_TOPS_NCEP)
+        np.testing.assert_allclose(low, [[0, 70, 40]])
+        np.testing.assert_allclose(mid, [[80, 0, 0]])
+
+    def test_high_ground_mid_band_is_low(self):
+        import build
+        import physics as P
+        L = len(P.CC_LEVELS)
+        ps = np.full((1, 1), 780.0)
+        h = np.array([np.nan, np.nan, np.nan, np.nan, np.nan, 750, 1900, 3300, 4900, 6900, 8100, 9500], np.float32)[:, None, None]
+        cc = np.zeros((L, 1, 1), np.float32)
+        cc[P.CC_LEVELS.index(600)] = 60
+        low, mid = build.bands_agl([np.array([[0.0]]), np.array([[60.0]])], cc, h, ps, P.COVER_TOPS_NCEP)
+        np.testing.assert_allclose(low, [[60]])
+        np.testing.assert_allclose(mid, [[0]])
 
 class StormsAndDecks(unittest.TestCase):
 

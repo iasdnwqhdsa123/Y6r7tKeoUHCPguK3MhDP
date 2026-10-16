@@ -494,12 +494,18 @@ def cloud_cover_levels(levels, rh, ps, rh2, clw=None, targets=CC_LEVELS, rh_out=
     return np.stack(out)
 COVER_TOPS_NCEP = ('p', 642.0, 350.0)
 
-def calibrate_cover(cc, rh, ps, bulk, tops=COVER_TOPS_NCEP, targets=CC_LEVELS):
+def band_tops(tops, ps):
     kind, low_top, mid_top = tops
+    ps = np.asarray(ps, np.float32)
+    if kind == 'sigma':
+        return (low_top * ps, mid_top * ps)
+    if kind == 'icon':
+        return (low_top * ps, mid_top * np.sqrt(1000.0 * np.maximum(ps, 0)))
+    return (np.full(ps.shape, low_top, np.float32), np.full(ps.shape, mid_top, np.float32))
+
+def calibrate_cover(cc, rh, ps, bulk, tops=COVER_TOPS_NCEP, targets=CC_LEVELS):
     p = np.asarray(targets, np.float32)[:, None, None]
-    ps3 = np.asarray(ps, np.float32)[None]
-    lo_t = low_top * ps3 if kind == 'sigma' else np.float32(low_top)
-    mid_t = mid_top * ps3 if kind == 'sigma' else np.float32(mid_top)
+    lo_t, mid_t = (a[None] for a in band_tops(tops, ps))
     out = np.array(cc, np.float32, copy=True)
     rh = np.asarray(rh, np.float32)
     for inband, target in zip((p >= lo_t, (p < lo_t) & (p >= mid_t), p < mid_t), bulk):

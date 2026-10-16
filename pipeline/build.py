@@ -251,11 +251,11 @@ def sun_gate(valid, lat, lon):
     return np.clip((sun_elevation(valid, lat, lon) - lo) / (hi - lo), 0, 1)
 CU_MIN_LOW_CLOUD = 5.0
 CU_MARGIN_NO_CLOUD = 200.0
-CU_LOW_SCT = 20.0
 CU_LOW_BROKEN = 56.25
-CU_OVERSHOOT = 0.3
-CU_OVERSHOOT_MIN = 150.0
+CU_OVERSHOOT = 0.5
+CU_OVERSHOOT_MIN = 500.0
 CU_FLAT = 150.0
+CU_NEAR_HPA = 75.0
 DALR = 9.8
 BLOCK_LAYER = 500.0
 WAVE_BAND_M = (300.0, 600.0, 900.0)
@@ -268,13 +268,54 @@ def thermal_width(zi, blapse, bs):
     return np.where(zi > 200, d0 * stab * shear, np.nan)
 STORM_DBZ = 50.0
 
-def cumulus_forms(ws, zi, lcl, low_cloud=None):
+def cumulus_forms(ws, zi, lcl, cover=None):
     reach = (ws > 0.5) & (lcl < zi)
-    if low_cloud is None or np.all(np.isnan(low_cloud)):
+    if cover is None or np.all(np.isnan(cover)):
         return reach & (zi - lcl > CU_MARGIN_NO_CLOUD)
-    low = np.nan_to_num(low_cloud, nan=0)
-    near = (ws > 0.5) & (lcl >= zi) & (lcl < zi + np.maximum(CU_OVERSHOOT * zi, CU_OVERSHOOT_MIN))
-    return reach & (low >= CU_MIN_LOW_CLOUD) | near & (low >= CU_LOW_SCT) & (low < CU_LOW_BROKEN)
+    c = np.nan_to_num(cover, nan=0)
+    near = (ws > 0.5) & (lcl >= zi) & (lcl < zi + np.maximum(CU_OVERSHOOT * zi, CU_OVERSHOOT_MIN)) & (c < CU_LOW_BROKEN)
+    return (reach | near) & (c >= CU_MIN_LOW_CLOUD)
+LOW_AGL, MID_AGL = (2000.0, 7000.0)
+
+def bands_agl(bands, cc, h_agl, ps, tops, cc_levels=P.CC_LEVELS):
+    lcc, mcc = bands
+    if lcc is None or mcc is None:
+        return None
+    lo_t, mid_t = P.band_tops(tops, ps)
+    p = np.asarray(cc_levels, np.float32)[:, None, None]
+    ok = np.isfinite(cc) & np.isfinite(h_agl)
+    ccz = np.where(ok, cc, 0)
+
+    def peak_height(inband):
+        m = inband & ok
+        k = np.where(m, ccz, -1).argmax(axis=0)
+        h = np.take_along_axis(h_agl, k[None], axis=0)[0]
+        return np.where(np.where(m, ccz, 0).max(axis=0) >= 1, h, np.nan)
+    h_low = peak_height(p >= lo_t[None])
+    h_mid = peak_height((p < lo_t[None]) & (p >= mid_t[None]))
+    L, M = (np.nan_to_num(lcc, nan=0), np.nan_to_num(mcc, nan=0))
+    low_is_low = ~(h_low >= LOW_AGL)
+    mid_is_low = h_mid < LOW_AGL
+    within = lambda lo, hi: np.where(ok & (h_agl >= lo) & (h_agl < hi) & (p >= mid_t[None]), ccz, 0).max(axis=0)
+    low = np.maximum.reduce([np.where(low_is_low, L, 0), np.where(mid_is_low, M, 0), within(-np.inf, LOW_AGL)])
+    mid = np.maximum.reduce([np.where(low_is_low, 0, L), np.where(mid_is_low, 0, M), within(LOW_AGL, np.inf)])
+    inside = np.isfinite(lcc)
+    return (np.where(inside, low, np.nan), np.where(inside, mid, np.nan))
+
+def cumulus_cover(p_base, ps, tops, bands, cc=None, cc_levels=P.CC_LEVELS):
+    if bands[0] is None:
+        return None
+    lo_t, mid_t = P.band_tops(tops, ps)
+    z = np.zeros(np.shape(p_base), np.float32)
+    lcc, mcc, hcc = (z if b is None else np.nan_to_num(b, nan=0) for b in bands)
+    cover = np.where(p_base >= lo_t, lcc, np.where(p_base >= mid_t, mcc, hcc))
+    if cc is None:
+        return cover
+    p = np.asarray(cc_levels, np.float32)[:, None, None]
+    near = np.abs(p - p_base[None]) <= CU_NEAR_HPA
+    at = np.where(near, np.nan_to_num(cc, nan=0), 0).max(axis=0)
+    elsewhere = near.any(axis=0) & (at < CU_MIN_LOW_CLOUD)
+    return np.where(elsewhere, np.minimum(cover, at), cover)
 SHOWERS_SHARE = 0.5
 DECK_TOTAL = 80.0
 OVERCAST = 85.0
@@ -366,7 +407,11 @@ def analyse(s, lv, levels, grid_step, lat2d, lon2d=None, valid=None):
         wml += P.mixing_ratio(td, p)
     wml /= n
     lcl = np.maximum(0, 125 * (s['t2'] - P.dewpoint_from_w(wml, s['ps'])))
-    has_cu = cumulus_forms(ws, zi, lcl, s.get('lcc'))
+    tops = lv.get('cover_tops', P.COVER_TOPS_NCEP)
+    ccl = cloud_levels(s, lv, levels, tops)
+    p_base = prof.at(zs + 2 + lcl, 'lnp')
+    cu_cover = cumulus_cover(p_base, s['ps'], tops, [s.get('lcc'), s.get('mcc'), s.get('hcc')], np.stack([ccl[f'cc{p}'] for p in P.CC_LEVELS]))
+    has_cu = cumulus_forms(ws, zi, lcl, cu_cover)
     depth = np.where(has_cu, lcl, np.where(ws > 0, zi, 0))
     d = np.maximum(np.where(has_cu, lcl, zi), 100)
     ub, vb = P.layer_mean(prof, zs + 2, zs + 2 + d, ['u', 'v'])
@@ -420,7 +465,10 @@ def analyse(s, lv, levels, grid_step, lat2d, lon2d=None, valid=None):
         sounding[f'q_m{dz}'] = P.mixing_ratio(np.minimum(td, t), p) * 1000
     sounding = {k: np.where(thermals_here, v, np.nan) for k, v in sounding.items()}
     out = {'wstar': ws_out, 'zi': zi, 'depth': depth, 'cubase': np.where(has_cu, lcl, np.nan), 'cudepth': cudepth, 'overdev': overdev, 'bs': bs, 'blapse': np.clip(blapse, 0, 15), 'twidth': twidth, 'cape': cape, 'rain': rain, 'showers': showers, 't2': s['t2'], 'td2': s['td2'], 'mslp': s.get('mslp'), 'sst': water_temp(s), 'heat': heat, 'densalt': P.density_altitude(s['ps'], s['t2']), 'gust': s.get('gust'), 'cloud': s.get('tcc'), 'cloudlow': s.get('lcc'), 'cloudmid': s.get('mcc'), 'cloudhigh': s.get('hcc'), 'pm25': s.get('smoke'), 'snowd': None if s.get('snod') is None else np.maximum(s['snod'], 0), 'u_sfc': s['u10'], 'v_sfc': s['v10'], 'u_blavg': ub, 'v_blavg': vb, 'u_bltop': ut, 'v_bltop': vt}
-    out.update(cloud_levels(s, lv, levels, lv.get('cover_tops', P.COVER_TOPS_NCEP)))
+    out.update(ccl)
+    agl = bands_agl([s.get('lcc'), s.get('mcc')], np.stack([ccl[f'cc{p}'] for p in P.CC_LEVELS]), P.level_heights(levels, lv['z']) - zs[None], s['ps'], tops)
+    if agl is not None:
+        out['cloudlow'], out['cloudmid'] = agl
     out.update(sounding)
     for m in WIND_AGL_M:
         out[f'u_g{m}'], out[f'v_g{m}'] = prof.at(zs + m, 'u', 'v')
@@ -519,14 +567,16 @@ def cloud_levels(s, lv, levels, tops=P.COVER_TOPS_NCEP):
         clw, own = (lv.get('clw'), lv.get('cc'))
     have = [float(p) for p in levels]
     if own is not None and all((p in have for p in P.CC_LEVELS)):
-        own = np.clip(own[[have.index(p) for p in P.CC_LEVELS]], 0, 100)
+        idx = [have.index(p) for p in P.CC_LEVELS]
+        own = np.clip(own[idx], 0, 100)
         with np.errstate(invalid='ignore'):
             cc = np.where(np.array(P.CC_LEVELS, np.float32)[:, None, None] <= ps[None], own, np.nan)
+        rh_t = list(rh[idx]) if rh is not None else None
     else:
         rh_t = []
         cc = P.cloud_cover_levels(levels, rh, ps, P.rh_cloud(s['t2'], s['td2']), clw, rh_out=rh_t)
-        if any((s.get(k) is not None for k in ('lcc', 'mcc', 'hcc'))):
-            cc = P.calibrate_cover(cc, np.stack(rh_t), ps, [s.get('lcc'), s.get('mcc'), s.get('hcc')], tops)
+    if rh_t is not None and any((s.get(k) is not None for k in ('lcc', 'mcc', 'hcc'))):
+        cc = P.calibrate_cover(cc, np.stack(rh_t), ps, [s.get('lcc'), s.get('mcc'), s.get('hcc')], tops)
     return {f'cc{p}': a for p, a in zip(P.CC_LEVELS, cc)}
 RADAR_BLUR_KM = 4.0
 
@@ -767,7 +817,7 @@ def load_hour(src, run, fh, regrid_holder, region, valid, raw=None):
         out.append((s, lv, levels))
     return out
 _CTX: dict = {}
-HOURS_VERSION = 14
+HOURS_VERSION = 15
 
 def _job_hour(job):
     run, fh = job if isinstance(job, tuple) else (_CTX['run'], job)
@@ -1489,7 +1539,7 @@ def main():
     ntx = -(-len(lons) // tile)
     nty = -(-len(lats) // tile)
     grid = {'west': float(lons[0]), 'north': float(lats[0]), 'step': region[4], 'nx': len(lons), 'ny': len(lats), 'tile': tile, 'ntx': ntx, 'nty': nty}
-    manifest = {'model': src.id, 'label': src.label, 'run': run.isoformat(), 'runId': run_id, 'generated': datetime.now(timezone.utc).isoformat(timespec='seconds'), 'complete': not args.max_hours and len(done) == len(fhs), 'grid': grid, 'levels': overview_manifest(grid, levels, lpresent), 'days': days, 'quarters': qdays, 'fields': {**{k: {'min': ENC[k][0], 'max': ENC[k][1], 'transform': ENC[k][2], 'tiles': sorted(v)} for k, v in sorted(present.items())}, **quarter_manifest(qdays, qpresent)}, 'heights': 'agl', 'sunGate': True, 'rainGate': True, 'cuNear': True, 'windAltsFt': WIND_ALTS_FT, 'waveAltsFt': WAVE_ALTS_FT if 'wv12000' in present else [], 'notes': src.notes, 'points': points, 'pack': 1}
+    manifest = {'model': src.id, 'label': src.label, 'run': run.isoformat(), 'runId': run_id, 'generated': datetime.now(timezone.utc).isoformat(timespec='seconds'), 'complete': not args.max_hours and len(done) == len(fhs), 'grid': grid, 'levels': overview_manifest(grid, levels, lpresent), 'days': days, 'quarters': qdays, 'fields': {**{k: {'min': ENC[k][0], 'max': ENC[k][1], 'transform': ENC[k][2], 'tiles': sorted(v)} for k, v in sorted(present.items())}, **quarter_manifest(qdays, qpresent)}, 'heights': 'agl', 'sunGate': True, 'rainGate': True, 'cuNear': True, 'bandsAgl': True, 'windAltsFt': WIND_ALTS_FT, 'waveAltsFt': WAVE_ALTS_FT if 'wv12000' in present else [], 'notes': src.notes, 'points': points, 'pack': 1}
     shutil.rmtree(rdir, ignore_errors=True)
     os.replace(build_dir, rdir)
     with open(latest + '.tmp', 'w') as f:
