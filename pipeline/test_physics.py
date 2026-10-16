@@ -492,6 +492,16 @@ class RainDamp(unittest.TestCase):
         self.assertEqual(build.convective_rain(od, cd, refc, rain).tolist(), [True, True, True, True, False])
         self.assertEqual(build.convective_rain(od[2:], cd[2:], None, np.array([1.0, 7, 1])).tolist(), [False, True, False])
 
+    def test_the_models_own_showers_decide(self):
+        import build
+        rain = np.array([2.0, 2.0, 8.0, 0.05])
+        sh = build.showers_share(np.array([1.5, 0.4, 0.0, 0.05]), rain)
+        np.testing.assert_allclose(sh[:3], [0.75, 0.2, 0.0])
+        self.assertTrue(np.isnan(sh[3]), 'no share where it barely rains')
+        z = np.zeros(4)
+        self.assertEqual(build.convective_rain(z, z, None, rain, sh).tolist(), [True, False, False, False])
+        self.assertIsNone(build.showers_share(None, rain))
+
 class ThermalWidth(unittest.TestCase):
 
     def test_matches_allen_and_js(self):
