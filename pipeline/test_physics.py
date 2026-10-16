@@ -457,6 +457,14 @@ class CumulusOrBlue(unittest.TestCase):
         cu = build.cumulus_forms(ws, zi, lcl, low)
         self.assertEqual(cu.tolist(), [True, False, True, False, False])
 
+    def test_scattered_low_cloud_over_the_top(self):
+        import build
+        ws = np.full(5, 2.0)
+        zi = np.full(5, 1000.0)
+        lcl = np.array([1200.0, 1200, 1200, 1600, 1100])
+        low = np.array([35.0, 10, 60, 35, 20])
+        self.assertEqual(build.cumulus_forms(ws, zi, lcl, low).tolist(), [True, False, False, False, True])
+
     def test_margin_without_low_cloud(self):
         import build
         ws = np.full(3, 2.0)
@@ -464,6 +472,25 @@ class CumulusOrBlue(unittest.TestCase):
         lcl = np.array([1450.0, 1250, 1000])
         self.assertEqual(build.cumulus_forms(ws, zi, lcl, None).tolist(), [False, True, True])
         self.assertEqual(build.cumulus_forms(ws, zi, lcl, np.full(3, np.nan)).tolist(), [False, True, True])
+
+class RainDamp(unittest.TestCase):
+
+    def test_steady_rain_stops_thermals_showers_dont(self):
+        import build
+        rain = np.array([2.0, 2.0, 0.08, 0.3, 2.0, 2.0])
+        ws = np.array([0.8, 0.8, 0.8, 0.8, 2.5, 1.5])
+        conv = np.array([False, True, False, False, False, False])
+        d = build.rain_damp(rain, conv, ws)
+        np.testing.assert_allclose(d, [0.0, 1.0, 1.0, 0.5, 1.0, 0.5])
+
+    def test_convective_rain_matches_js(self):
+        import build
+        od = np.array([40.0, 0, 0, 0, 0])
+        cd = np.array([0.0, 3000, 0, 0, 0])
+        refc = np.array([0.0, 0, 47, 42, 42])
+        rain = np.array([1.0, 1, 1, 3, 1])
+        self.assertEqual(build.convective_rain(od, cd, refc, rain).tolist(), [True, True, True, True, False])
+        self.assertEqual(build.convective_rain(od[2:], cd[2:], None, np.array([1.0, 7, 1])).tolist(), [False, True, False])
 
 class ThermalWidth(unittest.TestCase):
 
