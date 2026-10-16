@@ -502,6 +502,14 @@ class RainDamp(unittest.TestCase):
         self.assertEqual(build.convective_rain(z, z, None, rain, sh).tolist(), [True, False, False, False])
         self.assertIsNone(build.showers_share(None, rain))
 
+    def test_hrrr_showers_from_the_hours_radar(self):
+        import build
+        rain = np.array([2.0, 2.0, 0.05])
+        z = np.zeros(3)
+        sh = build.showers_share(None, rain, z, z, np.array([48.0, 20, 50]))
+        np.testing.assert_allclose(sh[:2], [1.0, 0.0])
+        self.assertTrue(np.isnan(sh[2]))
+
 class ThermalWidth(unittest.TestCase):
 
     def test_matches_allen_and_js(self):
