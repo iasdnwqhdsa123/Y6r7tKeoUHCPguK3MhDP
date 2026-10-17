@@ -88,8 +88,8 @@ LEVEL_TILE = 200
 CLASS_FIELDS = {'ptype', 'fltcat', 'sinkby'}
 WIND_ALTS_FT = [2000, 3000, 4000, 5000, 6000, 8000, 10000, 12000, 15000, 18000, 24000, 30000]
 WAVE_ALTS_FT = [8000, 10000, 12000, 14000, 18000, 24000]
-SAMPLED_FIELDS = {f'wv{ft}' for ft in WAVE_ALTS_FT} | {'wlow'}
-ENC = {'wstar': (0, 6, None), 'zi': (0, 6000, None), 'depth': (0, 6000, None), 'cubase': (0, 7000, None), 'cudepth': (0, 12000, None), 'blapse': (0, 15, None), 'twidth': (0, 1000, None), 'overdev': (0, 100, None), 'bs': (0, 40, None), 'cape': (0, 6000, 'sqrt'), 'rain': (0, 50, 'sqrt'), 'showers': (0, 1, None), 'sun': (0, 1.2, None), 'cloud': (0, 100, None), 'cloudlow': (0, 100, None), 'cloudmid': (0, 100, None), 'cloudhigh': (0, 100, None), 't2': (-40, 50, None), 'td2': (-45, 35, None), 'sst': (-2, 36, None), 'snowd': (0, 3, 'sqrt'), 'mslp': (950, 1060, None), 'heat': (0, 800, None), 'densalt': (-1000, 7000, None), 'gust': (0, 50, None), 'wavemax': (0, 8, None), 'wavemaxz': (0, 12000, None), 'wavepot': (0, 100, None), 'wavelen': (0, 60000, None), 'nlow': (0, 0.04, None), 'wlow': (-4, 4, None), 'wtrap': (0, 100, None), 'wlam': (0, 60000, None), 'conv': (-2, 2, None), 'sink': (0, 6, None), 'sinkth': (0, 3, None), 'sinkby': (0, 254, None), 'ridge': (0, 4, None), 'bumpy': (0, 1, None), 'pm25': (0, 300, 'sqrt'), 'elevation': (-100, 6000, None), 'ceil': (0, P.CEIL_NONE, 'sqrt'), 'vis': (0, 16100, 'sqrt'), 'fltcat': (0, 254, None), 'ptype': (0, 254, None), 'slr': (P.SLR_RANGE[0], P.SLR_RANGE[1], None), 'frzl': (-100, 6500, None), 'icing': (0, 100, None), 'icebase': (0, 8000, None), 'icetop': (0, 8000, None), 'turb': (0, 25, None), 'turbz': (0, 11000, None), 'turbbase': (0, 11000, None), 'turbtop': (0, 11000, None), 'llws': (0, 40, None), 'ctop': (0, 16000, None), 'refc': (0, 75, None)}
+SAMPLED_FIELDS = {f'wv{ft}' for ft in WAVE_ALTS_FT} | {'wlow', 'vis'}
+ENC = {'wstar': (0, 6, None), 'zi': (0, 6000, None), 'depth': (0, 6000, None), 'cubase': (0, 7000, None), 'cudepth': (0, 12000, None), 'blapse': (0, 15, None), 'twidth': (0, 1000, None), 'overdev': (0, 100, None), 'bs': (0, P.BS_MAX, None), 'cape': (0, 6000, 'sqrt'), 'rain': (0, 50, 'sqrt'), 'showers': (0, 1, None), 'sun': (0, 1.2, None), 'cloud': (0, 100, None), 'cloudlow': (0, 100, None), 'cloudmid': (0, 100, None), 'cloudhigh': (0, 100, None), 't2': (-40, 50, None), 'td2': (-45, 35, None), 'sst': (-2, 36, None), 'snowd': (0, 3, 'sqrt'), 'mslp': (950, 1060, None), 'heat': (0, 800, None), 'densalt': (-1000, 7000, None), 'gust': (0, 50, None), 'wavemax': (0, 8, None), 'wavemaxz': (0, 12000, None), 'wavepot': (0, 100, None), 'wavelen': (0, 60000, None), 'nlow': (0, 0.04, None), 'wlow': (-4, 4, None), 'wtrap': (0, 100, None), 'wlam': (0, 60000, None), 'conv': (-2, 2, None), 'sink': (0, 6, None), 'sinkth': (0, 3, None), 'sinkby': (0, 254, None), 'ridge': (0, 4, None), 'bumpy': (0, 1, None), 'pm25': (0, 300, 'sqrt'), 'elevation': (-100, 6000, None), 'ceil': (0, P.CEIL_NONE, 'sqrt'), 'vis': (0, 16100, 'sqrt'), 'fltcat': (0, 254, None), 'ptype': (0, 254, None), 'slr': (P.SLR_RANGE[0], P.SLR_RANGE[1], None), 'frzl': (-100, 6500, None), 'icing': (0, 100, None), 'icebase': (0, 8000, None), 'icetop': (0, 8000, None), 'turb': (0, 25, None), 'turbz': (0, 11000, None), 'turbbase': (0, 11000, None), 'turbtop': (0, 11000, None), 'llws': (0, 40, None), 'ctop': (0, 16000, None), 'refc': (0, 75, None), 'ceiltop': (0, 16000, None), 'accas': (0, 100, None)}
 for ft in WAVE_ALTS_FT:
     ENC[f'wv{ft}'] = (-8, 8, None)
     ENC[f'dpd{ft}'] = (0, 40, None)
@@ -268,12 +268,20 @@ BLOCK_LAYER = 500.0
 WAVE_BAND_M = (300.0, 600.0, 900.0)
 WAVE_BAND_MAX_STEP = 0.1
 
-def thermal_width(zi, blapse, bs):
+def thermal_width(zi, blapse, tilt):
     d0 = 2 * np.maximum(10, 0.102 * 0.6 ** (1 / 3) * (1 - 0.25 * 0.6) * zi)
     stab = np.clip(1.25 - 0.15 * (DALR - np.nan_to_num(blapse, nan=DALR - 5 / 3)), 0.7, 1.15)
-    shear = np.clip(0.55 + 0.09 * np.nan_to_num(bs, nan=5), 0.6, 1.0)
+    shear = np.clip(0.55 + 0.09 * np.nan_to_num(tilt, nan=5), 0.6, 1.0)
     return np.where(zi > 200, d0 * stab * shear, np.nan)
 STORM_DBZ = 50.0
+GLACIATE_T = -20.0
+
+def storm_says(s, rain, refc):
+    if s.get('cprate') is not None:
+        return np.nan_to_num(s['cprate'], nan=0) >= SHOWERS_SHARE * rain
+    if s.get('refmax') is not None:
+        return np.maximum(np.nan_to_num(s['refmax'], nan=0), 0 if refc is None else refc) >= STORM_DBZ - 10
+    return np.ones(np.shape(rain), bool)
 
 def cumulus_forms(ws, zi, lcl, cover=None):
     reach = (ws > 0.5) & (lcl < zi)
@@ -285,7 +293,8 @@ def cumulus_forms(ws, zi, lcl, cover=None):
 LOW_AGL, MID_AGL = (2000.0, 7000.0)
 
 def bands_agl(bands, cc, h_agl, ps, tops, cc_levels=P.CC_LEVELS):
-    lcc, mcc = bands
+    lcc, mcc = bands[:2]
+    hcc = bands[2] if len(bands) > 2 else None
     if lcc is None or mcc is None:
         return None
     lo_t, mid_t = P.band_tops(tops, ps)
@@ -301,13 +310,16 @@ def bands_agl(bands, cc, h_agl, ps, tops, cc_levels=P.CC_LEVELS):
     h_low = peak_height(p >= lo_t[None])
     h_mid = peak_height((p < lo_t[None]) & (p >= mid_t[None]))
     L, M = (np.nan_to_num(lcc, nan=0), np.nan_to_num(mcc, nan=0))
+    H = np.zeros_like(L) if hcc is None else np.nan_to_num(hcc, nan=0)
     low_is_low = ~(h_low >= LOW_AGL)
     mid_is_low = h_mid < LOW_AGL
+    mid_is_high = h_mid >= MID_AGL
     within = lambda lo, hi: np.where(ok & (h_agl >= lo) & (h_agl < hi) & (p >= mid_t[None]), ccz, 0).max(axis=0)
     low = np.maximum.reduce([np.where(low_is_low, L, 0), np.where(mid_is_low, M, 0), within(-np.inf, LOW_AGL)])
-    mid = np.maximum.reduce([np.where(low_is_low, 0, L), np.where(mid_is_low, 0, M), within(LOW_AGL, np.inf)])
+    mid = np.maximum.reduce([np.where(low_is_low, 0, L), np.where(mid_is_low | mid_is_high, 0, M), within(LOW_AGL, MID_AGL)])
+    high = np.maximum.reduce([H, np.where(mid_is_high, M, 0), within(MID_AGL, np.inf)])
     inside = np.isfinite(lcc)
-    return (np.where(inside, low, np.nan), np.where(inside, mid, np.nan))
+    return (np.where(inside, low, np.nan), np.where(inside, mid, np.nan), np.where(inside, high, np.nan))
 
 def cumulus_cover(p_base, ps, tops, bands, cc=None, cc_levels=P.CC_LEVELS):
     if bands[0] is None:
@@ -426,10 +438,10 @@ def analyse(s, lv, levels, grid_step, lat2d, lon2d=None, valid=None):
     ub, vb = P.layer_mean(prof, zs + 2, zs + 2 + d, ['u', 'v'])
     ut, vt = prof.at(zs + 2 + d, 'u', 'v')
     ul, vl = prof.at(zs + 2 + 0.1 * d, 'u', 'v')
-    bs = P.bs_ratio(ws, np.hypot(ut - ul, vt - vl))
+    tilt = P.shear_tilt(ws, np.hypot(ut - ul, vt - vl))
     z1, z2 = (zs + 2 + 0.3 * zi, zs + 2 + 0.9 * zi)
     blapse = np.where(zi >= 300, (prof.at(z1, 't') - prof.at(z2, 't')) / np.maximum(z2 - z1, 1) * 1000, np.nan)
-    twidth = np.where(ws > 0.5, thermal_width(zi, blapse, bs), np.nan)
+    twidth = np.where(ws > 0.5, thermal_width(zi, blapse, tilt), np.nan)
     base, tbase = (zs + 2 + lcl, t_ml - P.DRY_LAPSE * lcl)
     ctop = P.cumulus_top(prof, base, tbase, has_cu, mix=P.cumulus_mix(twidth))
     cudepth = np.where(has_cu, np.maximum(ctop - base, zi - lcl), 0)
@@ -438,7 +450,9 @@ def analyse(s, lv, levels, grid_step, lat2d, lon2d=None, valid=None):
     rain = np.nan_to_num(s.get('prate', np.zeros_like(zs)), nan=0)
     refc = s.get('refc')
     refc = None if refc is None else np.nan_to_num(refc, nan=0)
-    convecting = (rain > 0.5) & (cape > 300)
+    wet_unstable = (rain > 0.5) & (cape > 300)
+    says = storm_says(s, rain, refc)
+    convecting = wet_unstable & says
     if refc is not None:
         convecting |= refc >= STORM_DBZ - 10
     if convecting.any():
@@ -447,14 +461,13 @@ def analyse(s, lv, levels, grid_step, lat2d, lon2d=None, valid=None):
     else:
         cudeep = cudepth
     overdev = np.clip((cudeep - 2000) / 4000, 0, 1) * np.clip(0.4 + cape / 1500, 0, 1) * 100
-    wet_unstable = (rain > 0.5) & (cape > 300)
-    if s.get('cprate') is not None:
-        says = np.nan_to_num(s['cprate'], nan=0) >= SHOWERS_SHARE * rain
-    elif s.get('refmax') is not None:
-        says = np.maximum(np.nan_to_num(s['refmax'], nan=0), 0 if refc is None else refc) >= STORM_DBZ - 10
-    else:
-        says = True
     overdev = np.where(wet_unstable, np.maximum(overdev, np.where(says, 60, 45)), overdev)
+    echo = np.zeros_like(rain) if refc is None else refc
+    if s.get('refmax') is not None:
+        echo = np.maximum(echo, np.nan_to_num(s['refmax'], nan=0))
+    t_top = prof.at(base + cudeep, 't')
+    warm = has_cu & (t_top > GLACIATE_T) & (echo < STORM_DBZ - 10)
+    overdev = np.where(warm, np.minimum(overdev, 45), overdev)
     if refc is not None:
         storm = (refc >= STORM_DBZ) | (refc >= STORM_DBZ - 10) & (cape >= 100)
         overdev = np.where(storm, np.maximum(overdev, 70), overdev)
@@ -462,6 +475,8 @@ def analyse(s, lv, levels, grid_step, lat2d, lon2d=None, valid=None):
     cover = (s.get('tcc'), s.get('lcc'), s.get('mcc'))
     showers = showers_share(s.get('cprate'), rain, overdev, cudepth, radar, cover)
     ws_out = ws * rain_damp(rain, convective_rain(overdev, cudepth, refc, rain, showers, *cover), ws)
+    bs = P.bs_ratio(ws_out, np.hypot(ub, vb))
+    cudepth_out = np.where(has_cu & convecting & (overdev >= 50), np.maximum(cudepth, cudeep), cudepth)
     thermals_here = ws > 0
     zt = zs + 2 + zi
     thml = P.theta(*prof.at(zs + 2 + 0.5 * zi, 't', 'lnp'))
@@ -473,11 +488,12 @@ def analyse(s, lv, levels, grid_step, lat2d, lon2d=None, valid=None):
         sounding[f'dth_m{dz}'] = P.theta(t, p) - thml
         sounding[f'q_m{dz}'] = P.mixing_ratio(np.minimum(td, t), p) * 1000
     sounding = {k: np.where(thermals_here, v, np.nan) for k, v in sounding.items()}
-    out = {'wstar': ws_out, 'zi': zi, 'depth': depth, 'cubase': np.where(has_cu, lcl, np.nan), 'cudepth': cudepth, 'overdev': overdev, 'bs': bs, 'blapse': np.clip(blapse, 0, 15), 'twidth': twidth, 'cape': cape, 'rain': rain, 'showers': showers, 't2': s['t2'], 'td2': s['td2'], 'mslp': s.get('mslp'), 'sst': water_temp(s), 'heat': heat, 'sun': sunshine(s.get('sw'), valid, lat2d, lon2d), 'densalt': P.density_altitude(s['ps'], s['t2']), 'gust': s.get('gust'), 'cloud': s.get('tcc'), 'cloudlow': s.get('lcc'), 'cloudmid': s.get('mcc'), 'cloudhigh': s.get('hcc'), 'pm25': s.get('smoke'), 'snowd': None if s.get('snod') is None else np.maximum(s['snod'], 0), 'u_sfc': s['u10'], 'v_sfc': s['v10'], 'u_blavg': ub, 'v_blavg': vb, 'u_bltop': ut, 'v_bltop': vt}
+    out = {'wstar': ws_out, 'zi': zi, 'depth': depth, 'cubase': np.where(has_cu, lcl, np.nan), 'cudepth': cudepth_out, 'overdev': overdev, 'bs': bs, 'blapse': np.clip(blapse, 0, 15), 'twidth': twidth, 'cape': cape, 'rain': rain, 'showers': showers, 't2': s['t2'], 'td2': s['td2'], 'mslp': s.get('mslp'), 'sst': water_temp(s), 'heat': heat, 'sun': sunshine(s.get('sw'), valid, lat2d, lon2d), 'densalt': P.density_altitude(s['ps'], s['t2']), 'gust': s.get('gust'), 'cloud': s.get('tcc'), 'cloudlow': s.get('lcc'), 'cloudmid': s.get('mcc'), 'cloudhigh': s.get('hcc'), 'pm25': s.get('smoke'), 'snowd': None if s.get('snod') is None else np.maximum(s['snod'], 0), 'u_sfc': s['u10'], 'v_sfc': s['v10'], 'u_blavg': ub, 'v_blavg': vb, 'u_bltop': ut, 'v_bltop': vt}
     out.update(ccl)
-    agl = bands_agl([s.get('lcc'), s.get('mcc')], np.stack([ccl[f'cc{p}'] for p in P.CC_LEVELS]), P.level_heights(levels, lv['z']) - zs[None], s['ps'], tops)
+    agl = bands_agl([s.get('lcc'), s.get('mcc'), s.get('hcc')], np.stack([ccl[f'cc{p}'] for p in P.CC_LEVELS]), P.level_heights(levels, lv['z']) - zs[None], s['ps'], tops)
     if agl is not None:
-        out['cloudlow'], out['cloudmid'] = agl
+        out['cloudlow'], out['cloudmid'], out['cloudhigh'] = agl
+    out['accas'] = accas_score(lv, levels, zs, s['t2'])
     out.update(sounding)
     for m in WIND_AGL_M:
         out[f'u_g{m}'], out[f'v_g{m}'] = prof.at(zs + m, 'u', 'v')
@@ -567,12 +583,37 @@ def analyse(s, lv, levels, grid_step, lat2d, lon2d=None, valid=None):
     out.update(general_aviation(s, lv, levels, prof, rain, grid_step, ddx, ddy, [out[f'cc{p}'] for p in P.CC_LEVELS], zi=zi))
     return out
 
+def cloud_rh(lv):
+    if lv.get('rh_cloud') is not None:
+        return lv['rh_cloud']
+    if lv.get('rh') is not None:
+        return lv['rh']
+    return P.rh_cloud(lv['t'], lv['td'])
+ACCAS_RH = 90.0
+ACCAS_TOP = 500.0
+
+def accas_score(lv, levels, zs, t2):
+    order = np.argsort(-np.asarray(levels))
+    p = np.asarray(levels, np.float32)[order]
+    z, t, rh = (lv['z'][order], lv['t'][order], cloud_rh(lv)[order])
+    score = np.zeros(zs.shape, np.float32)
+    for k in range(len(p) - 1):
+        if p[k + 1] < ACCAS_TOP:
+            break
+        dz = z[k + 1] - z[k]
+        lapse = (t[k] - t[k + 1]) / np.maximum(dz, 1)
+        moist = P.moist_lapse(0.5 * (t[k] + t[k + 1]), float(np.sqrt(p[k] * p[k + 1])))
+        sc = np.clip((lapse - moist) / (P.DRY_LAPSE - moist), 0, 1) * 100
+        ok = (z[k] - zs >= LOW_AGL) & (np.nan_to_num(rh[k], nan=0) >= ACCAS_RH) & (dz > 0)
+        score = np.where(ok, np.maximum(score, sc), score)
+    return np.where(np.isfinite(t2), score, np.nan).astype(np.float32)
+
 def cloud_levels(s, lv, levels, tops=P.COVER_TOPS_NCEP):
     ps = np.where(np.isfinite(s['t2']), s['ps'], np.nan)
     if lv.get('cloud') is not None:
         levels, rh, clw, own = lv['cloud']
     else:
-        rh = lv['rh'] if lv.get('rh') is not None else P.rh_cloud(lv['t'], lv['td'])
+        rh = cloud_rh(lv)
         clw, own = (lv.get('clw'), lv.get('cc'))
     have = [float(p) for p in levels]
     if own is not None and all((p in have for p in P.CC_LEVELS)):
@@ -605,16 +646,25 @@ def radar(s, rain=None, step=None):
         return np.maximum(np.nan_to_num(s['refc'], nan=0), 0)
     return None if rain is None else P.reflectivity_from_rain(rain)
 
+def ceiling_own_cover(ceil, s, lv, levels, inside):
+    below = np.asarray(levels, np.float32)[:, None, None] > s['ps'][None]
+    own = lambda a: np.where(below, np.nan, a)
+    rh2 = P.rh_from_td(s['t2'], s['td2'])
+    cov = P.ceiling_from_cover(lv['z'], own(np.clip(lv['cc'], 0, 100)), s['zs'], rh2, s.get('tcc'), own(lv['rh']), cover=P.CEIL_COVER_OWN, tcc_min=P.CEIL_COVER_OWN)
+    return np.where(inside & (cov < P.CEIL_NONE), cov, ceil)
+
 def general_aviation(s, lv, levels, prof, rain, grid_step, ddx, ddy, cc=None, zi=None):
     zs = s['zs']
     inside = np.isfinite(s['t2'])
     tcc = s.get('tcc')
+    zc = P.level_heights(levels, lv['z'])
     if s.get('ceil') is not None:
         ceil = P.ceiling_agl(s['ceil'], zs, inside)
+        if lv.get('cc') is not None and lv.get('rh') is not None:
+            ceil = ceiling_own_cover(ceil, s, lv, levels, inside)
     elif cc is not None:
-        zc = P.level_heights(levels, lv['z'])
         rh_cc = []
-        P.cloud_cover_levels(levels, lv['rh'] if lv.get('rh') is not None else P.rh_cloud(lv['t'], lv['td']), s['ps'], P.rh_cloud(s['t2'], s['td2']), rh_out=rh_cc)
+        P.cloud_cover_levels(levels, cloud_rh(lv), s['ps'], P.rh_cloud(s['t2'], s['td2']), rh_out=rh_cc)
         ceil = np.where(inside, P.ceiling_from_cover(zc, np.stack(cc), zs, P.rh_from_td(s['t2'], s['td2']), tcc, np.stack(rh_cc)), np.nan)
     else:
         ceil = np.where(inside, P.ceiling_from_humidity(prof, tcc), np.nan)
@@ -625,6 +675,7 @@ def general_aviation(s, lv, levels, prof, rain, grid_step, ddx, ddy, cc=None, zi
     frz = s.get('frz')
     frzl = derived_frz if frz is None else np.where(np.isfinite(frz), np.maximum(frz, zs), derived_frz)
     ctop = s['ctop'] if s.get('ctop') is not None else P.cloud_top_from_humidity(prof, tcc)
+    ceiltop = P.ceiling_top(ceil, zs, zc, np.stack(cc)) if cc is not None else None
     refc = radar(s, rain, grid_step)
     order = np.argsort(-np.asarray(levels))
     z_l, t_l = (lv['z'][order], lv['t'][order])
@@ -642,7 +693,7 @@ def general_aviation(s, lv, levels, prof, rain, grid_step, ddx, ddy, cc=None, zi
     slr = np.full(zs.shape, np.nan, np.float32)
     if snowing.any():
         slr = np.where(snowing, P.kuchera_ratio(prof), np.nan)
-    return {'ceil': ceil, 'vis': vis, 'fltcat': P.flight_category(ceil, vis), 'ptype': nan(ptype), 'slr': slr, 'refc': nan(refc), 'frzl': nan(frzl), 'ctop': nan(ctop), 'icing': nan(icing), 'icebase': icebase, 'icetop': icetop, 'turb': nan(turb), 'turbz': np.where(turb >= 2, turbz, np.nan), 'turbbase': turbbase, 'turbtop': turbtop, 'llws': nan(llws)}
+    return {'ceil': ceil, 'vis': vis, 'fltcat': P.flight_category(ceil, vis), 'ptype': nan(ptype), 'slr': slr, 'refc': nan(refc), 'frzl': nan(frzl), 'ctop': nan(ctop), 'ceiltop': None if ceiltop is None else nan(ceiltop), 'icing': nan(icing), 'icebase': icebase, 'icetop': icetop, 'turb': nan(turb), 'turbz': np.where(turb >= 2, turbz, np.nan), 'turbbase': turbbase, 'turbtop': turbtop, 'llws': nan(llws)}
 
 def _decode(m, region=None, boxes=None):
     if hasattr(m, 'read'):
@@ -701,6 +752,10 @@ def resolve_windows(src, run, fh, native, earlier):
 
 def fetch_hour(src, run, fh):
     return src.fetch(run, fh, src.inventory(run, fh))
+
+def total_of_bands(tcc, bands):
+    clear = np.prod([1 - np.clip(np.nan_to_num(b, nan=0), 0, 100) / 100 for b in bands], axis=0)
+    return np.where(np.isfinite(tcc), np.fmax(tcc, 100 * (1 - clear)), tcc).astype(np.float32)
 
 def load_hour(src, run, fh, regrid_holder, region, valid, raw=None):
     raw = fetch_hour(src, run, fh) if raw is None else raw
@@ -804,13 +859,23 @@ def load_hour(src, run, fh, regrid_holder, region, valid, raw=None):
         for k in ('tcc', 'lcc', 'mcc', 'hcc'):
             if s.get(k) is not None and (np.nanmax(s[k]) <= 1.01 if windows is None else as_fraction[k]):
                 s[k] = s[k] * 100
+        bands = [s.get(k) for k in ('lcc', 'mcc', 'hcc')]
+        if src.cover_calibrated and s.get('tcc') is not None and all((b is not None for b in bands)):
+            s['tcc'], s['lcc'], s['mcc'] = P.icon_uncalibrate(s['tcc'], *bands, s.get('lsm'))
+            bands = [s.get(k) for k in ('lcc', 'mcc', 'hcc')]
+        if src.tcc_column_max and s.get('tcc') is not None and all((b is not None for b in bands)):
+            s['tcc'] = total_of_bands(s['tcc'], bands)
         if src.moisture == 'rh':
             lv['td'] = P.dewpoint_from_rh(lv['t'], lv['rh'])
-        rh_c = lv['rh'] if lv.get('rh') is not None else P.rh_cloud(lv['t'], lv['td'])
+        rh_c = P.rh_cloud(lv['t'], lv['td']) if src.rh_over_water else cloud_rh(lv)
+        lv['rh_cloud'] = rh_c
         clw_c, cc_c = (lv.get('clw'), lv.get('cc'))
         if hi_ok:
             pick = lambda c: np.stack([hi[c][j] for j in hi_ok])
             rh_hi = pick('rh') if 'rh' in hi else P.rh_cloud(pick('t') - 273.15, pick('td') - 273.15)
+            if 'rh' in hi and src.rh_over_water:
+                t_hi = pick('t') - 273.15
+                rh_hi = P.rh_cloud(t_hi, P.dewpoint_from_rh(t_hi, rh_hi))
             rh_c = np.concatenate([rh_c, rh_hi])
             clw_c = None if clw_c is None else np.concatenate([clw_c, pick('clw')])
             cc_c = None if cc_c is None or any((hi['cc'][j] is None for j in hi_ok)) else np.concatenate([cc_c, pick('cc')])
@@ -828,7 +893,7 @@ def load_hour(src, run, fh, regrid_holder, region, valid, raw=None):
         out.append((s, lv, levels))
     return out
 _CTX: dict = {}
-HOURS_VERSION = 17
+HOURS_VERSION = 18
 
 def _job_hour(job):
     run, fh = job if isinstance(job, tuple) else (_CTX['run'], job)
@@ -1209,7 +1274,7 @@ def write_tiles(rdir, hours_dir, times, tile, elev_time, only=None, levels=(), w
         for k, lk in lkeys.items():
             lpresent[k].setdefault(name, set()).update(lk)
     return ({d: [t.strftime('%Y%m%d%H') for t in ts] for d, ts in days.items()}, present, lpresent)
-POINT_FIELDS = ('t2', 'td2', 'rain', 'ptype', 'slr', 'u_sfc', 'v_sfc', 'gust', 'cloud', 'cloudlow', 'cloudmid', 'cloudhigh', 'ceil', 'ctop', 'vis', 'mslp', 'cape', 'frzl', 'wstar', 'depth', 'zi', 'cubase', 'cudepth', 'overdev', 'bumpy', 'densalt', 'refc', 'showers', 'sun', *(f'cc{p}' for p in P.CC_LEVELS), 'elevation')
+POINT_FIELDS = ('t2', 'td2', 'rain', 'ptype', 'slr', 'u_sfc', 'v_sfc', 'gust', 'cloud', 'cloudlow', 'cloudmid', 'cloudhigh', 'ceil', 'ctop', 'vis', 'mslp', 'cape', 'frzl', 'wstar', 'depth', 'zi', 'cubase', 'cudepth', 'overdev', 'bumpy', 'densalt', 'refc', 'showers', 'sun', 'accas', *(f'cc{p}' for p in P.CC_LEVELS), 'elevation')
 POINT_BLOCK = 16
 
 def _pack_job(job):
@@ -1290,9 +1355,9 @@ def hour_token(model, run_id, stamp, secret=None):
         _MASKED.add(tok)
     return tok
 _MASKED: set = set()
-FREE_FIELDS = {'wstar', 'depth', 'zi', 'cubase', 'cudepth', 'overdev', 'rain', 'showers', 'sun', 'ptype', 'cape', 'bs', 'densalt', 'cloud', 'cloudlow', 'cloudmid', 'cloudhigh', *(f'cc{p}' for p in P.CC_LEVELS), 'u_sfc', 'v_sfc', 'u_blavg', 'v_blavg', 'bumpy', 'ceil', 'vis', 'fltcat', 't2', 'td2', 'sst', 'mslp', 'gust', 'pm25', *(f'{c}_a{ft}' for ft in WIND_ALTS_FT for c in ('u', 'v'))}
+FREE_FIELDS = {'wstar', 'depth', 'zi', 'cubase', 'cudepth', 'overdev', 'rain', 'showers', 'sun', 'ptype', 'cape', 'bs', 'densalt', 'cloud', 'cloudlow', 'cloudmid', 'cloudhigh', 'accas', *(f'cc{p}' for p in P.CC_LEVELS), 'u_sfc', 'v_sfc', 'u_blavg', 'v_blavg', 'bumpy', 'ceil', 'vis', 'fltcat', 't2', 'td2', 'sst', 'mslp', 'gust', 'pm25', *(f'{c}_a{ft}' for ft in WIND_ALTS_FT for c in ('u', 'v'))}
 NOW_AHEAD = timedelta(hours=24) + FREE_SLACK
-NOW_FIELDS = FREE_FIELDS | {'twidth', 'sinkth', 'heat', 'ctop', 'wtrap', 'wlam', 'thml', 'thx', *(f'{k}_m{dz}' for dz in ML_TOP_DZ for k in ('dth', 'q')), *(f'wv{ft}' for ft in (8000, 10000, 12000, 14000, 18000, 24000)), *(f'dpd{ft}' for ft in (8000, 10000, 12000, 14000, 18000, 24000)), *(f't{ft}' for ft in (8000, 10000, 12000, 14000, 18000, 24000)), *(f'{c}_g{m}' for m in (100, 300) for c in ('u', 'v')), *(f'{c}_a{ft}' for ft in (2000, 3000, 4000, 5000, 6000, 8000, 10000, 12000, 15000) for c in ('u', 'v'))}
+NOW_FIELDS = FREE_FIELDS | {'twidth', 'sinkth', 'heat', 'ctop', 'ceiltop', 'wtrap', 'wlam', 'thml', 'thx', *(f'{k}_m{dz}' for dz in ML_TOP_DZ for k in ('dth', 'q')), *(f'wv{ft}' for ft in (8000, 10000, 12000, 14000, 18000, 24000)), *(f'dpd{ft}' for ft in (8000, 10000, 12000, 14000, 18000, 24000)), *(f't{ft}' for ft in (8000, 10000, 12000, 14000, 18000, 24000)), *(f'{c}_g{m}' for m in (100, 300) for c in ('u', 'v')), *(f'{c}_a{ft}' for ft in (2000, 3000, 4000, 5000, 6000, 8000, 10000, 12000, 15000) for c in ('u', 'v'))}
 
 def write_free(out, model, now=None, workers=1):
     if model not in FREE_MODELS:
@@ -1550,7 +1615,7 @@ def main():
     ntx = -(-len(lons) // tile)
     nty = -(-len(lats) // tile)
     grid = {'west': float(lons[0]), 'north': float(lats[0]), 'step': region[4], 'nx': len(lons), 'ny': len(lats), 'tile': tile, 'ntx': ntx, 'nty': nty}
-    manifest = {'model': src.id, 'label': src.label, 'run': run.isoformat(), 'runId': run_id, 'generated': datetime.now(timezone.utc).isoformat(timespec='seconds'), 'complete': not args.max_hours and len(done) == len(fhs), 'grid': grid, 'levels': overview_manifest(grid, levels, lpresent), 'days': days, 'quarters': qdays, 'fields': {**{k: {'min': ENC[k][0], 'max': ENC[k][1], 'transform': ENC[k][2], 'tiles': sorted(v)} for k, v in sorted(present.items())}, **quarter_manifest(qdays, qpresent)}, 'heights': 'agl', 'sunGate': True, 'rainGate': True, 'cuNear': True, 'bandsAgl': True, 'windAltsFt': WIND_ALTS_FT, 'waveAltsFt': WAVE_ALTS_FT if 'wv12000' in present else [], 'notes': src.notes, 'points': points, 'pack': 1}
+    manifest = {'model': src.id, 'label': src.label, 'run': run.isoformat(), 'runId': run_id, 'generated': datetime.now(timezone.utc).isoformat(timespec='seconds'), 'complete': not args.max_hours and len(done) == len(fhs), 'grid': grid, 'levels': overview_manifest(grid, levels, lpresent), 'days': days, 'quarters': qdays, 'fields': {**{k: {'min': ENC[k][0], 'max': ENC[k][1], 'transform': ENC[k][2], 'tiles': sorted(v)} for k, v in sorted(present.items())}, **quarter_manifest(qdays, qpresent)}, 'heights': 'agl', 'sunGate': True, 'rainGate': True, 'cuNear': True, 'bandsAgl': True, 'highAgl': True, 'bsRasp': True, 'windAltsFt': WIND_ALTS_FT, 'waveAltsFt': WAVE_ALTS_FT if 'wv12000' in present else [], 'notes': src.notes, 'points': points, 'pack': 1}
     shutil.rmtree(rdir, ignore_errors=True)
     os.replace(build_dir, rdir)
     with open(latest + '.tmp', 'w') as f:

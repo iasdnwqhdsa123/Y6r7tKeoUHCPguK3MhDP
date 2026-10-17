@@ -31,6 +31,15 @@ class PhysicsTest(unittest.TestCase):
         w = P.wstar(np.float32(200), np.float32(1500), np.float32(25), np.float32(950))
         self.assertTrue(2.0 < float(w) < 2.4)
 
+    def test_bs_ratio(self):
+        bs = lambda w, u: float(P.bs_ratio(np.float32(w), np.float32(u)))
+        self.assertAlmostEqual(bs(2, 5.144), 7.1, delta=0.01)
+        self.assertAlmostEqual(bs(2, 7.3), 5.0, delta=0.01)
+        self.assertEqual(bs(2, 0), 20)
+        self.assertEqual(bs(0, 5), 0)
+        self.assertEqual((P.CD_BL, P.BS_MAX), (0.003, 20.0))
+        self.assertAlmostEqual(float(P.shear_tilt(np.float32(2), np.float32(4))), 8 / (0.0128 * 64), places=3)
+
     def test_profile_interpolation_is_monotonic(self):
         prof = column()
         t1, t2 = (prof.at(np.full((1, 1), 500.0), 't'), prof.at(np.full((1, 1), 3000.0), 't'))
@@ -546,9 +555,26 @@ class BandsAboveGround(unittest.TestCase):
         cc[P.CC_LEVELS.index(700), 0, 0] = 80
         cc[P.CC_LEVELS.index(900), 0, 1] = 70
         lcc, mcc = (np.array([[80.0, 70, 40]]), np.array([[0.0, 0, 0]]))
-        low, mid = build.bands_agl([lcc, mcc], cc, h, ps, P.COVER_TOPS_NCEP)
+        low, mid, high = build.bands_agl([lcc, mcc], cc, h, ps, P.COVER_TOPS_NCEP)
         np.testing.assert_allclose(low, [[0, 70, 40]])
         np.testing.assert_allclose(mid, [[80, 0, 0]])
+        np.testing.assert_allclose(high, [[0, 0, 0]])
+
+    def test_mid_band_cloud_high_up_is_high(self):
+        import build
+        import physics as P
+        L = len(P.CC_LEVELS)
+        ps = np.full((1, 3), 1000.0)
+        h = np.array([110.0, 540, 990, 1460, 1950, 3010, 4200, 5570, 7500, 9160, 10360, 11800], np.float32)[:, None, None] * np.ones((1, 1, 3))
+        cc = np.zeros((L, 1, 3), np.float32)
+        cc[P.CC_LEVELS.index(400), 0, 0] = 70
+        cc[P.CC_LEVELS.index(600), 0, 1] = 60
+        cc[P.CC_LEVELS.index(400), 0, 2] = 20
+        lcc, mcc, hcc = (np.array([[0.0, 0, 0]]), np.array([[70.0, 60, 20]]), np.array([[10.0, 30, 50]]))
+        low, mid, high = build.bands_agl([lcc, mcc, hcc], cc, h, ps, P.COVER_TOPS_NCEP)
+        np.testing.assert_allclose(low, [[0, 0, 0]])
+        np.testing.assert_allclose(mid, [[0, 60, 0]])
+        np.testing.assert_allclose(high, [[70, 30, 50]])
 
     def test_high_ground_mid_band_is_low(self):
         import build
@@ -558,7 +584,7 @@ class BandsAboveGround(unittest.TestCase):
         h = np.array([np.nan, np.nan, np.nan, np.nan, np.nan, 750, 1900, 3300, 4900, 6900, 8100, 9500], np.float32)[:, None, None]
         cc = np.zeros((L, 1, 1), np.float32)
         cc[P.CC_LEVELS.index(600)] = 60
-        low, mid = build.bands_agl([np.array([[0.0]]), np.array([[60.0]])], cc, h, ps, P.COVER_TOPS_NCEP)
+        low, mid, _ = build.bands_agl([np.array([[0.0]]), np.array([[60.0]])], cc, h, ps, P.COVER_TOPS_NCEP)
         np.testing.assert_allclose(low, [[60]])
         np.testing.assert_allclose(mid, [[0]])
 
@@ -574,6 +600,22 @@ class StormsAndDecks(unittest.TestCase):
         self.assertEqual(build.convective_rain(z, z, None, rain).tolist(), [False, False, False])
 
 class ThermalWidth(unittest.TestCase):
+
+    def test_published_bs_is_rasps(self):
+        import build
+        s, lv, levels, _ = grid_column(n=3, sfc_t=28, sfc_td=12, lapse=0.0085, shear=4.0)
+        one = lambda x: np.full((3, 3), x, np.float32)
+        s.update(ps=one(1013.25), sw=one(500), shf=one(80), hpbl=one(1200), u10=one(6), v10=one(0))
+        out = build.analyse(dict(s), lv, levels, 0.25, np.full((3, 3), 40, np.float32))
+        ws, bs = (float(out['wstar'][1, 1]), float(out['bs'][1, 1]))
+        u_bl = float(np.hypot(out['u_blavg'][1, 1], out['v_blavg'][1, 1]))
+        self.assertGreater(ws, 1)
+        self.assertAlmostEqual(bs, ws / (np.sqrt(0.003) * u_bl), places=3)
+        self.assertEqual(build.ENC['bs'], (0, 20, None))
+        s2 = dict(s, prate=one(1.0), tcc=one(100), lcc=one(100), mcc=one(0), hcc=one(0), cape=one(0))
+        wet = build.analyse(s2, lv, levels, 0.25, np.full((3, 3), 40, np.float32))
+        self.assertLess(float(wet['wstar'][1, 1]), ws)
+        self.assertAlmostEqual(float(wet['bs'][1, 1]), float(wet['wstar'][1, 1]) / (np.sqrt(0.003) * u_bl), places=3)
 
     def test_matches_allen_and_js(self):
         import build
@@ -1113,6 +1155,7 @@ class OverviewLevels(unittest.TestCase):
             self.assertEqual(sorted(lp[2]), ['elevation', 'wstar'])
             self.assertIn('cc850', build.LEVEL_SKIP)
             self.assertFalse(build.LEVEL_SKIP & (build.CLASS_FIELDS | {'wstar', 'ceil', 'vis', 'u_sfc', 'u_g300', 'wv12000'}))
+            self.assertIn('vis', build.SAMPLED_FIELDS)
 
     def test_vertical_motion_levels_sample_not_average(self):
         import tempfile
@@ -2052,5 +2095,202 @@ class EuropeAirspace(unittest.TestCase):
         ctl, sua = E.oa_features(items)
         self.assertEqual([(f['properties']['c'], f['properties']['lo'], f['properties']['hi']) for f in ctl], [('D', 'SFC', '2,500 ft'), ('A', '2,500 ft', 'FL195')])
         self.assertEqual([(f['properties']['t'], f['properties']['hi']) for f in sua], [('D', '984 ft AGL')])
+
+def storm_column(rh_aloft=40.0, cap_z=None, sfc_t=30.0, **surface):
+    s, lv, levels, _ = grid_column(n=3, sfc_t=sfc_t, sfc_td=24, lapse=0.0075, rh_levels=85)
+    one = lambda x: np.full((3, 3), x, np.float32)
+    if cap_z is not None:
+        lv['t'] = np.where(lv['z'] > cap_z, sfc_t - 0.0075 * cap_z + 0.002 * (lv['z'] - cap_z), lv['t']).astype(np.float32)
+    lv['rh'] = (np.where(levels[:, None, None] < 850, rh_aloft, 85) * np.ones_like(lv['t'])).astype(np.float32)
+    lv['td'] = P.dewpoint_from_rh(lv['t'], lv['rh'])
+    s.update(ps=one(1013.25), sw=one(800), shf=one(350), hpbl=one(1800), prate=one(1.0), cape=one(1000))
+    s.update({k: one(v) if np.isscalar(v) else v for k, v in surface.items()})
+    return (s, lv, levels)
+
+class StormsFromTheModelsConvection(unittest.TestCase):
+
+    def at(self, **kw):
+        import build
+        s, lv, levels = storm_column(**kw)
+        out = build.analyse(dict(s), lv, levels, 0.25, np.full((3, 3), 40, np.float32))
+        return {k: float(out[k][1, 1]) for k in ('cubase', 'cudepth', 'overdev')}
+
+    def test_hrrr_needs_an_echo(self):
+        weak = self.at(refmax=30.0)
+        self.assertLess(weak['overdev'], 50)
+        self.assertEqual(weak['overdev'], 45)
+        self.assertGreaterEqual(self.at(refmax=45.0)['overdev'], 60)
+
+    def test_gfs_icon_need_their_schemes_rain(self):
+        self.assertLess(self.at(cprate=0.2)['overdev'], 50)
+        self.assertGreaterEqual(self.at(cprate=0.8)['overdev'], 60)
+
+    def test_storm_says(self):
+        import build
+        rain = np.array([1.0, 1.0, 1.0])
+        np.testing.assert_array_equal(build.storm_says({'cprate': np.array([0.2, 0.5, 0.9])}, rain, None), [False, True, True])
+        np.testing.assert_array_equal(build.storm_says({'refmax': np.array([30.0, 41, 0])}, rain, np.array([0.0, 0, 45])), [False, True, True])
+        self.assertTrue(build.storm_says({}, rain, None).all())
+
+    def test_cu_depth_under_a_storm_is_its_updrafts(self):
+        import build
+        s, lv, levels = storm_column(refc=45.0, cape=2000.0)
+        out = build.analyse(dict(s), lv, levels, 0.25, np.full((3, 3), 40, np.float32))
+        dry = self.at(prate=0.0)
+        self.assertLess(dry['cudepth'], 4000)
+        self.assertGreaterEqual(float(out['overdev'][1, 1]), 50)
+        self.assertGreater(float(out['cudepth'][1, 1]), dry['cudepth'] + 1000)
+        self.assertEqual(float(out['cudepth'][1, 1]), self.at(refmax=45.0)['cudepth'])
+        self.assertEqual(self.at(refmax=30.0)['cudepth'], dry['cudepth'])
+
+    def test_warm_topped_cumulus_is_no_cb(self):
+        import build
+        warm = self.at(prate=0.0, cap_z=5500.0, sfc_t=33.0, rh_aloft=60.0)
+        self.assertGreater(warm['cudepth'], 4000)
+        self.assertLess(warm['overdev'], 50)
+        s, lv, levels = storm_column(prate=0.0, cap_z=5500.0, sfc_t=33.0, rh_aloft=60.0)
+        prof = P.Profile(s['zs'], s['ps'], s['t2'], s['td2'], s['u10'], s['v10'], lv['z'], levels, lv['t'], lv['td'], lv['u'], lv['v'])
+        t_top = float(prof.at(np.full((3, 3), warm['cubase'] + 2 + warm['cudepth'], np.float32), 't')[1, 1])
+        self.assertTrue(build.GLACIATE_T < t_top < 0, t_top)
+        cold = self.at(prate=0.0, rh_aloft=60.0)
+        self.assertGreaterEqual(cold['overdev'], 90)
+        self.assertGreaterEqual(self.at(cap_z=5500.0, sfc_t=33.0, rh_aloft=60.0, refc=55.0)['overdev'], 70)
+
+class CeilingsByLayer(unittest.TestCase):
+
+    def ceil(self, zc, cc, tcc=100.0, **kw):
+        one = lambda v: np.full((1,), v, np.float32)
+        col = lambda a: np.array(a, np.float32)[:, None]
+        return float(P.ceiling_from_cover(col(zc), col(cc), one(0), one(80), one(tcc), **kw)[0])
+
+    def test_layers_add_up(self):
+        zc = [500, 1000, 2000, 3000, 4000]
+        c = self.ceil(zc, [0, 40, 0, 40, 0])
+        self.assertTrue(2000 < c <= 3000, c)
+        self.assertEqual(self.ceil(zc, [0, 30, 30, 0, 0]), P.CEIL_NONE)
+        self.assertEqual(self.ceil(zc, [0, 45, 0, 10, 0]), P.CEIL_NONE)
+        self.assertAlmostEqual(self.ceil(zc, [45, 0, 10, 0, 20]), 4000, delta=1)
+        self.assertAlmostEqual(self.ceil(zc, [0, 25, 100, 100, 0]), 1000 + 1000 * (25 / 75), places=1)
+
+    def test_gfs_cover_under_a_mid_deck(self):
+        import build
+        levels = np.array([1000, 975, 950, 925, 900, 850, 800, 750, 700, 650, 600, 550, 500, 400, 300], np.float32)
+        one = lambda v: np.full((1, 1), v, np.float32)
+        z = (44330 * (1 - (levels / 1013.25) ** 0.1903)).astype(np.float32)[:, None, None]
+        cc = np.zeros(z.shape, np.float32)
+        cc[list(levels).index(900)] = 30
+        cc[list(levels).index(500)] = 60
+        s = {'zs': one(0), 'ps': one(1013.25), 't2': one(25), 'td2': one(15), 'tcc': one(72)}
+        lv = {'z': z, 'cc': cc, 'rh': np.full(z.shape, 70, np.float32)}
+        native = one(float(z[list(levels).index(900), 0, 0]))
+        inside = np.ones((1, 1), bool)
+        c = float(build.ceiling_own_cover(P.ceiling_agl(native, s['zs'], inside), s, lv, levels, inside)[0, 0])
+        self.assertTrue(float(z[list(levels).index(550), 0, 0]) < c < float(z[list(levels).index(500), 0, 0]), c)
+        lv['cc'] = np.zeros(z.shape, np.float32)
+        c = float(build.ceiling_own_cover(P.ceiling_agl(native, s['zs'], inside), s, lv, levels, inside)[0, 0])
+        self.assertAlmostEqual(c, float(native[0, 0]), places=0)
+
+    def test_ceiling_layer_top(self):
+        L = P.CC_LEVELS
+        zc = np.array([110, 540, 990, 1460, 1950, 3010, 4200, 5570, 7180, 9160, 10360, 11800], np.float32)[:, None]
+        cc = np.zeros((len(L), 1), np.float32)
+        cc[L.index(900)], cc[L.index(850)], cc[L.index(800)] = (80, 100, 90)
+        cc[L.index(300)] = 90
+        zs = np.zeros(1, np.float32)
+        ceil = P.ceiling_from_cover(zc, cc, zs, np.array([80.0]))
+        self.assertTrue(540 < float(ceil[0]) < 990, ceil)
+        top = float(P.ceiling_top(ceil, zs, zc, cc)[0])
+        self.assertTrue(1950 < top < 3010, top)
+        self.assertAlmostEqual(top, 1950 + (90 - 50) / 90 * (3010 - 1950), places=0)
+        self.assertTrue(np.isnan(P.ceiling_top(np.array([P.CEIL_NONE], np.float32), zs, zc, cc)[0]))
+        self.assertTrue(np.isnan(P.ceiling_top(ceil, zs, zc, np.full_like(cc, 100))[0]))
+        cc2 = np.zeros((len(L), 1), np.float32)
+        cc2[L.index(900)], cc2[L.index(700)] = (40, 40)
+        ceil2 = P.ceiling_from_cover(zc, cc2, zs, np.array([80.0]))
+        self.assertTrue(1950 < float(ceil2[0]) < 3010, ceil2)
+        self.assertAlmostEqual(float(P.ceiling_top(ceil2, zs, zc, cc2)[0]), 3010, places=0)
+        import build
+        self.assertEqual(build.ENC['ceiltop'], (0, 16000, None))
+        self.assertNotIn('ceiltop', build.POINT_FIELDS)
+
+class TotalCoverOfTheBands(unittest.TestCase):
+
+    def test_column_max_becomes_the_bands_together(self):
+        import build
+        import sources
+        self.assertTrue(sources.SOURCES['hrrr'].tcc_column_max and sources.SOURCES['gfs'].tcc_column_max)
+        self.assertFalse(sources.SOURCES['icon'].tcc_column_max)
+        tcc = np.array([50.0, 95.0, np.nan, 20.0])
+        bands = [np.array([50.0, 50, 50, 20]), np.array([50.0, 50, 50, 0]), np.array([50.0, 50, 50, np.nan])]
+        out = build.total_of_bands(tcc, bands)
+        np.testing.assert_allclose(out[[0, 1, 3]], [87.5, 95, 20])
+        self.assertTrue(np.isnan(out[2]))
+
+class IconCover(unittest.TestCase):
+
+    def test_uncalibrate_undoes_dwds_calibration(self):
+        rng = np.random.default_rng(3)
+        n = 2000
+        l, m, h = (rng.uniform(0, 100, n).astype(np.float32) for _ in range(3))
+        hi = np.maximum.reduce([l, m, h])
+        t = hi + rng.uniform(0, 1, n).astype(np.float32) * (100 - hi)
+        for lsm in (np.ones(n), np.zeros(n)):
+            tc, lc, mc = P.icon_calibrate(t, l, m, h, lsm)
+            self.assertTrue((lc >= l - 0.001).all() and (mc >= m - 0.001).all() and (tc >= t - 0.001).all())
+            tr, lr, mr = P.icon_uncalibrate(tc, lc, mc, h, lsm)
+            np.testing.assert_allclose(lr, l, atol=0.01)
+            np.testing.assert_allclose(mr, m, atol=0.01)
+            np.testing.assert_allclose(tr, t, atol=0.01)
+        one = lambda v: np.array([v], np.float32)
+        self.assertAlmostEqual(float(P.icon_calibrate(one(10), one(10), one(0), one(0), one(1))[1][0]), 28.2, delta=0.1)
+        self.assertAlmostEqual(float(P.icon_calibrate(one(10), one(10), one(0), one(0), one(0))[1][0]), 15.0, delta=0.1)
+        self.assertAlmostEqual(float(P.icon_uncalibrate(one(28.2), one(28.2), one(0), one(0), one(1))[1][0]), 10, delta=0.1)
+        self.assertTrue(np.isnan(P.icon_uncalibrate(one(np.nan), one(np.nan), one(0), one(0), one(1))[0][0]))
+        import sources
+        self.assertTrue(sources.SOURCES['icon'].cover_calibrated)
+        self.assertFalse(sources.SOURCES['gfs'].cover_calibrated or sources.SOURCES['hrrr'].cover_calibrated)
+
+    def test_humidity_over_water_brought_to_ice(self):
+        import sources
+        self.assertTrue(sources.SOURCES['icon'].rh_over_water)
+        self.assertFalse(sources.SOURCES['gfs'].rh_over_water)
+        t = np.array([-30.0, 10.0], np.float32)
+        rh_w = np.array([P.es_ice(-30.0) / P.es(-30.0) * 100, 75.0], np.float32)
+        self.assertTrue(70 < rh_w[0] < 78)
+        rh_c = P.rh_cloud(t, P.dewpoint_from_rh(t, rh_w))
+        self.assertAlmostEqual(float(rh_c[0]), 100, delta=1)
+        self.assertAlmostEqual(float(rh_c[1]), 75, delta=0.01)
+        ps = np.full(2, 1000.0, np.float32)
+        self.assertEqual(float(P.cloud_fraction(rh_w, 250, ps)[0]), 0)
+        self.assertGreater(float(P.cloud_fraction(rh_c, 250, ps)[0]), 50)
+        import build
+        self.assertIs(build.cloud_rh({'rh_cloud': rh_c, 'rh': rh_w}), rh_c)
+        self.assertIs(build.cloud_rh({'rh': rh_w}), rh_w)
+
+class AltocumulusCastellanus(unittest.TestCase):
+
+    def layer(self, lapse, rh=95.0, t650=-5.0):
+        import build
+        levels = np.array([1000, 925, 850, 750, 700, 650, 600, 550, 500, 400, 300], np.float32)
+        z = (44330 * (1 - (levels / 1013.25) ** 0.1903)).astype(np.float32)
+        k650, k550 = (list(levels).index(650), list(levels).index(550))
+        t = np.empty_like(z)
+        t[:k650 + 1] = t650 + 0.0065 * (z[k650] - z[:k650 + 1])
+        t[k650:k550 + 1] = t650 - lapse / 1000 * (z[k650:k550 + 1] - z[k650])
+        t[k550:] = t[k550] - 0.0065 * (z[k550:] - z[k550])
+        r = np.full_like(z, 50.0)
+        r[k650] = r[list(levels).index(600)] = rh
+        sh = lambda a: a[:, None, None].astype(np.float32)
+        lv = {'z': sh(z), 't': sh(t), 'rh': sh(r), 'td': P.dewpoint_from_rh(sh(t), sh(r))}
+        return float(build.accas_score(lv, levels, np.zeros((1, 1), np.float32), np.full((1, 1), 15, np.float32))[0, 0])
+
+    def test_unstable_saturated_layer_scores(self):
+        self.assertGreater(self.layer(8.0), 0)
+        self.assertGreater(self.layer(9.0), self.layer(8.0))
+        self.assertEqual(self.layer(5.0), 0)
+        self.assertEqual(self.layer(8.0, rh=60.0), 0)
+        import build
+        self.assertEqual(build.ENC['accas'], (0, 100, None))
+        self.assertIn('accas', build.POINT_FIELDS)
 from test_aviation_world import *
 from test_airspace_world import *

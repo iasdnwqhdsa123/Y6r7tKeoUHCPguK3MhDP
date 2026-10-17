@@ -321,8 +321,13 @@ def wstar(heat, zi, t, p):
     rho = p * 100 / (RD * (t + K0))
     x = G / (t + K0) * np.maximum(heat, 0) / (rho * CP) * np.maximum(zi, 0)
     return np.cbrt(x)
+CD_BL = 0.003
+BS_MAX = 20.0
 
-def bs_ratio(ws, shear):
+def bs_ratio(ws, u_bl):
+    return np.where(ws > 0, np.minimum(BS_MAX, ws / (math.sqrt(CD_BL) * np.maximum(u_bl, 0.5))), 0)
+
+def shear_tilt(ws, shear):
     return np.minimum(99, np.where(ws > 0, ws ** 3 / (0.0128 * np.maximum(shear, 0.5) ** 3), 0))
 
 def density_altitude(p, t):
@@ -539,27 +544,90 @@ def level_heights(levels, z, targets=CC_LEVELS):
         out.append(z[i] + w * (z[j] - z[i]))
     return np.stack(out).astype(np.float32)
 CEIL_COVER = 50.0
+CEIL_COVER_OWN = 40.0
+CEIL_LAYER_MIN = 12.5
 FOG_RH = 97.0
 CEIL_NEAR_GROUND, CEIL_NEAR_RH = (300.0, 97.0)
 
-def ceiling_from_cover(zc, cc, zs, rh2, tcc=None, rh=None):
+def ceiling_from_cover(zc, cc, zs, rh2, tcc=None, rh=None, cover=None, tcc_min=50.0):
+    cover = CEIL_COVER if cover is None else cover
     base = np.full(zs.shape, np.nan, np.float32)
-    prev_z, prev_c = (zs.astype(np.float32), np.zeros(zs.shape, np.float32))
+    prev_z, prev_t = (zs.astype(np.float32), np.zeros(zs.shape, np.float32))
     first = np.full(zs.shape, np.nan, np.float32)
+    below = np.zeros(zs.shape, np.float32)
+    layer = np.zeros(zs.shape, np.float32)
     for k in range(cc.shape[0]):
         c, z = (cc[k], zc[k])
         if rh is not None:
             c = np.where((z - zs < CEIL_NEAR_GROUND) & (np.nan_to_num(rh[k], nan=0) < CEIL_NEAR_RH), 0, c)
         ok = np.isfinite(c) & np.isfinite(z)
         first = np.where(np.isnan(first) & ok, c, first)
-        hit = ok & np.isnan(base) & (c >= CEIL_COVER)
-        f = np.clip((CEIL_COVER - prev_c) / np.maximum(c - prev_c, 0.001), 0, 1)
+        cloudy = ok & (c >= 1)
+        ends = ok & ~cloudy & (layer > 0)
+        below = np.where(ends, 100 - (100 - below) * (100 - layer) / 100, below)
+        layer = np.where(ends, 0, np.where(cloudy, np.maximum(layer, c), layer))
+        total = 100 - (100 - below) * (100 - layer) / 100
+        hit = ok & np.isnan(base) & (np.where(ok, c, 0) >= np.minimum(CEIL_LAYER_MIN, cover)) & (total >= cover)
+        f = np.where(prev_t >= cover, 1, np.clip((cover - prev_t) / np.maximum(total - prev_t, 0.001), 0, 1))
         base = np.where(hit, prev_z + f * (z - prev_z) - zs, base)
-        prev_z, prev_c = (np.where(ok, z, prev_z), np.where(ok, c, prev_c))
-    fog = (np.nan_to_num(rh2, nan=0) >= FOG_RH) & (np.nan_to_num(first, nan=0) >= CEIL_COVER)
+        prev_z, prev_t = (np.where(ok, z, prev_z), np.where(ok, total, prev_t))
+    fog = (np.nan_to_num(rh2, nan=0) >= FOG_RH) & (np.nan_to_num(first, nan=0) >= cover)
     base = np.where(fog, 30.0, base)
-    broken = np.ones(zs.shape, bool) if tcc is None else np.nan_to_num(tcc, nan=100) >= 50
+    broken = np.ones(zs.shape, bool) if tcc is None else np.nan_to_num(tcc, nan=100) >= tcc_min
     return np.where(np.isfinite(base) & broken & (base < CEIL_NONE), np.maximum(base, 30), CEIL_NONE).astype(np.float32)
+
+def ceiling_top(ceil, zs, zc, cc):
+    has = np.isfinite(ceil) & (ceil < CEIL_NONE)
+    base = (zs + np.where(has, ceil, 0)).astype(np.float32)
+    top = np.full(zs.shape, np.nan, np.float32)
+    thr = np.full(zs.shape, np.nan, np.float32)
+    prev_z, prev_c = (base, np.full(zs.shape, 100, np.float32))
+    for k in range(cc.shape[0]):
+        c, z = (cc[k], zc[k])
+        at = has & np.isnan(thr) & np.isfinite(c) & np.isfinite(z) & (z >= base - 1)
+        thr = np.where(at, np.clip(np.where(at, c, 0), CEIL_LAYER_MIN, CEIL_COVER), thr)
+        ok = has & np.isfinite(c) & np.isfinite(z) & (z > base)
+        end = ok & np.isnan(top) & (c < thr)
+        f = np.clip((prev_c - thr) / np.maximum(prev_c - c, 0.001), 0, 1)
+        top = np.where(end, prev_z + f * (z - prev_z), top)
+        prev_z, prev_c = (np.where(ok, z, prev_z), np.where(ok, c, prev_c))
+    return top
+ICON_CALIB = {'low': (4.0, 1.5), 'mid': (3.0, 1.5)}
+_EPS_CLC = 1e-07
+
+def _icon_calib_layer(c, f):
+    c = np.clip(c, 0, 1)
+    return np.minimum(f * c, np.exp((1 + c) / 2 * np.log(np.maximum(_EPS_CLC, c))))
+
+def icon_calibrate(tcc, lcc, mcc, hcc, lsm=None):
+    land = np.ones(np.shape(tcc), bool) if lsm is None else np.nan_to_num(lsm, nan=1) > 0
+    t, l, m, h = (np.clip(np.asarray(a, np.float32) / 100, 0, 1) for a in (tcc, lcc, mcc, hcc))
+    lm = _icon_calib_layer(l, np.where(land, *ICON_CALIB['low']))
+    mm = _icon_calib_layer(m, np.where(land, *ICON_CALIB['mid']))
+    fac = (lm + mm + h) / np.maximum(_EPS_CLC, l + m + h)
+    fac = np.minimum(fac, np.sqrt(1 / np.maximum(0.05, t)))
+    return (100 * fac * t, 100 * lm, 100 * mm)
+
+def icon_uncalibrate(tcc, lcc, mcc, hcc, lsm=None):
+    land = np.ones(np.shape(tcc), bool) if lsm is None else np.nan_to_num(lsm, nan=1) > 0
+    t, l, m, h = (np.clip(np.nan_to_num(np.asarray(a, np.float32), nan=0) / 100, 0, 1) for a in (tcc, lcc, mcc, hcc))
+
+    def layer(y, f):
+        x = np.maximum(y * y, 1e-12)
+        ly = np.log(np.maximum(y, 1e-12))
+        for _ in range(5):
+            lx = np.log(x)
+            x = np.clip(x - ((1 + x) / 2 * lx - ly) / (lx / 2 + (1 + x) / (2 * x)), 1e-12, 1)
+        x = np.where(y <= 0, 0, np.where(y >= 1, 1, x))
+        return np.minimum(np.maximum(y / f, x), y)
+    lr = layer(l, np.where(land, *ICON_CALIB['low']))
+    mr = layer(m, np.where(land, *ICON_CALIB['mid']))
+    grow = np.where(l + m + h > _EPS_CLC, (l + m + h) / np.maximum(_EPS_CLC, lr + mr + h), 1)
+    grow = np.where(lr + mr + h > _EPS_CLC, grow, 1)
+    tr = np.maximum(t / np.maximum(grow, 1), np.where(t < math.sqrt(0.05), t / math.sqrt(20), t * t))
+    tr = np.minimum(tr, t)
+    keep = lambda a, r: np.where(np.isfinite(np.asarray(a, np.float32)), 100 * r, np.nan).astype(np.float32)
+    return (keep(tcc, tr), keep(lcc, lr), keep(mcc, mr))
 HAZE_SCALE = 3.0
 
 def visibility_estimate(t2, td2, rain, snow=None):
