@@ -407,13 +407,15 @@ def analyse(s, lv, levels, grid_step, lat2d, lon2d=None, valid=None):
     held = np.where(hth > 0, np.minimum(pump_sink * P.pump_unresolved(grid_step) * P.PUMP_TOP_S, P.PUMP_TOP_CAP * zi), 0)
     ws = np.where((held > 0) & (zi > 0), ws * np.cbrt(np.maximum(zi - held, 1) / np.maximum(zi, 1)), ws)
     zi = np.maximum(zi - held, 0)
-    wml = np.zeros_like(zs)
+    wml, thm = (np.zeros_like(zs), np.zeros_like(zs))
     n = 8
     for i in range(n):
-        td, p = prof.at(zs + 2 + zi * i / (n - 1), 'td', 'lnp')
+        t, td, p = prof.at(zs + 2 + zi * i / (n - 1), 't', 'td', 'lnp')
         wml += P.mixing_ratio(td, p)
+        thm += P.theta(t, p)
     wml /= n
-    lcl = np.maximum(0, 125 * (s['t2'] - P.dewpoint_from_w(wml, s['ps'])))
+    t_ml = thm / n * (s['ps'] / 1000.0) ** P.KAPPA - P.K0
+    lcl = np.maximum(0, 125 * (t_ml - P.dewpoint_from_w(wml, s['ps'])))
     tops = lv.get('cover_tops', P.COVER_TOPS_NCEP)
     ccl = cloud_levels(s, lv, levels, tops)
     p_base = prof.at(zs + 2 + lcl, 'lnp')
@@ -428,7 +430,7 @@ def analyse(s, lv, levels, grid_step, lat2d, lon2d=None, valid=None):
     z1, z2 = (zs + 2 + 0.3 * zi, zs + 2 + 0.9 * zi)
     blapse = np.where(zi >= 300, (prof.at(z1, 't') - prof.at(z2, 't')) / np.maximum(z2 - z1, 1) * 1000, np.nan)
     twidth = np.where(ws > 0.5, thermal_width(zi, blapse, bs), np.nan)
-    base, tbase = (zs + 2 + lcl, s['t2'] - P.DRY_LAPSE * lcl)
+    base, tbase = (zs + 2 + lcl, t_ml - P.DRY_LAPSE * lcl)
     ctop = P.cumulus_top(prof, base, tbase, has_cu, mix=P.cumulus_mix(twidth))
     cudepth = np.where(has_cu, np.maximum(ctop - base, zi - lcl), 0)
     cudepth = np.where(has_cu & (lcl >= zi), np.maximum(cudepth, CU_FLAT), cudepth)
@@ -611,7 +613,9 @@ def general_aviation(s, lv, levels, prof, rain, grid_step, ddx, ddy, cc=None, zi
         ceil = P.ceiling_agl(s['ceil'], zs, inside)
     elif cc is not None:
         zc = P.level_heights(levels, lv['z'])
-        ceil = np.where(inside, P.ceiling_from_cover(zc, np.stack(cc), zs, P.rh_from_td(s['t2'], s['td2']), tcc), np.nan)
+        rh_cc = []
+        P.cloud_cover_levels(levels, lv['rh'] if lv.get('rh') is not None else P.rh_cloud(lv['t'], lv['td']), s['ps'], P.rh_cloud(s['t2'], s['td2']), rh_out=rh_cc)
+        ceil = np.where(inside, P.ceiling_from_cover(zc, np.stack(cc), zs, P.rh_from_td(s['t2'], s['td2']), tcc, np.stack(rh_cc)), np.nan)
     else:
         ceil = np.where(inside, P.ceiling_from_humidity(prof, tcc), np.nan)
     ptype = P.precip_type(rain, s.get('crain'), s.get('csnow'), s.get('cfrzr'), s.get('cicep'), s.get('ptype'), s['t2'])
@@ -824,7 +828,7 @@ def load_hour(src, run, fh, regrid_holder, region, valid, raw=None):
         out.append((s, lv, levels))
     return out
 _CTX: dict = {}
-HOURS_VERSION = 16
+HOURS_VERSION = 17
 
 def _job_hour(job):
     run, fh = job if isinstance(job, tuple) else (_CTX['run'], job)

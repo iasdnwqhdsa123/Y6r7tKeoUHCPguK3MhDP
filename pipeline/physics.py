@@ -540,13 +540,16 @@ def level_heights(levels, z, targets=CC_LEVELS):
     return np.stack(out).astype(np.float32)
 CEIL_COVER = 50.0
 FOG_RH = 97.0
+CEIL_NEAR_GROUND, CEIL_NEAR_RH = (300.0, 97.0)
 
-def ceiling_from_cover(zc, cc, zs, rh2, tcc=None):
+def ceiling_from_cover(zc, cc, zs, rh2, tcc=None, rh=None):
     base = np.full(zs.shape, np.nan, np.float32)
     prev_z, prev_c = (zs.astype(np.float32), np.zeros(zs.shape, np.float32))
     first = np.full(zs.shape, np.nan, np.float32)
     for k in range(cc.shape[0]):
         c, z = (cc[k], zc[k])
+        if rh is not None:
+            c = np.where((z - zs < CEIL_NEAR_GROUND) & (np.nan_to_num(rh[k], nan=0) < CEIL_NEAR_RH), 0, c)
         ok = np.isfinite(c) & np.isfinite(z)
         first = np.where(np.isnan(first) & ok, c, first)
         hit = ok & np.isnan(base) & (c >= CEIL_COVER)
@@ -557,11 +560,13 @@ def ceiling_from_cover(zc, cc, zs, rh2, tcc=None):
     base = np.where(fog, 30.0, base)
     broken = np.ones(zs.shape, bool) if tcc is None else np.nan_to_num(tcc, nan=100) >= 50
     return np.where(np.isfinite(base) & broken & (base < CEIL_NONE), np.maximum(base, 30), CEIL_NONE).astype(np.float32)
+HAZE_SCALE = 3.0
 
 def visibility_estimate(t2, td2, rain, snow=None):
     rh = rh_from_td(t2, td2)
-    haze = 6000 * np.maximum(t2 - td2, 0) / np.maximum(rh, 1) ** 1.75
+    haze = HAZE_SCALE * 6000 * np.maximum(t2 - td2, 0) / np.maximum(rh, 1) ** 1.75
     r = np.maximum(np.nan_to_num(rain, nan=0), 0)
+    haze = np.where(r >= 0.05, 10, haze)
     wet = 10 / (1 + 0.5 * r)
     if snow is not None:
         wet = np.where(snow, 3 / (1 + 1.5 * r), wet)

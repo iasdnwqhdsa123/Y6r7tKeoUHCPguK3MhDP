@@ -699,6 +699,16 @@ class GeneralAviation(unittest.TestCase):
         self.assertEqual(c[2], P.CEIL_NONE)
         self.assertTrue(np.isnan(c[3]))
 
+    def test_estimates_dont_invent_ifr(self):
+        self.assertGreater(float(P.visibility_estimate(np.array([20.0]), np.array([18.9]), np.array([0.0]))[0]), 5 * P.SM)
+        self.assertGreater(float(P.visibility_estimate(np.array([20.0]), np.array([18.9]), np.array([0.5]))[0]), 5 * P.SM)
+        zs = np.zeros(1, np.float32)
+        zc = np.array([[100.0], [1200.0]], np.float32)
+        cc = np.array([[75.0], [80.0]], np.float32)
+        rh = np.array([[95.0], [99.0]], np.float32)
+        self.assertGreater(float(P.ceiling_from_cover(zc, cc, zs, np.array([93.0]), None, rh)[0]), 500)
+        self.assertLess(float(P.ceiling_from_cover(zc, cc, zs, np.array([93.0]))[0]), 200)
+
     def test_visibility_estimate(self):
         dry = P.visibility_estimate(np.array([25.0]), np.array([5.0]), np.array([0.0]))
         fog = P.visibility_estimate(np.array([10.0]), np.array([9.9]), np.array([0.0]))
