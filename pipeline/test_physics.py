@@ -2292,5 +2292,58 @@ class AltocumulusCastellanus(unittest.TestCase):
         import build
         self.assertEqual(build.ENC['accas'], (0, 100, None))
         self.assertIn('accas', build.POINT_FIELDS)
+
+class OwnSoundings(unittest.TestCase):
+
+    def test_quantize_round_trips_and_marks_none(self):
+        import build
+        enc = build.snd_enc(500)
+        lo, hi = enc['t']
+        self.assertTrue(lo < -21 < hi and abs((lo + hi) / 2 + 21.2) < 1)
+        q = build.snd_quantize(np.array([-21.0, np.nan, 999.0], np.float32), lo, hi)
+        self.assertEqual(int(q[1]), 255)
+        self.assertEqual(int(q[2]), 254)
+        self.assertLess(abs(lo + (hi - lo) * int(q[0]) / 254 + 21.0), 0.3)
+
+    def test_wanted_has_the_extra_levels_once(self):
+        import sources
+        src = sources.SOURCES['hrrr']
+        w = src.wanted()
+        self.assertEqual(len(w), len(set(w)))
+        for c in ('TMP', 'DPT', 'UGRD', 'VGRD', 'HGT', 'VVEL'):
+            self.assertIn((c, '150 mb'), w)
+            self.assertIn((c, '825 mb'), w)
+        self.assertIn(('UGRD', '250 mb'), w)
+
+    def test_the_packs_layout_is_the_apps(self):
+        import tempfile
+        from datetime import datetime, timezone
+        from PIL import Image
+        import io
+        import build
+        import pack
+        import sources
+        src = sources.SOURCES['hrrr']
+        with tempfile.TemporaryDirectory() as d:
+            hours, out = (os.path.join(d, 'h'), os.path.join(d, 'out'))
+            os.makedirs(hours)
+            nv, sy, sx = (5, 5, 9)
+            times = [datetime(2026, 10, 8, h, tzinfo=timezone.utc) for h in (17, 18)]
+            yy, xx = np.mgrid[:sy, :sx]
+            for k, t in enumerate(times):
+                snd = np.stack([(10 * yy + xx + 100 * k + v) % 250 for v in range(nv)]).astype(np.uint8)
+                np.savez_compressed(os.path.join(hours, f'{t:%Y%m%d%H}.npz'), wstar=np.zeros((15, 27), np.uint8), elevation=np.zeros((15, 27), np.uint8), snd=snd)
+            m = build.write_soundings(out, hours, times, src, block=4)
+            self.assertEqual((m['block'], m['nx'], m['ny'], m['step']), (4, sx, sy, src.snd_step))
+            day = m['days']['20261008']
+            self.assertEqual(day['stamps'], ['2026100817', '2026100818'])
+            self.assertEqual(sorted(day['tiles']), ['0_0', '1_0'])
+            path = os.path.join(out, 'snd', '20261008.pack')
+            img = np.array(Image.open(io.BytesIO(pack.read_entry(path, day['tiles'].index('1_0')))))
+            W = 5
+            self.assertEqual(img.shape, (2 * W, nv * W))
+            self.assertEqual(int(img[1 * W + 2, 3 * W + 3]), 130)
+            days, present, _ = build.write_tiles(os.path.join(d, 't'), hours, times, 27, times[0])
+            self.assertNotIn('snd', present)
 from test_aviation_world import *
 from test_airspace_world import *

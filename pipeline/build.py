@@ -814,15 +814,17 @@ def load_hour(src, run, fh, regrid_holder, region, valid, raw=None):
         v = native.get(k)
         if v is not None:
             as_fraction[k] = np.nanmax(rg(v[1] if isinstance(v, tuple) else v)) <= 1.01
+    decoded = {}
 
     def get(key):
-        m = raw.get(key)
-        if m is None:
-            return [None] * len(parts)
-        f = _decode(m, region, boxes)
-        return [p(f) for p in parts]
+        if key not in decoded:
+            m = raw.get(key)
+            decoded[key] = [None] * len(parts) if m is None else [p(f) for f in [_decode(m, region, boxes)] for p in parts]
+        return decoded[key]
     lvp = {canon: [get((gname, f'{l} mb')) for l in src.levels] for canon, gname in src.level_vars.items()}
     hip = {c: [get((src.level_vars[c], f'{l} mb')) for l in src.cloud_levels] for c in src.cloud_vars()}
+    snd_extra = [l for l in src.snd_levels if l not in src.levels]
+    sndp = {c: [get((src.level_vars[c], f'{l} mb')) for l in snd_extra] for c in src.snd_vars()} if snd_extra else {}
     rot = regrid_holder.get('rot')
     levels = np.array(src.levels, dtype=np.float32)
     out = []
@@ -890,10 +892,84 @@ def load_hour(src, run, fh, regrid_holder, region, valid, raw=None):
         if s.get('sw') is None:
             s['sw'] = solar_estimate(valid, lat2d, lon2d, s.get('tcc', np.zeros_like(s['t2'])))
         s['hub_m'] = src.hub_m
+        if src.snd_levels:
+            if windows is not None and src.snd_step != 1:
+                raise ValueError('snd_step > 1 needs the whole grid (no KEEP windows)')
+            s['_snd'] = sounding_column(src, s, lv, levels, {c: [x[i] for x in v] for c, v in sndp.items()}, snd_extra, lon2d, rot)
         out.append((s, lv, levels))
     return out
+SND_VARS = ('t', 'dpd', 'u', 'v', 'z', 'w')
+SND_SFC = {'ps': (400.0, 1100.0), 'sw': (0.0, 1270.0)}
+SND_MAP = ('elevation', 't2', 'td2', 'mslp', 'cloud', 'cloudlow', 'cloudmid', 'cloudhigh', 'rain', 'showers', 'cape', 'zi', 'heat', 'u_sfc', 'v_sfc', 'gust', 'vis', *(f'cc{p}' for p in P.CC_LEVELS))
+SND_BLOCK = 8
+SND_AHEAD_H = {'gfs': 48}
+
+def snd_enc(p):
+    h = 44330.8 * (1 - (p / 1013.25) ** 0.190263)
+    t = 15.0 - 0.0065 * min(h, 11000.0)
+    return {'t': (round(t - 60, 2), round(t + 60, 2)), 'dpd': (0.0, 50.0), 'u': (-100.0, 100.0), 'v': (-100.0, 100.0), 'z': (round(h - 1200), round(h + 1200)), 'w': (-10.0, 10.0)}
+
+def snd_quantize(a, lo, hi):
+    a = np.asarray(a, np.float32)
+    q = np.clip(np.rint((a - lo) / (hi - lo) * 254), 0, 254)
+    return np.where(np.isfinite(a), q, 255).astype(np.uint8)
+
+def sounding_column(src, s, lv, levels, extra, extra_levels, lon2d, rot):
+    S = src.snd_step
+    thin = lambda a: None if a is None else np.ascontiguousarray(np.asarray(a, np.float32)[..., ::S, ::S])
+    lev = [float(x) for x in levels]
+    rows = {}
+    for j, p in enumerate(extra_levels):
+        g = lambda c: (extra.get(c) or [None] * len(extra_levels))[j]
+        t = g('t')
+        t = None if t is None else t - 273.15
+        if 'td' in src.level_vars:
+            td = g('td')
+            td = None if td is None else td - 273.15
+        else:
+            rh = g('rh')
+            td = None if t is None or rh is None else P.dewpoint_from_rh(t, rh)
+        u, v = (g('u'), g('v'))
+        if u is not None and v is not None:
+            u, v = grib.earth_winds(u, v, lon2d, rot)
+        w = g('w')
+        if w is not None and src.omega and (t is not None):
+            w = -w * P.RD * (t + 273.15) / (p * 100 * P.G)
+        rows[p] = {'t': t, 'td': td, 'u': u, 'v': v, 'z': g('z'), 'w': w}
+    shape = thin(s['ps']).shape
+    out = {c: [] for c in ('t', 'dpd', 'u', 'v', 'z', 'w')}
+    for p in src.snd_levels:
+        if p in rows:
+            d = rows[p]
+        else:
+            k = lev.index(float(p))
+            d = {c: None if lv.get(c) is None else lv[c][k] for c in ('t', 'td', 'u', 'v', 'z', 'w')}
+        d = {c: thin(x) for c, x in d.items()}
+        d['dpd'] = None if d['t'] is None or d['td'] is None else np.maximum(d['t'] - d['td'], 0)
+        for c in out:
+            out[c].append(np.full(shape, np.nan, np.float32) if d[c] is None else d[c])
+    col = {c: np.stack(a) for c, a in out.items()}
+    col['ps'], col['sw'] = (thin(s['ps']), thin(s.get('sw')))
+    return col
+
+def sounding_grid(src, parts, windows, shape, q):
+    S = src.snd_step
+    cols = [s.get('_snd') for s, _, _ in parts]
+    if any((c is None for c in cols)):
+        return None
+    out = []
+    for k, p in enumerate(src.snd_levels):
+        enc = snd_enc(p)
+        for c in SND_VARS:
+            out.append(snd_quantize(paste(windows, [col[c][k] for col in cols], shape), *enc[c]))
+    for c, (lo, hi) in SND_SFC.items():
+        g = paste(windows, [col[c] for col in cols], shape)
+        out.append(np.full(out[0].shape, 255, np.uint8) if g is None else snd_quantize(g, lo, hi))
+    for n in SND_MAP:
+        out.append(np.ascontiguousarray(q[n][::S, ::S]) if n in q else np.full(out[0].shape, 255, np.uint8))
+    return np.stack(out)
 _CTX: dict = {}
-HOURS_VERSION = 18
+HOURS_VERSION = 19
 
 def _job_hour(job):
     run, fh = job if isinstance(job, tuple) else (_CTX['run'], job)
@@ -943,6 +1019,10 @@ def _process_hour(job, raw=None):
             v[~keep] = 255
     if _CTX.pop('pick_physics', False):
         pick_physics(q, lambda: analyse_parts(parts, part_coords(holder['parts']), region[4], valid, windows, lat2d.shape), fh, keep)
+    if src.snd_levels and valid - run <= timedelta(hours=SND_AHEAD_H.get(src.id, 10 ** 6)):
+        snd = sounding_grid(src, parts, windows, lat2d.shape, q)
+        if snd is not None:
+            q['snd'] = snd
     part = os.path.join(hours_dir, f'{valid:%Y%m%d%H}.tmp.npz')
     tiles.savez(part, q)
     os.replace(part, npz)
@@ -1261,7 +1341,7 @@ def write_tiles(rdir, hours_dir, times, tile, elev_time, only=None, levels=(), w
         for st in stamps:
             with np.load(os.path.join(hours_dir, f'{st}.npz')) as h:
                 files |= set(h.files)
-        names = sorted(files - {'elevation'})
+        names = sorted(files - {'elevation', 'snd'})
         if only is not None:
             names = [n for n in names if n in only]
         same = reuse is not None and reuse[1].get(day) == stamps and os.path.isdir(os.path.join(reuse[0], day))
@@ -1337,6 +1417,56 @@ def write_points(rdir, hours_dir, times, elev_time, only=None, workers=1, block=
     os.remove(tmp)
     pack.pack_folder(folder, keys, keep=png_too())
     return {'block': B, 'fields': names, 'stamps': stamps, 'tiles': keys}
+
+def write_soundings(rdir, hours_dir, times, src, workers=1, block=SND_BLOCK):
+    if not src.snd_levels or not times:
+        return None
+    have = []
+    for t in sorted(times):
+        with np.load(os.path.join(hours_dir, f'{t:%Y%m%d%H}.npz')) as h:
+            if 'snd' in h.files:
+                have.append(t)
+                shape = h['snd'].shape
+    if not have:
+        return None
+    nv, sy, sx = shape
+    B, W = (block, block + 1)
+    nby, nbx = (max(1, -(-(sy - 1) // B)), max(1, -(-(sx - 1) // B)))
+
+    def grid(st):
+        a = np.full((nv, nby * B + 1, nbx * B + 1), 255, np.uint8)
+        with np.load(os.path.join(hours_dir, f'{st}.npz')) as h:
+            a[:, :sy, :sx] = h['snd']
+        return np.lib.stride_tricks.sliding_window_view(a, (W, W), axis=(1, 2))[:, ::B, ::B]
+    days = {}
+    for t in have:
+        days.setdefault(f'{t:%Y%m%d}', []).append(f'{t:%Y%m%d%H}')
+    out = {}
+    for day, stamps in sorted(days.items()):
+        data = np.zeros((nby, nbx), bool)
+        for st in {stamps[0], stamps[-1]}:
+            data |= (grid(st) != 255).any(axis=(0, 3, 4))
+        by, bx = np.nonzero(data)
+        if not len(by):
+            continue
+        folder = os.path.join(rdir, 'snd', day)
+        os.makedirs(folder, exist_ok=True)
+        tmp = os.path.join(rdir, f'snd-{day}.tmp.npy')
+        mm = np.lib.format.open_memmap(tmp, mode='w+', dtype=np.uint8, shape=(len(by), len(stamps) * W, nv * W))
+        for k, st in enumerate(stamps):
+            sel = grid(st)[:, by, bx]
+            mm[:, k * W:(k + 1) * W, :] = sel.transpose(1, 2, 0, 3).reshape(len(by), W, nv * W)
+        mm.flush()
+        del mm
+        keys = [f'{x}_{y}' for y, x in zip(by, bx)]
+        step = -(-len(keys) // max(1, workers * 4))
+        run_jobs(_pack_job, [(tmp, i, keys[i:i + step], folder) for i in range(0, len(keys), step)], workers)
+        os.remove(tmp)
+        pack.pack_folder(folder, keys, keep=png_too())
+        out[day] = {'stamps': stamps, 'tiles': keys}
+    if not out:
+        return None
+    return {'step': src.snd_step, 'block': B, 'nx': sx, 'ny': sy, 'levels': list(src.snd_levels), 'vars': list(SND_VARS), 'enc': [snd_enc(p) for p in src.snd_levels], 'sfc': {k: list(v) for k, v in SND_SFC.items()}, 'map': list(SND_MAP), 'days': out}
 FREE_MODELS = tuple(OPEN_AHEAD_H)
 FREE_SLACK = timedelta(hours=OPEN_SLACK_H)
 
@@ -1422,7 +1552,7 @@ def _publish_open(out, fbase, model, full, times, fields, cutoff, workers, point
     last_open = max(daily) if daily else times[0] - timedelta(hours=1)
     qtimes = [q for q in stored_quarters(os.path.join(base, '_quarters'), times[0], cutoff) if q <= last_open] if model == 'hrrr' else []
     qdays, qpresent = write_quarters(rdir, os.path.join(base, '_quarters'), qtimes, tile, only=fields, workers=workers) if qtimes else ({}, {})
-    manifest = {**full, 'runId': free_id, 'tier': 'free', 'freeUntil': cutoff.isoformat(), 'generated': datetime.now(timezone.utc).isoformat(timespec='seconds'), 'days': days, 'fields': {**{k: {**full['fields'][k], 'tiles': sorted(v)} for k, v in sorted(present.items()) if k in full['fields']}, **quarter_manifest(qdays, qpresent)}, 'quarters': qdays, 'levels': [{**lv, 'tiles': {k: sorted(v) for k, v in sorted(lpresent[lv['k']].items()) if k in full['fields']}} for lv in full.get('levels', [])], 'waveAltsFt': full.get('waveAltsFt', []) if any((k.startswith('wv') for k in present)) else [], 'points': pts, 'hours': hours, 'hourPoints': hpts, 'pack': 1}
+    manifest = {**full, 'runId': free_id, 'tier': 'free', 'freeUntil': cutoff.isoformat(), 'generated': datetime.now(timezone.utc).isoformat(timespec='seconds'), 'days': days, 'fields': {**{k: {**full['fields'][k], 'tiles': sorted(v)} for k, v in sorted(present.items()) if k in full['fields']}, **quarter_manifest(qdays, qpresent)}, 'quarters': qdays, 'levels': [{**lv, 'tiles': {k: sorted(v) for k, v in sorted(lpresent[lv['k']].items()) if k in full['fields']}} for lv in full.get('levels', [])], 'waveAltsFt': full.get('waveAltsFt', []) if any((k.startswith('wv') for k in present)) else [], 'points': pts, 'sounding': None, 'hours': hours, 'hourPoints': hpts, 'pack': 1}
     with open(os.path.join(fbase, 'latest.json'), 'w') as f:
         json.dump(manifest, f, separators=(',', ':'))
     for old in os.listdir(fbase):
@@ -1612,10 +1742,14 @@ def main():
     t0 = time.time()
     points = write_points(build_dir, hours_dir, times, done[0], workers=args.workers)
     log(f'{src.id}: point packs ({(len(points['tiles']) if points else 0)}) in {_fmt_dur(time.time() - t0)}')
+    t0 = time.time()
+    soundings = write_soundings(build_dir, hours_dir, times, src, workers=args.workers)
+    if soundings:
+        log(f'{src.id}: sounding packs ({sum((len(d['tiles']) for d in soundings['days'].values()))} blocks, {len(soundings['days'])} days) in {_fmt_dur(time.time() - t0)}')
     ntx = -(-len(lons) // tile)
     nty = -(-len(lats) // tile)
     grid = {'west': float(lons[0]), 'north': float(lats[0]), 'step': region[4], 'nx': len(lons), 'ny': len(lats), 'tile': tile, 'ntx': ntx, 'nty': nty}
-    manifest = {'model': src.id, 'label': src.label, 'run': run.isoformat(), 'runId': run_id, 'generated': datetime.now(timezone.utc).isoformat(timespec='seconds'), 'complete': not args.max_hours and len(done) == len(fhs), 'grid': grid, 'levels': overview_manifest(grid, levels, lpresent), 'days': days, 'quarters': qdays, 'fields': {**{k: {'min': ENC[k][0], 'max': ENC[k][1], 'transform': ENC[k][2], 'tiles': sorted(v)} for k, v in sorted(present.items())}, **quarter_manifest(qdays, qpresent)}, 'heights': 'agl', 'sunGate': True, 'rainGate': True, 'cuNear': True, 'bandsAgl': True, 'highAgl': True, 'bsRasp': True, 'windAltsFt': WIND_ALTS_FT, 'waveAltsFt': WAVE_ALTS_FT if 'wv12000' in present else [], 'notes': src.notes, 'points': points, 'pack': 1}
+    manifest = {'model': src.id, 'label': src.label, 'run': run.isoformat(), 'runId': run_id, 'generated': datetime.now(timezone.utc).isoformat(timespec='seconds'), 'complete': not args.max_hours and len(done) == len(fhs), 'grid': grid, 'levels': overview_manifest(grid, levels, lpresent), 'days': days, 'quarters': qdays, 'fields': {**{k: {'min': ENC[k][0], 'max': ENC[k][1], 'transform': ENC[k][2], 'tiles': sorted(v)} for k, v in sorted(present.items())}, **quarter_manifest(qdays, qpresent)}, 'heights': 'agl', 'sunGate': True, 'rainGate': True, 'cuNear': True, 'bandsAgl': True, 'highAgl': True, 'bsRasp': True, 'windAltsFt': WIND_ALTS_FT, 'waveAltsFt': WAVE_ALTS_FT if 'wv12000' in present else [], 'notes': src.notes, 'points': points, 'sounding': soundings, 'pack': 1}
     shutil.rmtree(rdir, ignore_errors=True)
     os.replace(build_dir, rdir)
     with open(latest + '.tmp', 'w') as f:
