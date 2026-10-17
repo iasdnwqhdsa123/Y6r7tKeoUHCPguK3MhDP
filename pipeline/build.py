@@ -89,7 +89,7 @@ CLASS_FIELDS = {'ptype', 'fltcat', 'sinkby'}
 WIND_ALTS_FT = [2000, 3000, 4000, 5000, 6000, 8000, 10000, 12000, 15000, 18000, 24000, 30000]
 WAVE_ALTS_FT = [8000, 10000, 12000, 14000, 18000, 24000]
 SAMPLED_FIELDS = {f'wv{ft}' for ft in WAVE_ALTS_FT} | {'wlow'}
-ENC = {'wstar': (0, 6, None), 'zi': (0, 6000, None), 'depth': (0, 6000, None), 'cubase': (0, 7000, None), 'cudepth': (0, 12000, None), 'blapse': (0, 15, None), 'twidth': (0, 1000, None), 'overdev': (0, 100, None), 'bs': (0, 40, None), 'cape': (0, 6000, 'sqrt'), 'rain': (0, 50, 'sqrt'), 'showers': (0, 1, None), 'cloud': (0, 100, None), 'cloudlow': (0, 100, None), 'cloudmid': (0, 100, None), 'cloudhigh': (0, 100, None), 't2': (-40, 50, None), 'td2': (-45, 35, None), 'sst': (-2, 36, None), 'snowd': (0, 3, 'sqrt'), 'mslp': (950, 1060, None), 'heat': (0, 800, None), 'densalt': (-1000, 7000, None), 'gust': (0, 50, None), 'wavemax': (0, 8, None), 'wavemaxz': (0, 12000, None), 'wavepot': (0, 100, None), 'wavelen': (0, 60000, None), 'nlow': (0, 0.04, None), 'wlow': (-4, 4, None), 'wtrap': (0, 100, None), 'wlam': (0, 60000, None), 'conv': (-2, 2, None), 'sink': (0, 6, None), 'sinkth': (0, 3, None), 'sinkby': (0, 254, None), 'ridge': (0, 4, None), 'bumpy': (0, 1, None), 'pm25': (0, 300, 'sqrt'), 'elevation': (-100, 6000, None), 'ceil': (0, P.CEIL_NONE, 'sqrt'), 'vis': (0, 16100, 'sqrt'), 'fltcat': (0, 254, None), 'ptype': (0, 254, None), 'slr': (P.SLR_RANGE[0], P.SLR_RANGE[1], None), 'frzl': (-100, 6500, None), 'icing': (0, 100, None), 'icebase': (0, 8000, None), 'icetop': (0, 8000, None), 'turb': (0, 25, None), 'turbz': (0, 11000, None), 'turbbase': (0, 11000, None), 'turbtop': (0, 11000, None), 'llws': (0, 40, None), 'ctop': (0, 16000, None), 'refc': (0, 75, None)}
+ENC = {'wstar': (0, 6, None), 'zi': (0, 6000, None), 'depth': (0, 6000, None), 'cubase': (0, 7000, None), 'cudepth': (0, 12000, None), 'blapse': (0, 15, None), 'twidth': (0, 1000, None), 'overdev': (0, 100, None), 'bs': (0, 40, None), 'cape': (0, 6000, 'sqrt'), 'rain': (0, 50, 'sqrt'), 'showers': (0, 1, None), 'sun': (0, 1.2, None), 'cloud': (0, 100, None), 'cloudlow': (0, 100, None), 'cloudmid': (0, 100, None), 'cloudhigh': (0, 100, None), 't2': (-40, 50, None), 'td2': (-45, 35, None), 'sst': (-2, 36, None), 'snowd': (0, 3, 'sqrt'), 'mslp': (950, 1060, None), 'heat': (0, 800, None), 'densalt': (-1000, 7000, None), 'gust': (0, 50, None), 'wavemax': (0, 8, None), 'wavemaxz': (0, 12000, None), 'wavepot': (0, 100, None), 'wavelen': (0, 60000, None), 'nlow': (0, 0.04, None), 'wlow': (-4, 4, None), 'wtrap': (0, 100, None), 'wlam': (0, 60000, None), 'conv': (-2, 2, None), 'sink': (0, 6, None), 'sinkth': (0, 3, None), 'sinkby': (0, 254, None), 'ridge': (0, 4, None), 'bumpy': (0, 1, None), 'pm25': (0, 300, 'sqrt'), 'elevation': (-100, 6000, None), 'ceil': (0, P.CEIL_NONE, 'sqrt'), 'vis': (0, 16100, 'sqrt'), 'fltcat': (0, 254, None), 'ptype': (0, 254, None), 'slr': (P.SLR_RANGE[0], P.SLR_RANGE[1], None), 'frzl': (-100, 6500, None), 'icing': (0, 100, None), 'icebase': (0, 8000, None), 'icetop': (0, 8000, None), 'turb': (0, 25, None), 'turbz': (0, 11000, None), 'turbbase': (0, 11000, None), 'turbtop': (0, 11000, None), 'llws': (0, 40, None), 'ctop': (0, 16000, None), 'refc': (0, 75, None)}
 for ft in WAVE_ALTS_FT:
     ENC[f'wv{ft}'] = (-8, 8, None)
     ENC[f'dpd{ft}'] = (0, 40, None)
@@ -216,6 +216,13 @@ def solar_estimate(valid, lat, lon, cloud_pct):
     cosz = np.sin(la) * math.sin(decl) + np.cos(la) * math.cos(decl) * np.cos(ha)
     ghi = 1098 * np.maximum(cosz, 0) * np.exp(-0.057 / np.maximum(cosz, 0.05))
     return ghi * (1 - 0.75 * (np.clip(cloud_pct, 0, 100) / 100) ** 3.4)
+SUN_MIN_ELEV = 15.0
+
+def sunshine(sw, valid, lat, lon):
+    if sw is None or valid is None or lon is None:
+        return None
+    clear = solar_estimate(valid, lat, lon, 0)
+    return np.where(sun_elevation(valid, lat, lon) >= SUN_MIN_ELEV, np.clip(np.nan_to_num(sw, nan=0) / np.maximum(clear, 1), 0, 1.2), np.nan)
 
 def instant_factor(valid, hours, lat, lon):
     now = solar_estimate(valid, lat, lon, 0)
@@ -464,7 +471,7 @@ def analyse(s, lv, levels, grid_step, lat2d, lon2d=None, valid=None):
         sounding[f'dth_m{dz}'] = P.theta(t, p) - thml
         sounding[f'q_m{dz}'] = P.mixing_ratio(np.minimum(td, t), p) * 1000
     sounding = {k: np.where(thermals_here, v, np.nan) for k, v in sounding.items()}
-    out = {'wstar': ws_out, 'zi': zi, 'depth': depth, 'cubase': np.where(has_cu, lcl, np.nan), 'cudepth': cudepth, 'overdev': overdev, 'bs': bs, 'blapse': np.clip(blapse, 0, 15), 'twidth': twidth, 'cape': cape, 'rain': rain, 'showers': showers, 't2': s['t2'], 'td2': s['td2'], 'mslp': s.get('mslp'), 'sst': water_temp(s), 'heat': heat, 'densalt': P.density_altitude(s['ps'], s['t2']), 'gust': s.get('gust'), 'cloud': s.get('tcc'), 'cloudlow': s.get('lcc'), 'cloudmid': s.get('mcc'), 'cloudhigh': s.get('hcc'), 'pm25': s.get('smoke'), 'snowd': None if s.get('snod') is None else np.maximum(s['snod'], 0), 'u_sfc': s['u10'], 'v_sfc': s['v10'], 'u_blavg': ub, 'v_blavg': vb, 'u_bltop': ut, 'v_bltop': vt}
+    out = {'wstar': ws_out, 'zi': zi, 'depth': depth, 'cubase': np.where(has_cu, lcl, np.nan), 'cudepth': cudepth, 'overdev': overdev, 'bs': bs, 'blapse': np.clip(blapse, 0, 15), 'twidth': twidth, 'cape': cape, 'rain': rain, 'showers': showers, 't2': s['t2'], 'td2': s['td2'], 'mslp': s.get('mslp'), 'sst': water_temp(s), 'heat': heat, 'sun': sunshine(s.get('sw'), valid, lat2d, lon2d), 'densalt': P.density_altitude(s['ps'], s['t2']), 'gust': s.get('gust'), 'cloud': s.get('tcc'), 'cloudlow': s.get('lcc'), 'cloudmid': s.get('mcc'), 'cloudhigh': s.get('hcc'), 'pm25': s.get('smoke'), 'snowd': None if s.get('snod') is None else np.maximum(s['snod'], 0), 'u_sfc': s['u10'], 'v_sfc': s['v10'], 'u_blavg': ub, 'v_blavg': vb, 'u_bltop': ut, 'v_bltop': vt}
     out.update(ccl)
     agl = bands_agl([s.get('lcc'), s.get('mcc')], np.stack([ccl[f'cc{p}'] for p in P.CC_LEVELS]), P.level_heights(levels, lv['z']) - zs[None], s['ps'], tops)
     if agl is not None:
@@ -817,7 +824,7 @@ def load_hour(src, run, fh, regrid_holder, region, valid, raw=None):
         out.append((s, lv, levels))
     return out
 _CTX: dict = {}
-HOURS_VERSION = 15
+HOURS_VERSION = 16
 
 def _job_hour(job):
     run, fh = job if isinstance(job, tuple) else (_CTX['run'], job)
@@ -1198,7 +1205,7 @@ def write_tiles(rdir, hours_dir, times, tile, elev_time, only=None, levels=(), w
         for k, lk in lkeys.items():
             lpresent[k].setdefault(name, set()).update(lk)
     return ({d: [t.strftime('%Y%m%d%H') for t in ts] for d, ts in days.items()}, present, lpresent)
-POINT_FIELDS = ('t2', 'td2', 'rain', 'ptype', 'slr', 'u_sfc', 'v_sfc', 'gust', 'cloud', 'cloudlow', 'cloudmid', 'cloudhigh', 'ceil', 'ctop', 'vis', 'mslp', 'cape', 'frzl', 'wstar', 'depth', 'zi', 'cubase', 'cudepth', 'overdev', 'bumpy', 'densalt', 'refc', 'showers', *(f'cc{p}' for p in P.CC_LEVELS), 'elevation')
+POINT_FIELDS = ('t2', 'td2', 'rain', 'ptype', 'slr', 'u_sfc', 'v_sfc', 'gust', 'cloud', 'cloudlow', 'cloudmid', 'cloudhigh', 'ceil', 'ctop', 'vis', 'mslp', 'cape', 'frzl', 'wstar', 'depth', 'zi', 'cubase', 'cudepth', 'overdev', 'bumpy', 'densalt', 'refc', 'showers', 'sun', *(f'cc{p}' for p in P.CC_LEVELS), 'elevation')
 POINT_BLOCK = 16
 
 def _pack_job(job):
@@ -1279,7 +1286,7 @@ def hour_token(model, run_id, stamp, secret=None):
         _MASKED.add(tok)
     return tok
 _MASKED: set = set()
-FREE_FIELDS = {'wstar', 'depth', 'zi', 'cubase', 'cudepth', 'overdev', 'rain', 'showers', 'ptype', 'cape', 'bs', 'densalt', 'cloud', 'cloudlow', 'cloudmid', 'cloudhigh', *(f'cc{p}' for p in P.CC_LEVELS), 'u_sfc', 'v_sfc', 'u_blavg', 'v_blavg', 'bumpy', 'ceil', 'vis', 'fltcat', 't2', 'td2', 'sst', 'mslp', 'gust', 'pm25', *(f'{c}_a{ft}' for ft in WIND_ALTS_FT for c in ('u', 'v'))}
+FREE_FIELDS = {'wstar', 'depth', 'zi', 'cubase', 'cudepth', 'overdev', 'rain', 'showers', 'sun', 'ptype', 'cape', 'bs', 'densalt', 'cloud', 'cloudlow', 'cloudmid', 'cloudhigh', *(f'cc{p}' for p in P.CC_LEVELS), 'u_sfc', 'v_sfc', 'u_blavg', 'v_blavg', 'bumpy', 'ceil', 'vis', 'fltcat', 't2', 'td2', 'sst', 'mslp', 'gust', 'pm25', *(f'{c}_a{ft}' for ft in WIND_ALTS_FT for c in ('u', 'v'))}
 NOW_AHEAD = timedelta(hours=24) + FREE_SLACK
 NOW_FIELDS = FREE_FIELDS | {'twidth', 'sinkth', 'heat', 'ctop', 'wtrap', 'wlam', 'thml', 'thx', *(f'{k}_m{dz}' for dz in ML_TOP_DZ for k in ('dth', 'q')), *(f'wv{ft}' for ft in (8000, 10000, 12000, 14000, 18000, 24000)), *(f'dpd{ft}' for ft in (8000, 10000, 12000, 14000, 18000, 24000)), *(f't{ft}' for ft in (8000, 10000, 12000, 14000, 18000, 24000)), *(f'{c}_g{m}' for m in (100, 300) for c in ('u', 'v')), *(f'{c}_a{ft}' for ft in (2000, 3000, 4000, 5000, 6000, 8000, 10000, 12000, 15000) for c in ('u', 'v'))}
 
