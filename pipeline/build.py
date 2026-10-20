@@ -30,6 +30,13 @@ def keep_mask(src_id, lat2d, lon2d):
         m |= (lon2d >= w) & (lon2d <= e) & (lat2d >= s) & (lat2d <= n)
     return m
 
+def published_mask(src_id, lat2d, lon2d, fields):
+    keep, t2 = (keep_mask(src_id, lat2d, lon2d), fields.get('t2'))
+    if t2 is None or np.isfinite(t2).all():
+        return keep
+    have = np.isfinite(t2)
+    return have if keep is None else keep & have
+
 def keep_windows(src_id, region, halo=1):
     boxes = KEEP.get(src_id)
     if not boxes:
@@ -1040,7 +1047,7 @@ def _process_hour(job, raw=None):
     fields = analyse_parts(parts, part_coords(holder['parts']), region[4], valid, windows, lat2d.shape)
     fields['elevation'] = paste(windows, [s['zs'] for s, _, _ in parts], lat2d.shape)
     q = {k: quantize(v, *ENC[k]) for k, v in fields.items() if v is not None and k in ENC}
-    keep = keep_mask(src.id, lat2d, lon2d)
+    keep = published_mask(src.id, lat2d, lon2d, fields)
     if keep is not None:
         for v in q.values():
             v[~keep] = 255

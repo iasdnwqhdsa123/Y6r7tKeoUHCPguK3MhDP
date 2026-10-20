@@ -1966,6 +1966,16 @@ class Regions(unittest.TestCase):
         self.assertEqual({k for k, v in keep.items() if v}, set(kept))
         self.assertIsNone(build.keep_mask('hrrr', lat, lon))
 
+    def test_cells_without_a_forecast_are_no_data(self):
+        import build
+        lat, lon = np.meshgrid([44.0, 43.5], [5.0, 6.0], indexing='ij')
+        t2 = np.array([[290.0, 291.0], [np.nan, 292.0]])
+        self.assertTrue((build.published_mask('icond2', lat, lon, {'t2': t2}) == np.isfinite(t2)).all())
+        self.assertIsNone(build.published_mask('icond2', lat, lon, {'t2': np.full((2, 2), 290.0)}))
+        self.assertIsNone(build.published_mask('hrrr', lat, lon, {}))
+        g = build.published_mask('gfs', np.array([[40.0, 40.0]]), np.array([[-40.0, 5.0]]), {'t2': np.array([[np.nan, 290.0]])})
+        self.assertEqual(g.tolist(), [[False, True]])
+
     def test_kept_boxes_only_are_computed_and_match_the_whole_grid(self):
         import build
         from scipy.ndimage import maximum_filter, minimum_filter
