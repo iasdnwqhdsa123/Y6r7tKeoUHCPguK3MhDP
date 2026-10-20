@@ -424,6 +424,20 @@ def analyse(s, lv, levels, grid_step, lat2d, lon2d=None, valid=None):
     pump = P.mountain_plain(zs, hth, up15, vp15, grid_step, cool=cool, coslat=np.cos(np.radians(lat2d)))
     pump_sink, pump_lift = (pump['sink'], pump['lift'])
     held = np.where(hth > 0, np.minimum(pump_sink * P.pump_unresolved(grid_step) * P.PUMP_TOP_S, P.PUMP_TOP_CAP * zi), 0)
+    dy = grid_step * 111320.0
+    dx = dy * np.cos(np.radians(lat2d))
+
+    def ddx(a):
+        return np.gradient(a, axis=1) / dx
+
+    def ddy(a):
+        return -np.gradient(a, axis=0) / dy
+    relief = P.local_relief(zs, max(1, round(0.1 / grid_step)))
+    ur, vr = prof.at(zs + 300, 'u', 'v')
+    upslope = ur * ddx(zs) + vr * ddy(zs)
+    ramp = np.clip((relief - 100) / 300, 0, 1)
+    lee_held = np.where(hth > 0, P.lee_hold(-upslope, np.hypot(ur, vr), ws, zi, ramp), 0)
+    held = np.minimum(held + lee_held, P.HOLD_CAP * zi)
     ws = np.where((held > 0) & (zi > 0), ws * np.cbrt(np.maximum(zi - held, 1) / np.maximum(zi, 1)), ws)
     zi = np.maximum(zi - held, 0)
     lcl = np.maximum(0, 125 * (s['t2'] - np.minimum(s['td2'], s['t2'])))
@@ -516,20 +530,9 @@ def analyse(s, lv, levels, grid_step, lat2d, lon2d=None, valid=None):
         below = z < zs + 30
         out[f'u_a{ft}'] = np.where(below, np.nan, u)
         out[f'v_a{ft}'] = np.where(below, np.nan, v)
-    dy = grid_step * 111320.0
-    dx = dy * np.cos(np.radians(lat2d))
-
-    def ddx(a):
-        return np.gradient(a, axis=1) / dx
-
-    def ddy(a):
-        return -np.gradient(a, axis=0) / dy
     out['conv'] = -(ddx(ub) + ddy(vb)) * np.maximum(zi, 300) + pump_lift
-    relief = P.local_relief(zs, max(1, round(0.1 / grid_step)))
     out['bumpy'] = np.where(np.isfinite(s['t2']), P.bumpiness(prof, ws_out, zi, s.get('gust'), s['u10'], s['v10'], s.get('ustar'), relief), np.nan)
     hilly = relief >= 150
-    ur, vr = prof.at(zs + 300, 'u', 'v')
-    upslope = ur * ddx(zs) + vr * ddy(zs)
     out['ridge'] = np.where(hilly, np.maximum(0, upslope), np.nan)
     th0 = P.theta(*prof.at(zs + 10, 't', 'lnp'))
     th1 = P.theta(*prof.at(zs + 10 + BLOCK_LAYER, 't', 'lnp'))
@@ -570,7 +573,7 @@ def analyse(s, lv, levels, grid_step, lat2d, lon2d=None, valid=None):
         wc = np.concatenate([np.zeros_like(zs)[None], np.where(under, 0, np.nan_to_num(w_up, nan=0))])
         wl = sum((P.column_at(zc, wc, zs + h) for h in WAVE_BAND_M)) / len(WAVE_BAND_M)
         out['wlow'] = np.where(hilly & np.isfinite(s['t2']), wl, np.nan)
-    lee = np.maximum(0, -upslope) * P.SINK_LEE * np.clip((relief - 100) / 300, 0, 1)
+    lee = np.maximum(0, -upslope) * P.SINK_LEE * ramp
     falling = P.precip_type(rain, s.get('crain'), s.get('csnow'), s.get('cfrzr'), s.get('cicep'), s.get('ptype'), s['t2'])
     snow = P.snow_share(falling, prof, depth)
     sink, between, why = P.sink_rate(prof, wz_up, w_up, ws_out, zi, depth, rain, s.get('refd1'), lee, parts=True, snow=snow)
@@ -981,7 +984,7 @@ def sounding_grid(src, parts, windows, shape, q):
         out.append(np.ascontiguousarray(q[n][::S, ::S]) if n in q else np.full(out[0].shape, 255, np.uint8))
     return np.stack(out)
 _CTX: dict = {}
-HOURS_VERSION = 22
+HOURS_VERSION = 23
 
 def _job_hour(job):
     run, fh = job if isinstance(job, tuple) else (_CTX['run'], job)
