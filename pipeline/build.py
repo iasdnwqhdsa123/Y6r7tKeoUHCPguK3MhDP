@@ -83,7 +83,7 @@ def analyse_kept(s, lv, levels, grid_step, lat2d, lon2d, valid, windows):
     shape = lat2d.shape
     cut = [lambda a, w=w: _crop(a, *w, shape) for w, _ in windows]
     return analyse_parts([(c(s), c(lv), levels) for c in cut], [(c(lat2d), c(lon2d)) for c in cut], grid_step, valid, windows, shape)
-TILE = {'hrrr': 100, 'gfs': 100, 'ecmwf': 100, 'icon': 200, 'icond2': 150}
+TILE = {'hrrr': 100, 'gfs': 100, 'ecmwf': 100, 'icon': 200, 'icond2': 100}
 OVERVIEW = {'hrrr': (2, 4, 8), 'icond2': (2, 4, 8)}
 LEVEL_TILE = 200
 CLASS_FIELDS = {'ptype', 'fltcat', 'sinkby', 'cuclass', 'cusky'}
