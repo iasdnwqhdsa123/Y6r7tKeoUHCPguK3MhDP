@@ -1780,7 +1780,7 @@ def main():
     t0 = time.time()
     n = sum(run_jobs(_sky_job, [(hours_dir, t, region[4] <= 0.1) for t in times], args.workers))
     if n:
-        log(f'{src.id}: Cloud Overview added to {n} stored hours')
+        log(f'{src.id}: Cloud Layers added to {n} stored hours')
     days, present, lpresent = write_tiles(build_dir, hours_dir, times, tile, done[0], levels=levels, workers=args.workers)
     qtimes = stored_quarters(qdir, min(needed), max(needed), prune=True) if src.id == 'hrrr' else []
     qdays, qpresent = write_quarters(build_dir, qdir, qtimes, tile, workers=args.workers) if qtimes else ({}, {})
