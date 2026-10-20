@@ -1632,6 +1632,8 @@ class Sink(unittest.TestCase):
         held = P.lee_hold(f(1.5), f(15), f(2), f(2000))
         self.assertAlmostEqual(float(held[0]), 120, delta=1)
         self.assertGreater(float(np.cbrt((2000 - held[0]) / 2000)), 0.97)
+        self.assertEqual(float(P.lee_gate(f(4), f(2))[0]), 0)
+        self.assertEqual(float(P.lee_gate(f(8), f(2))[0]), 1)
         self.assertEqual(float(P.lee_hold(f(0.4), f(4), f(2), f(2000))[0]), 0)
         self.assertAlmostEqual(float(P.lee_hold(f(8), f(20), f(1.5), f(1500))[0]), P.LEE_TOP_CAP * 1500, delta=1)
         self.assertEqual(float(P.lee_hold(f(-1), f(15), f(2), f(2000))[0]), 0)

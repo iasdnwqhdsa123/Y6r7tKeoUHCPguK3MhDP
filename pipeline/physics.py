@@ -286,13 +286,17 @@ PUMP_WIND_KM = (8.0, 25.0)
 PUMP_TOP_S, PUMP_TOP_CAP = (7200.0, 0.3)
 LEE_REL, LEE_RUN_M, LEE_TOP_CAP, HOLD_CAP = (0.3, 4000.0, 0.2, 0.35)
 LEE_GATE = 2.0
+SINK_W_CAP = 0.25
 VM_CLIMB, VM_DOWN_CAP, VM_UP_CAP = (0.5, 0.2, 0.15)
 _PUMP_GEO = {}
 
-def lee_hold(down, speed, ws, zi, ramp=1.0):
-    speed = np.maximum(np.asarray(speed, np.float32), 1.0)
+def lee_gate(speed, ws):
     ws = np.maximum(np.nan_to_num(np.asarray(ws, np.float32), nan=0), 0.3)
-    gate = np.clip(speed / (LEE_GATE * ws) - 1, 0, 1)
+    return np.clip(np.maximum(np.asarray(speed, np.float32), 1.0) / (LEE_GATE * ws) - 1, 0, 1).astype(np.float32)
+
+def lee_hold(down, speed, ws, zi, ramp=1.0):
+    gate = lee_gate(speed, ws)
+    speed = np.maximum(np.asarray(speed, np.float32), 1.0)
     held = LEE_REL * gate * ramp * np.maximum(np.nan_to_num(down, nan=0), 0) / speed * LEE_RUN_M
     return np.minimum(held, LEE_TOP_CAP * np.maximum(np.nan_to_num(zi, nan=0), 0)).astype(np.float32)
 

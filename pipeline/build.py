@@ -436,9 +436,10 @@ def analyse(s, lv, levels, grid_step, lat2d, lon2d=None, valid=None):
     ur, vr = prof.at(zs + 300, 'u', 'v')
     upslope = ur * ddx(zs) + vr * ddy(zs)
     ramp = np.clip((relief - 100) / 300, 0, 1)
-    lee_down = np.maximum(0, -upslope) * P.SINK_LEE * ramp
+    lee_down = np.maximum(0, -upslope) * P.SINK_LEE * ramp * np.where(hth > 0, P.lee_gate(np.hypot(ur, vr), ws), 1)
     lee_held = np.where(hth > 0, P.lee_hold(-upslope, np.hypot(ur, vr), ws, zi, ramp), 0)
     held = np.minimum(held + lee_held, P.HOLD_CAP * zi)
+    ws_free = ws
     ws = np.where((held > 0) & (zi > 0), ws * np.cbrt(np.maximum(zi - held, 1) / np.maximum(zi, 1)), ws)
     zi = np.maximum(zi - held, 0)
     lcl = np.maximum(0, 125 * (s['t2'] - np.minimum(s['td2'], s['t2'])))
@@ -586,8 +587,13 @@ def analyse(s, lv, levels, grid_step, lat2d, lon2d=None, valid=None):
     sink = np.maximum(sink, pump_sink)
     inside = np.isfinite(s['t2'])
     out['sink'], out['sinkth'], out['sinkby'] = (np.where(inside, a, np.nan) for a in (sink, between, why))
-    ws_air = P.air_motion_climb(out['wstar'], P.vertical_motion(out['conv'], sink, why))
-    out['wstar'] = np.where(inside, ws_air, out['wstar'])
+    desc = np.maximum(np.where((np.rint(why) == 2) | (np.rint(why) == 5), sink, 0), pump_sink)
+    ws0 = out['wstar']
+    ws_air = P.air_motion_climb(ws0, P.vertical_motion(out['conv'], desc, np.full_like(desc, 2)))
+    hold_f = np.where(ws_free > 0, ws / np.maximum(ws_free, 1e-06), 1)
+    ws_air = np.maximum(ws_air, ws0 * np.minimum(1, (1 - P.SINK_W_CAP) / np.maximum(hold_f, 1e-06)))
+    ws_air = np.where(has_cu & (ws0 >= 0.5), np.maximum(ws_air, np.minimum(ws0, 0.52)), ws_air)
+    out['wstar'] = np.where(inside, ws_air, ws0)
     out['bs'] = np.where(inside, P.bs_ratio(out['wstar'], np.hypot(ub, vb)), out['bs'])
     score, wavelen = P.wave_environment(prof)
     lb = zs + 500
