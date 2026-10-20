@@ -1637,6 +1637,13 @@ class Sink(unittest.TestCase):
         self.assertEqual(float(P.lee_hold(f(-1), f(15), f(2), f(2000))[0]), 0)
         self.assertEqual(float(P.lee_hold(f(1.5), f(15), f(2), f(2000), ramp=0)[0]), 0)
 
+    def test_lee_weaken(self):
+        f = lambda *a: np.array(a, np.float32)
+        self.assertAlmostEqual(float(P.lee_weaken(f(2), f(0.8), f(15))[0]), 2 - 0.24, places=3)
+        self.assertAlmostEqual(float(P.lee_weaken(f(2), f(5), f(20))[0]), 1.6, places=3)
+        self.assertEqual(float(P.lee_weaken(f(2), f(0.8), f(4))[0]), 2)
+        self.assertEqual(float(P.lee_weaken(f(2), f(0), f(15))[0]), 2)
+
     def test_mountain_plain(self):
         n = 60
         x = np.arange(n, dtype=np.float32)

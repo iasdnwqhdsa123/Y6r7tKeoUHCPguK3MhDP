@@ -436,6 +436,7 @@ def analyse(s, lv, levels, grid_step, lat2d, lon2d=None, valid=None):
     ur, vr = prof.at(zs + 300, 'u', 'v')
     upslope = ur * ddx(zs) + vr * ddy(zs)
     ramp = np.clip((relief - 100) / 300, 0, 1)
+    lee_down = np.maximum(0, -upslope) * P.SINK_LEE * ramp
     lee_held = np.where(hth > 0, P.lee_hold(-upslope, np.hypot(ur, vr), ws, zi, ramp), 0)
     held = np.minimum(held + lee_held, P.HOLD_CAP * zi)
     ws = np.where((held > 0) & (zi > 0), ws * np.cbrt(np.maximum(zi - held, 1) / np.maximum(zi, 1)), ws)
@@ -494,6 +495,7 @@ def analyse(s, lv, levels, grid_step, lat2d, lon2d=None, valid=None):
     cover = (s.get('tcc'), s.get('lcc'), s.get('mcc'))
     showers = showers_share(s.get('cprate'), rain, overdev, cudepth, radar, cover)
     ws_out = ws * rain_damp(rain, convective_rain(overdev, cudepth, refc, rain, showers, *cover), ws)
+    ws_out = np.where(ws_out > 0, P.lee_weaken(ws_out, lee_down, np.hypot(ur, vr)), ws_out)
     bs = P.bs_ratio(ws_out, np.hypot(ub, vb))
     cudepth_out = np.where(has_cu & convecting & (overdev >= 50), np.maximum(cudepth, cudeep), cudepth)
     thermals_here = ws > 0
@@ -573,7 +575,7 @@ def analyse(s, lv, levels, grid_step, lat2d, lon2d=None, valid=None):
         wc = np.concatenate([np.zeros_like(zs)[None], np.where(under, 0, np.nan_to_num(w_up, nan=0))])
         wl = sum((P.column_at(zc, wc, zs + h) for h in WAVE_BAND_M)) / len(WAVE_BAND_M)
         out['wlow'] = np.where(hilly & np.isfinite(s['t2']), wl, np.nan)
-    lee = np.maximum(0, -upslope) * P.SINK_LEE * ramp
+    lee = lee_down
     falling = P.precip_type(rain, s.get('crain'), s.get('csnow'), s.get('cfrzr'), s.get('cicep'), s.get('ptype'), s['t2'])
     snow = P.snow_share(falling, prof, depth)
     sink, between, why = P.sink_rate(prof, wz_up, w_up, ws_out, zi, depth, rain, s.get('refd1'), lee, parts=True, snow=snow)
