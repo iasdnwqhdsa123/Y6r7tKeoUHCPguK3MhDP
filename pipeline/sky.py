@@ -10,6 +10,7 @@ SC_SPREAD = 75.0
 ACCAS_MIN = 25.0
 THICK_SUN, THIN_SUN = (0.45, 0.6)
 CONV_DBZ, CONV_DBZ_RAIN, CONV_RAIN, SHOWERS_SHARE = (45.0, (40.0, 2.5), 6.0, 0.5)
+HEAVY_RAIN = 10.0
 CEIL_NONE_JS = 5990.0
 SC_CELL_KM = 1.8
 SCORE_CODES, CLASS_CODE0 = (225, 225)
@@ -87,13 +88,15 @@ def deck_of(mid, upper, thick, sun):
     out = np.where(mid >= OVERCAST, AS, out)
     return out
 
-def convective_rain(overdev, cudepth, refc, rain, showers, total, low, mid):
-    no_deck = np.isfinite(total) & ~(np.nan_to_num(low, nan=0.0) >= OVERCAST) & ~(np.nan_to_num(mid, nan=0.0) >= OVERCAST)
+def convective_rain(overdev, cudepth, refc, rain, showers, total, low, mid, sun=None):
+    m = np.nan_to_num(mid, nan=0.0)
+    shield = np.zeros(np.shape(total), bool) if sun is None else (np.nan_to_num(total, nan=0.0) >= OVERCAST) & (m >= BROKEN) & np.isfinite(sun) & (np.nan_to_num(sun, nan=1.0) < THICK_SUN)
+    no_deck = np.isfinite(total) & ~(np.nan_to_num(low, nan=0.0) >= OVERCAST) & ~(m >= OVERCAST) & ~shield
     r = np.nan_to_num(rain, nan=0.0)
     by_refc = (refc >= CONV_DBZ) | (refc >= CONV_DBZ_RAIN[0]) & (r >= CONV_DBZ_RAIN[1])
     out = np.where(np.isfinite(refc), by_refc, r >= CONV_RAIN)
     out = np.where(np.isfinite(showers), showers >= SHOWERS_SHARE, out)
-    out = out | no_deck
+    out = out | no_deck | (r >= HEAVY_RAIN)
     return out | (np.nan_to_num(overdev, nan=0.0) >= 30) | (np.nan_to_num(cudepth, nan=0.0) >= 2500)
 CU_OVERSHOOT, CU_OVERSHOOT_MIN = (0.5, 500.0)
 CU_COVER = (0.2, 0.25)
@@ -140,7 +143,7 @@ def classify(v):
     cls = np.where(cu >= CB, CB, cls)
     cls = np.where(np.isfinite(score), cls, np.nan)
     r = np.nan_to_num(v['rain'], nan=0.0)
-    conv = convective_rain(od, d, v['refc'], v['rain'], v['showers'], total, low, mid)
+    conv = convective_rain(od, d, v['refc'], v['rain'], v['showers'], total, low, mid, sun)
     wet = np.where(conv, SHOWERS, np.where((r < 1) & has_c & (c < 600) & (mi < BROKEN), ST, NS))
     over = deck_of(mi, upper, thick, sun)
     some = np.isfinite(d) | np.isfinite(low)

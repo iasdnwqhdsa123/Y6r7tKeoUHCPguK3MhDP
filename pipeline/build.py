@@ -346,14 +346,15 @@ def cumulus_cover(p_base, ps, tops, bands, cc=None, cc_levels=P.CC_LEVELS):
 SHOWERS_SHARE = 0.5
 OVERCAST = 85.0
 
-def no_deck(tcc, lcc=None, mcc=None):
+def no_deck(tcc, lcc=None, mcc=None, sun=None):
     if tcc is None:
         return False
     over = lambda c: np.zeros(np.shape(tcc), bool) if c is None else np.nan_to_num(c, nan=0) >= OVERCAST
-    return np.isfinite(tcc) & ~over(lcc) & ~over(mcc)
+    shield = np.zeros(np.shape(tcc), bool) if sun is None or mcc is None else (np.nan_to_num(tcc, nan=0) >= OVERCAST) & (np.nan_to_num(mcc, nan=0) >= sky.BROKEN) & (np.nan_to_num(sun, nan=1) < sky.THICK_SUN)
+    return np.isfinite(tcc) & ~over(lcc) & ~over(mcc) & ~shield
 
-def convective_rain(overdev, cudepth, refc, rain, showers=None, tcc=None, lcc=None, mcc=None):
-    conv = (overdev >= 30) | (cudepth >= 2500) | no_deck(tcc, lcc, mcc)
+def convective_rain(overdev, cudepth, refc, rain, showers=None, tcc=None, lcc=None, mcc=None, sun=None):
+    conv = (overdev >= 30) | (cudepth >= 2500) | no_deck(tcc, lcc, mcc, sun) | (np.nan_to_num(rain, nan=0) >= sky.HEAVY_RAIN)
     if showers is not None:
         return conv | (np.nan_to_num(showers, nan=0) >= SHOWERS_SHARE)
     if refc is None:
@@ -495,7 +496,8 @@ def analyse(s, lv, levels, grid_step, lat2d, lon2d=None, valid=None):
     radar = refc if refc is None or s.get('refmax') is None else np.maximum(refc, np.nan_to_num(s['refmax'], nan=0))
     cover = (s.get('tcc'), s.get('lcc'), s.get('mcc'))
     showers = showers_share(s.get('cprate'), rain, overdev, cudepth, radar, cover)
-    ws_out = ws * rain_damp(rain, convective_rain(overdev, cudepth, refc, rain, showers, *cover), ws)
+    sun_now = sunshine(s.get('sw'), valid, lat2d, lon2d)
+    ws_out = ws * rain_damp(rain, convective_rain(overdev, cudepth, refc, rain, showers, *cover, sun_now), ws)
     bs = P.bs_ratio(ws_out, np.hypot(ub, vb))
     cudepth_out = np.where(has_cu & convecting & (overdev >= 50), np.maximum(cudepth, cudeep), cudepth)
     thermals_here = ws > 0
@@ -509,7 +511,7 @@ def analyse(s, lv, levels, grid_step, lat2d, lon2d=None, valid=None):
         sounding[f'dth_m{dz}'] = P.theta(t, p) - thml
         sounding[f'q_m{dz}'] = P.mixing_ratio(np.minimum(td, t), p) * 1000
     sounding = {k: np.where(thermals_here, v, np.nan) for k, v in sounding.items()}
-    out = {'wstar': ws_out, 'zi': zi, 'depth': depth, 'cubase': np.where(has_cu, lcl, np.nan), 'cudepth': cudepth_out, 'overdev': overdev, 'bs': bs, 'blapse': np.clip(blapse, 0, 15), 'twidth': twidth, 'cape': cape, 'rain': rain, 'showers': showers, 't2': s['t2'], 'td2': s['td2'], 'mslp': s.get('mslp'), 'sst': water_temp(s), 'heat': heat, 'sun': sunshine(s.get('sw'), valid, lat2d, lon2d), 'densalt': P.density_altitude(s['ps'], s['t2']), 'gust': s.get('gust'), 'cloud': s.get('tcc'), 'cloudlow': s.get('lcc'), 'cloudmid': s.get('mcc'), 'cloudhigh': s.get('hcc'), 'pm25': s.get('smoke'), 'snowd': None if s.get('snod') is None else np.maximum(s['snod'], 0), 'soilm': P.soil_wetness(s.get('mstav'), s.get('soilw'), s.get('wilt'), s.get('fldcp'), s.get('soilm9')), 'u_sfc': s['u10'], 'v_sfc': s['v10'], 'u_blavg': ub, 'v_blavg': vb, 'u_bltop': ut, 'v_bltop': vt}
+    out = {'wstar': ws_out, 'zi': zi, 'depth': depth, 'cubase': np.where(has_cu, lcl, np.nan), 'cudepth': cudepth_out, 'overdev': overdev, 'bs': bs, 'blapse': np.clip(blapse, 0, 15), 'twidth': twidth, 'cape': cape, 'rain': rain, 'showers': showers, 't2': s['t2'], 'td2': s['td2'], 'mslp': s.get('mslp'), 'sst': water_temp(s), 'heat': heat, 'sun': sun_now, 'densalt': P.density_altitude(s['ps'], s['t2']), 'gust': s.get('gust'), 'cloud': s.get('tcc'), 'cloudlow': s.get('lcc'), 'cloudmid': s.get('mcc'), 'cloudhigh': s.get('hcc'), 'pm25': s.get('smoke'), 'snowd': None if s.get('snod') is None else np.maximum(s['snod'], 0), 'soilm': P.soil_wetness(s.get('mstav'), s.get('soilw'), s.get('wilt'), s.get('fldcp'), s.get('soilm9')), 'u_sfc': s['u10'], 'v_sfc': s['v10'], 'u_blavg': ub, 'v_blavg': vb, 'u_bltop': ut, 'v_bltop': vt}
     out.update(ccl)
     cud_w = np.minimum(np.nan_to_num(cudepth_out, nan=0), CU_WIND_DEPTH)
     out['u_cuw'], out['v_cuw'] = (np.where(has_cu, a, np.nan) for a in prof.at(zs + 2 + lcl + cud_w / 2, 'u', 'v'))
@@ -994,7 +996,7 @@ def sounding_grid(src, parts, windows, shape, q):
         out.append(np.ascontiguousarray(q[n][::S, ::S]) if n in q else np.full(out[0].shape, 255, np.uint8))
     return np.stack(out)
 _CTX: dict = {}
-HOURS_VERSION = 23
+HOURS_VERSION = 24
 
 def _job_hour(job):
     run, fh = job if isinstance(job, tuple) else (_CTX['run'], job)
