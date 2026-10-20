@@ -275,16 +275,18 @@ def glacier_sink(snowd, t2, slope, day):
     steep = 0.3 + 0.7 * np.clip(np.nan_to_num(slope, nan=0) / 0.15, 0, 1)
     return (SINK_GLACIER * snow_cover(snowd) * warm * steep * (np.nan_to_num(day, nan=0) > 0)).astype(np.float32)
 PUMP_SINK, PUMP_LIFT = (0.2, 0.3)
-PUMP_REACH = (25.0, 80.0)
+PUMP_REACH = (25.0, 100.0)
+PUMP_HEAT = 150.0
+PUMP_CALM = (6.0, 14.0)
 PUMP_RESOLVED_KM = 25.0
 PUMP_NIGHT = 0.3
 PUMP_COOL_WM2 = 40.0
 PUMP_WIND, PUMP_DEPTH = ((2.0, 1.5), (1000.0, 300.0))
 PUMP_WIND_KM = (8.0, 25.0)
-PUMP_TOP_S, PUMP_TOP_CAP = (1800.0, 0.2)
-LEE_REL, LEE_RUN_M, LEE_TOP_CAP, HOLD_CAP = (0.3, 4000.0, 0.2, 0.3)
+PUMP_TOP_S, PUMP_TOP_CAP = (7200.0, 0.3)
+LEE_REL, LEE_RUN_M, LEE_TOP_CAP, HOLD_CAP = (0.3, 4000.0, 0.2, 0.35)
 LEE_GATE = 2.0
-LEE_CLIMB, LEE_CLIMB_CAP = (0.3, 0.2)
+VM_CLIMB, VM_DOWN_CAP, VM_UP_CAP = (0.5, 0.2, 0.15)
 _PUMP_GEO = {}
 
 def lee_hold(down, speed, ws, zi, ramp=1.0):
@@ -294,11 +296,17 @@ def lee_hold(down, speed, ws, zi, ramp=1.0):
     held = LEE_REL * gate * ramp * np.maximum(np.nan_to_num(down, nan=0), 0) / speed * LEE_RUN_M
     return np.minimum(held, LEE_TOP_CAP * np.maximum(np.nan_to_num(zi, nan=0), 0)).astype(np.float32)
 
-def lee_weaken(ws, descent, speed):
+def vertical_motion(conv, sink, why):
+    c = np.nan_to_num(np.asarray(conv, np.float32), nan=0)
+    sk = np.nan_to_num(np.asarray(sink, np.float32), nan=0)
+    k = np.rint(np.nan_to_num(why, nan=0))
+    wd = np.where(((k == 2) | (k == 5)) & (sk > 0), -sk, 0).astype(np.float32)
+    return np.where(wd == 0, c, np.where(c >= 0, c + wd, np.minimum(c, wd))).astype(np.float32)
+
+def air_motion_climb(ws, vm):
     ws = np.nan_to_num(np.asarray(ws, np.float32), nan=0)
-    gate = np.clip(np.maximum(np.asarray(speed, np.float32), 1.0) / (LEE_GATE * np.maximum(ws, 0.3)) - 1, 0, 1)
-    cut = np.minimum(LEE_CLIMB * gate * np.maximum(np.nan_to_num(descent, nan=0), 0), LEE_CLIMB_CAP * np.maximum(ws, 0))
-    return (ws - cut).astype(np.float32)
+    d = np.clip(VM_CLIMB * np.nan_to_num(vm, nan=0), -VM_DOWN_CAP * ws, VM_UP_CAP * ws)
+    return np.where(ws > 0, ws + d, ws).astype(np.float32)
 
 def pump_unresolved(grid_step):
     return float(np.clip(grid_step * 111.0 / PUMP_RESOLVED_KM, 0.25, 1))
@@ -338,9 +346,9 @@ def mountain_plain(zs, heat, u, v, grid_step, cool=None, coslat=None):
         while len(_PUMP_GEO) > 8:
             _PUMP_GEO.pop(next(iter(_PUMP_GEO)))
     fore, ridge, mtn, ex, ey = geo
-    drive = np.clip(box(np.nan_to_num(heat, nan=0), 40.0) / 250, 0, 1)
+    drive = np.clip(box(np.nan_to_num(heat, nan=0), 40.0) / PUMP_HEAT, 0, 1)
     night = np.zeros_like(zs) if cool is None else np.clip(box(np.nan_to_num(cool, nan=0), 40.0), 0, 1)
-    calm = np.clip((12 - np.hypot(np.nan_to_num(u, nan=0), np.nan_to_num(v, nan=0))) / 7, 0, 1)
+    calm = np.clip((PUMP_CALM[1] - np.hypot(np.nan_to_num(u, nan=0), np.nan_to_num(v, nan=0))) / (PUMP_CALM[1] - PUMP_CALM[0]), 0, 1)
     sink = PUMP_SINK * calm * (fore * drive + PUMP_NIGHT * mtn * night)
     lift = PUMP_LIFT * calm * (ridge * drive + PUMP_NIGHT * fore * night) * pump_unresolved(grid_step)
     speed = fore * calm * (PUMP_WIND[0] * drive - PUMP_WIND[1] * night) * pump_wind_share(grid_step)

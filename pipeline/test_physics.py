@@ -1637,12 +1637,11 @@ class Sink(unittest.TestCase):
         self.assertEqual(float(P.lee_hold(f(-1), f(15), f(2), f(2000))[0]), 0)
         self.assertEqual(float(P.lee_hold(f(1.5), f(15), f(2), f(2000), ramp=0)[0]), 0)
 
-    def test_lee_weaken(self):
+    def test_air_motion_climb(self):
         f = lambda *a: np.array(a, np.float32)
-        self.assertAlmostEqual(float(P.lee_weaken(f(2), f(0.8), f(15))[0]), 2 - 0.24, places=3)
-        self.assertAlmostEqual(float(P.lee_weaken(f(2), f(5), f(20))[0]), 1.6, places=3)
-        self.assertEqual(float(P.lee_weaken(f(2), f(0.8), f(4))[0]), 2)
-        self.assertEqual(float(P.lee_weaken(f(2), f(0), f(15))[0]), 2)
+        vm = P.vertical_motion(f(-0.1, 0.4, 0.2, -0.3, 0.0), f(0.3, 0.1, 0.5, 0.0, 0.1), f(2, 2, 3, 0, 5))
+        np.testing.assert_allclose(vm, [-0.3, 0.3, 0.2, -0.3, -0.1], atol=1e-06)
+        np.testing.assert_allclose(P.air_motion_climb(f(2, 2, 2, 2, 0), f(-0.2, -2, 0.4, 2, -1)), [1.9, 1.6, 2.2, 2.3, 0], atol=1e-06)
 
     def test_mountain_plain(self):
         n = 60

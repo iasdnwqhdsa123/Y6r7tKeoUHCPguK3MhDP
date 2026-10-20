@@ -495,7 +495,6 @@ def analyse(s, lv, levels, grid_step, lat2d, lon2d=None, valid=None):
     cover = (s.get('tcc'), s.get('lcc'), s.get('mcc'))
     showers = showers_share(s.get('cprate'), rain, overdev, cudepth, radar, cover)
     ws_out = ws * rain_damp(rain, convective_rain(overdev, cudepth, refc, rain, showers, *cover), ws)
-    ws_out = np.where(ws_out > 0, P.lee_weaken(ws_out, lee_down, np.hypot(ur, vr)), ws_out)
     bs = P.bs_ratio(ws_out, np.hypot(ub, vb))
     cudepth_out = np.where(has_cu & convecting & (overdev >= 50), np.maximum(cudepth, cudeep), cudepth)
     thermals_here = ws > 0
@@ -587,6 +586,9 @@ def analyse(s, lv, levels, grid_step, lat2d, lon2d=None, valid=None):
     sink = np.maximum(sink, pump_sink)
     inside = np.isfinite(s['t2'])
     out['sink'], out['sinkth'], out['sinkby'] = (np.where(inside, a, np.nan) for a in (sink, between, why))
+    ws_air = P.air_motion_climb(out['wstar'], P.vertical_motion(out['conv'], sink, why))
+    out['wstar'] = np.where(inside, ws_air, out['wstar'])
+    out['bs'] = np.where(inside, P.bs_ratio(out['wstar'], np.hypot(ub, vb)), out['bs'])
     score, wavelen = P.wave_environment(prof)
     lb = zs + 500
     ul, vl = P.layer_mean(prof, lb, np.maximum(lb + 800, np.minimum(zs + 3000, prof.ztop - 2500)), ['u', 'v'], 6)
