@@ -8,6 +8,7 @@ import sys
 import time
 from datetime import datetime, timedelta, timezone
 import numpy as np
+from concurrent.futures import ThreadPoolExecutor
 from scipy.spatial import cKDTree
 import grib
 import physics
@@ -17,9 +18,9 @@ import sky
 import tiles
 from sources import OPEN_AHEAD_H, OPEN_SLACK_H, SOURCES, candidate_runs, latest_complete_run, needed_times
 from tiles import downsample, downsample_peak
-REGIONS = {'hrrr': (-125.0, 24.0, -66.5, 50.0, 0.03), 'gfs': (-170.0, -54.75, 179.75, 70.0, 0.25), 'ecmwf': (-130.0, 20.0, -60.0, 55.0, 0.25), 'icon': (-170.0, -54.875, 179.75, 70.0, 0.125), 'icond2': (-3.94, 43.18, 20.34, 58.08, 0.02)}
+REGIONS = {'hrrr': (-125.0, 24.0, -66.5, 50.0, 0.03), 'gfs': (-170.0, -54.75, 179.75, 70.0, 0.25), 'ecmwf': (-170.0, -54.9, 179.9, 70.0, 0.1), 'icon': (-170.0, -54.875, 179.75, 70.0, 0.125), 'icond2': (-3.94, 43.18, 20.34, 58.08, 0.02)}
 KEEP = {'gfs': ((-130.0, 20.25, -52.0, 56.0), (-168.0, 59.0, -130.25, 70.0), (-163.0, 54.5, -148.0, 59.0), (-137.0, 54.5, -130.25, 59.0), (-25.0, 34.0, 44.75, 70.0), (-13.0, 27.0, 12.0, 34.0), (-76.0, -54.75, -53.0, -16.0), (-53.0, -34.0, -34.0, -2.0), (-82.0, -16.0, -66.0, 12.5), (11.0, -35.0, 36.0, -16.0), (166.0, -48.0, 179.0, -34.0), (114.0, -35.5, 120.5, -28.5), (131.5, -26.0, 136.5, -21.5), (144.0, -27.0, 154.0, -18.5), (136.0, -39.5, 154.0, -27.0), (143.5, -44.0, 148.75, -39.5), (72.0, 26.0, 97.0, 37.0))}
-KEEP['icon'] = KEEP['gfs']
+KEEP['icon'] = KEEP['ecmwf'] = KEEP['gfs']
 
 def keep_mask(src_id, lat2d, lon2d):
     boxes = KEEP.get(src_id)
@@ -90,9 +91,10 @@ def analyse_kept(s, lv, levels, grid_step, lat2d, lon2d, valid, windows):
     shape = lat2d.shape
     cut = [lambda a, w=w: _crop(a, *w, shape) for w, _ in windows]
     return analyse_parts([(c(s), c(lv), levels) for c in cut], [(c(lat2d), c(lon2d)) for c in cut], grid_step, valid, windows, shape)
-TILE = {'hrrr': 100, 'gfs': 100, 'ecmwf': 100, 'icon': 200, 'icond2': 100}
+TILE = {'hrrr': 100, 'gfs': 100, 'ecmwf': 250, 'icon': 200, 'icond2': 100}
 OVERVIEW = {'hrrr': (2, 4, 8), 'icond2': (2, 4, 8)}
 LEVEL_TILE = 200
+DECODE_THREADS = 4
 CLASS_FIELDS = {'ptype', 'fltcat', 'sinkby', 'cuclass', 'cusky'}
 WIND_ALTS_FT = [2000, 3000, 4000, 5000, 6000, 8000, 10000, 12000, 15000, 18000, 24000, 30000]
 WAVE_ALTS_FT = [8000, 10000, 12000, 14000, 18000, 24000]
@@ -183,6 +185,27 @@ class Regridder:
             keep = np.isfinite(vals) & ~self.outside.reshape(-1)[tgt]
             flat[tgt[keep]] = vals[keep]
         return out
+
+    @classmethod
+    def regular(cls, src_lat, src_lon, region):
+        r = object.__new__(cls)
+        w, s, e, n, step = region[:5]
+        r.lons, r.lats = target_grid(region)
+        r.shape = (len(r.lats), len(r.lons))
+        lat1, lon1 = (src_lat[:, 0], src_lon[0, :])
+        dlat, lon0 = (float(lat1[0] - lat1[1]), float(lon1[0]))
+        dlon = float((lon1[1] - lon1[0]) % 360)
+        ny, nx = (len(lat1), len(lon1))
+        iy = np.round((lat1[0] - r.lats) / dlat).astype(np.int64)
+        ix = np.round((r.lons - lon0) % 360 / dlon).astype(np.int64) % nx
+        bad = (iy < 0) | (iy >= ny)
+        r.index = (np.clip(iy, 0, ny - 1)[:, None] * nx + ix[None, :]).ravel()
+        r.outside = np.repeat(bad, len(r.lons))
+        cx = np.round((src_lon - w) / step).astype(np.int64)
+        cy = np.round((n - src_lat) / step).astype(np.int64)
+        r.cell = np.where((cx >= 0) & (cx < r.shape[1]) & (cy >= 0) & (cy < r.shape[0]), cy * r.shape[1] + cx, -1).ravel()
+        r._plan = None
+        return r
 
     @classmethod
     def identity(cls, region):
@@ -280,7 +303,7 @@ CU_NEAR_HPA = 75.0
 DALR = 9.8
 BLOCK_LAYER = 500.0
 WAVE_BAND_M = (300.0, 600.0, 900.0)
-WAVE_BAND_MAX_STEP = 0.1
+WAVE_BAND_MAX_STEP = 0.09
 BLUE_WIDTH = 0.85
 
 def thermal_width(zi, blapse, tilt, blue=False):
@@ -787,7 +810,8 @@ def resolve_windows(src, run, fh, native, earlier):
     return native
 
 def fetch_hour(src, run, fh):
-    return src.fetch(run, fh, src.inventory(run, fh))
+    sounding = fh <= SND_AHEAD_H.get(src.id, 10 ** 6)
+    return src.fetch(run, fh, src.inventory(run, fh, None if sounding else src.wanted(sounding=False)))
 
 def total_of_bands(tcc, bands):
     clear = np.prod([1 - np.clip(np.nan_to_num(b, nan=0), 0, 100) / 100 for b in bands], axis=0)
@@ -802,7 +826,7 @@ def load_hour(src, run, fh, regrid_holder, region, valid, raw=None):
         lat, lon = grib.latlons(any_msg)
         if lat.ndim == 1 or src.grid == 'latlon':
             lat = lat.reshape(lat.shape[0], -1)
-        regrid_holder['r'] = Regridder(lat, lon, region)
+        regrid_holder['r'] = Regridder.regular(lat, lon, region) if src.regular else Regridder(lat, lon, region)
         regrid_holder['rot'] = grib.earth_rotation(raw.get(src.surface['u10']) or any_msg)
     rg = regrid_holder['r']
     if 'parts' not in regrid_holder:
@@ -812,7 +836,15 @@ def load_hour(src, run, fh, regrid_holder, region, valid, raw=None):
     windows, parts = (regrid_holder['windows'], regrid_holder['parts'])
     boxes = regrid_holder['boxes']
     coords = [np.meshgrid(p.lats, p.lons, indexing='ij') for p in parts]
-    native = {name: None if raw.get(k) is None else _decode(raw[k], region, boxes) for name, k in src.surface.items()}
+    grib_msg = lambda m: isinstance(m, (bytes, bytearray))
+    with ThreadPoolExecutor(DECODE_THREADS) as ex:
+        sk = [(name, k) for name, k in src.surface.items() if raw.get(k) is not None]
+        vals = ex.map(lambda nk: _decode(raw[nk[1]], region, boxes), sk) if all((grib_msg(raw[k]) for _, k in sk)) else map(lambda nk: _decode(raw[nk[1]], region, boxes), sk)
+        native = {name: None for name in src.surface}
+        native.update(zip([n for n, _ in sk], vals))
+        decoded = {}
+        lk = [k for k, m in raw.items() if k not in src.surface.values() and grib_msg(m)]
+        decoded.update(zip(lk, ex.map(lambda k: [p(f) for f in [_decode(raw[k], region, boxes)] for p in parts], lk)))
     cache = {}
 
     def earlier(pfh, key):
@@ -850,7 +882,6 @@ def load_hour(src, run, fh, regrid_holder, region, valid, raw=None):
         v = native.get(k)
         if v is not None:
             as_fraction[k] = np.nanmax(rg(v[1] if isinstance(v, tuple) else v)) <= 1.01
-    decoded = {}
 
     def get(key):
         if key not in decoded:
@@ -928,6 +959,8 @@ def load_hour(src, run, fh, regrid_holder, region, valid, raw=None):
         if s.get('sw') is None:
             s['sw'] = solar_estimate(valid, lat2d, lon2d, s.get('tcc', np.zeros_like(s['t2'])))
         s['hub_m'] = src.hub_m
+        if src.derive:
+            s = src.derive(s)
         if src.snd_levels:
             if windows is not None and src.snd_step != 1:
                 raise ValueError('snd_step > 1 needs the whole grid (no KEEP windows)')
@@ -938,7 +971,7 @@ SND_VARS = ('t', 'dpd', 'u', 'v', 'z', 'w')
 SND_SFC = {'ps': (400.0, 1100.0), 'sw': (0.0, 1270.0)}
 SND_MAP = ('elevation', 't2', 'td2', 'mslp', 'cloud', 'cloudlow', 'cloudmid', 'cloudhigh', 'rain', 'showers', 'cape', 'zi', 'heat', 'u_sfc', 'v_sfc', 'gust', 'vis', *(f'cc{p}' for p in P.CC_LEVELS))
 SND_BLOCK = 8
-SND_AHEAD_H = {'gfs': 48}
+SND_AHEAD_H = {'gfs': 48, 'ecmwf': 48}
 
 def snd_enc(p):
     h = 44330.8 * (1 - (p / 1013.25) ** 0.190263)
@@ -1055,7 +1088,7 @@ def _process_hour(job, raw=None):
             v[~keep] = 255
     if _CTX.pop('pick_physics', False):
         pick_physics(q, lambda: analyse_parts(parts, part_coords(holder['parts']), region[4], valid, windows, lat2d.shape), fh, keep)
-    q.update(sky.cloud_overview(q, ENC, region[4] <= 0.1))
+    q.update(sky.cloud_overview(q, ENC, region[4] <= sky.FINE_STEP))
     if src.snd_levels and valid - run <= timedelta(hours=SND_AHEAD_H.get(src.id, 10 ** 6)):
         snd = sounding_grid(src, parts, windows, lat2d.shape, q)
         if snd is not None:
@@ -1614,7 +1647,7 @@ def _publish_open(out, fbase, model, full, times, fields, cutoff, workers, point
             shutil.rmtree(os.path.join(fbase, old), ignore_errors=True)
     open(os.path.join(out, '.changed'), 'w').close()
     return manifest
-STORE_AHEAD_H = {'gfs': 60, 'icon': 60}
+STORE_AHEAD_H = {'gfs': 60, 'icon': 60, 'ecmwf': 60}
 STORE_AFTER_FREE_H = {'hrrr': 12}
 
 def prune_store(hours_dir, ahead_h, now=None):
@@ -1789,7 +1822,7 @@ def main():
     levels = [(k, LEVEL_TILE) for k in OVERVIEW.get(src.id, ())]
     os.makedirs(build_dir, exist_ok=True)
     t0 = time.time()
-    n = sum(run_jobs(_sky_job, [(hours_dir, t, region[4] <= 0.1) for t in times], args.workers))
+    n = sum(run_jobs(_sky_job, [(hours_dir, t, region[4] <= sky.FINE_STEP) for t in times], args.workers))
     if n:
         log(f'{src.id}: Cloud Layers added to {n} stored hours')
     days, present, lpresent = write_tiles(build_dir, hours_dir, times, tile, done[0], levels=levels, workers=args.workers)

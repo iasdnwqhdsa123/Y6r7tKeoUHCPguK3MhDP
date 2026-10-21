@@ -48,9 +48,11 @@ def parse_noaa_idx(text: str) -> list[dict]:
 def parse_ecmwf_idx(text: str) -> list[dict]:
     rows = []
     for line in text.strip().splitlines():
+        if not line.strip():
+            continue
         j = json.loads(line)
-        lev = j.get('levelist')
-        rows.append({'offset': j['_offset'], 'end': j['_offset'] + j['_length'] - 1, 'var': j['param'], 'level': f'{lev} mb' if lev else j.get('levtype', 'sfc')})
+        lev, kind = (j.get('levelist'), j.get('levtype', 'sfc'))
+        rows.append({'offset': j['_offset'], 'end': j['_offset'] + j['_length'] - 1, 'var': j['param'], 'level': (f'{lev} mb' if kind == 'pl' else f'{kind} {lev}') if lev else kind})
     return rows
 
 def select(rows: list[dict], wanted: list[tuple[str, str]]) -> dict[tuple[str, str], dict]:

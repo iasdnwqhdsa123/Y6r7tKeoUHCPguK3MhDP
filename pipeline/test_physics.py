@@ -121,6 +121,25 @@ class WaterTemperature(unittest.TestCase):
         self.assertEqual(w[3], 25.0, 'no ice value: open water')
         self.assertIsNone(build.water_temp({'tsfc': s['tsfc']}), 'no land-sea mask: no field')
 
+class EcmwfNineKm(unittest.TestCase):
+
+    def test_regular_grid_maps_as_the_kd_tree_does(self):
+        import build
+        lat1, lon1 = (np.arange(90, -90.5, -1.0), np.arange(-180, 180, 1.0))
+        la, lo = np.meshgrid(lat1, lon1, indexing='ij')
+        for reg in ((-170.0, -50.0, 179.0, 70.0, 1.0), (-10.0, 30.0, 40.0, 60.0, 1.0)):
+            a, b = (build.Regridder(la, lo, reg), build.Regridder.regular(la, lo, reg))
+            f = np.random.default_rng(1).random(la.shape)
+            np.testing.assert_array_equal(a(f), b(f))
+            np.testing.assert_array_equal(a.peak(f), b.peak(f))
+
+    def test_snow_depth_and_sea_ice(self):
+        from sources import ifs_derive
+        s = ifs_derive({'sdwe': np.array([0.05, 0.0, 0.05]), 'rsn': np.array([100.0, 300.0, np.nan]), 'sithick': np.array([0.0, 0.5, np.nan]), 't2': np.zeros(3)})
+        np.testing.assert_allclose(s['snod'], [0.5, 0.0, 0.2])
+        np.testing.assert_array_equal(s['ice'], [0, 1, 0])
+        self.assertFalse({'sdwe', 'rsn', 'sithick'} & set(s))
+
 class WindowedFields(unittest.TestCase):
 
     def setUp(self):
@@ -233,6 +252,8 @@ class WindowedFields(unittest.TestCase):
         self.assertEqual(float(native['gust'][0]), 3.0)
         ec = self.S['ecmwf']
         import grib, json
+        soil = grib.parse_ecmwf_idx(json.dumps({'_offset': 0, '_length': 10, 'param': 'vsw', 'levtype': 'sol', 'levelist': '1'}) + '\n\n' + json.dumps({'_offset': 10, '_length': 10, 'param': 't', 'levtype': 'pl', 'levelist': '850'}))
+        self.assertEqual([r['level'] for r in soil], ['sol 1', '850 mb'])
         rows = grib.parse_ecmwf_idx(json.dumps({'_offset': 0, '_length': 10, 'param': '10fg3', 'levtype': 'sfc'}))
         for r in rows:
             r['var'] = ec.alias.get(r['var'], r['var'])
@@ -304,7 +325,7 @@ class WindowedFields(unittest.TestCase):
                 check.main()
                 return dict((line.strip().split('=', 1) for line in f if '=' in line))
 
-        def site(models=('hrrr', 'gfs', 'icon', 'icond2'), free=True, maps=True, stale=False):
+        def site(models=('hrrr', 'gfs', 'ecmwf', 'icon', 'icond2'), free=True, maps=True, stale=False):
 
             def pub(url):
                 if '/free/' in url:
@@ -317,20 +338,29 @@ class WindowedFields(unittest.TestCase):
         self.assertEqual(outputs(site(stale=True))['any'], 'true')
         self.assertEqual(outputs(site(stale=True), '--missing-only')['any'], 'false')
         o = outputs(site(models=(), free=False, maps=False), '--missing-only')
-        self.assertEqual((o['models'], o['free'], o['airspace']), ('hrrr gfs icon icond2', 'true', 'true'))
+        self.assertEqual((o['models'], o['free'], o['airspace']), ('hrrr gfs ecmwf icon icond2', 'true', 'true'))
         from sources import PAUSED, REQUIRED, SOURCES
         self.assertEqual(o['active'], json.dumps([m for m in SOURCES if m not in PAUSED]))
         self.assertEqual(json.loads(o['required']), ['hrrr', 'gfs'])
-        self.assertEqual(outputs(site(models=('hrrr', 'gfs', 'icond2')), '--missing-only')['models'], 'icon')
+        self.assertEqual(outputs(site(models=('hrrr', 'gfs', 'ecmwf', 'icond2')), '--missing-only')['models'], 'icon')
+        self.assertEqual(outputs(site(models=('hrrr', 'gfs', 'icon', 'icond2')), '--missing-only')['models'], 'ecmwf')
         o = outputs(site(maps=False), '--missing-only')
         self.assertEqual((o['models'], o['airspace'], o['any']), ('', 'true', 'true'))
 
-    def test_gfs_sixteen_days_and_ecmwf_paused(self):
+    def test_gfs_sixteen_days_and_ecmwf_at_9km(self):
         from datetime import datetime, timezone
         from sources import DAYS, PAUSED, needed_times
         gfs = self.S['gfs']
         self.assertEqual(DAYS['gfs'], 16)
-        self.assertIn('ecmwf', PAUSED)
+        self.assertNotIn('ecmwf', PAUSED)
+        ec = self.S['ecmwf']
+        run = datetime(2026, 10, 21, 0, tzinfo=timezone.utc)
+        self.assertTrue(ec.url(run, 24, 'pl').endswith('/20261021/00z/ifs/0p1/oper/20261021000000-24h-oper-fc-pl.grib2'))
+        self.assertTrue(ec.idx_url(run, 24, 'sfc').endswith('-24h-oper-fc-sfc.index'))
+        self.assertEqual([f for f in range(0, 241) if ec.fstep(f)][-3:], [228, 234, 240])
+        self.assertTrue(ec.fstep(141) and (not ec.fstep(147)))
+        self.assertEqual(ec.last_fh(run.replace(hour=6)), 144)
+        self.assertEqual(ec.last_fh(run), 240)
         from sources import candidate_runs
         self.assertEqual(gfs.runs, (0, 6, 12, 18))
         self.assertEqual([r.hour for r in candidate_runs(gfs, datetime(2026, 9, 27, 23, 30, tzinfo=timezone.utc), back_hours=24)], [18, 12, 6, 0])
@@ -421,7 +451,7 @@ class FreeWindow(unittest.TestCase):
         self.assertIn('wstar', nm['fields'])
         self.assertTrue(build.NOW_FIELDS > build.FREE_FIELDS and 'twidth' in build.NOW_FIELDS)
         self.assertIsNone(build.write_free(out, 'ecmwf'))
-        self.assertEqual([build.free_ahead(m).total_seconds() / 3600 for m in ('hrrr', 'gfs', 'icon')], [24, 48, 24])
+        self.assertEqual([build.free_ahead(m).total_seconds() / 3600 for m in ('hrrr', 'gfs', 'icon', 'ecmwf')], [24, 48, 24, 24])
 
 class ReuseHours(unittest.TestCase):
 

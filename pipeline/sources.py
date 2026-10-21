@@ -33,6 +33,8 @@ class Source:
     workers = 8
     notes: list[str] = field(default_factory=list)
     short_runs: dict[int, int] = field(default_factory=dict)
+    derive: callable = None
+    regular: bool = False
 
     def last_fh(self, run: datetime) -> int:
         return self.short_runs.get(run.hour, self.max_fhour)
@@ -46,7 +48,7 @@ class Source:
     def fetch(self, run, fh, sel):
         return grib.fetch_messages(self.url(run, fh), sel, workers=self.workers)
 
-    def wanted(self):
+    def wanted(self, sounding=True):
         w = [(g, lev) for g, lev in self.surface.values()]
         for lv in self.levels:
             for g in self.level_vars.values():
@@ -54,7 +56,7 @@ class Source:
         for lv in self.cloud_levels:
             for c in self.cloud_vars():
                 w.append((self.level_vars[c], f'{lv} mb'))
-        for lv in self.snd_levels:
+        for lv in self.snd_levels if sounding else ():
             if lv in self.levels:
                 continue
             for c in self.snd_vars():
@@ -91,13 +93,14 @@ class IFS(Source):
     mirror = 0
     workers = 4
     inventory_tries = 2
+    PARTS = ('sfc', 'pl')
 
-    def url(self, run, fh, mirror=None):
+    def url(self, run, fh, part='sfc', mirror=None):
         m = self.MIRRORS[self.mirror if mirror is None else mirror]
-        return f'{m}/{run:%Y%m%d}/{run:%H}z/ifs/0p25/oper/{run:%Y%m%d%H}0000-{fh}h-oper-fc.grib2'
+        return f'{m}/{run:%Y%m%d}/{run:%H}z/ifs/0p1/oper/{run:%Y%m%d%H}0000-{fh}h-oper-fc-{part}.grib2'
 
-    def idx_url(self, run, fh):
-        return self.url(run, fh)[:-len('.grib2')] + '.index'
+    def idx_url(self, run, fh, part='pl'):
+        return self.url(run, fh, part)[:-len('.grib2')] + '.index'
 
     def _each_mirror(self, call):
         last = None
@@ -114,10 +117,27 @@ class IFS(Source):
         raise last
 
     def inventory(self, run, fh, wanted=None):
-        return self._each_mirror(lambda: Source.inventory(self, run, fh, wanted))
+
+        def one():
+            rows = []
+            for part in self.PARTS:
+                text = grib.http_get(self.idx_url(run, fh, part), tries=self.inventory_tries).decode()
+                for r in grib.parse_ecmwf_idx(text):
+                    r['var'], r['part'] = (self.alias.get(r['var'], r['var']), part)
+                    rows.append(r)
+            return grib.select(rows, wanted or self.wanted())
+        return self._each_mirror(one)
 
     def fetch(self, run, fh, sel):
-        return self._each_mirror(lambda: grib.fetch_messages(self.url(run, fh), sel, workers=self.workers, gap=1 << 20, tries=2))
+
+        def one():
+            out = {}
+            for part in self.PARTS:
+                mine = {k: r for k, r in sel.items() if r.get('part', 'sfc') == part}
+                if mine:
+                    out.update(grib.fetch_messages(self.url(run, fh, part), mine, workers=self.workers, gap=1 << 20, tries=2))
+            return out
+        return self._each_mirror(one)
 
 @dataclass
 class OpenMeteo(Source):
@@ -141,13 +161,23 @@ class OpenMeteo(Source):
     def fetch(self, run, fh, sel):
         import om
         return om.fetch_hour([self.url(run, fh), self.url(run, fh, '_model-level')], self.static_url(), om.Grid(*self.grid_def), sel, workers=self.workers)
+
+def ifs_derive(s):
+    import numpy as np
+    sd, rsn, sit = (s.pop('sdwe', None), s.pop('rsn', None), s.pop('sithick', None))
+    if sd is not None:
+        dens = 250.0 if rsn is None else np.where(np.nan_to_num(rsn, nan=0) > 50, rsn, 250.0)
+        s['snod'] = np.maximum(np.nan_to_num(sd, nan=0), 0) * 1000.0 / dens
+    if sit is not None:
+        s['ice'] = (np.nan_to_num(sit, nan=0) > 0.05).astype(np.float32)
+    return s
 GA_NCEP = {'ceil': ('HGT', 'cloud ceiling'), 'vis': ('VIS', 'surface'), 'frz': ('HGT', '0C isotherm'), 'refc': ('REFC', 'entire atmosphere'), 'crain': ('CRAIN', 'surface'), 'csnow': ('CSNOW', 'surface'), 'cfrzr': ('CFRZR', 'surface'), 'cicep': ('CICEP', 'surface')}
 BAND_RAIN = {'refd1': ('REFD', '1000 m above ground')}
 GFS_HOURLY_TO = 120
 GFS_3H_TO = 240
-PAUSED = ('ecmwf',)
+PAUSED = ()
 REQUIRED = ('hrrr', 'gfs')
-OPEN_AHEAD_H = {'hrrr': 24, 'gfs': 48, 'icon': 24, 'icond2': 24}
+OPEN_AHEAD_H = {'hrrr': 24, 'gfs': 48, 'icon': 24, 'icond2': 24, 'ecmwf': 24}
 OPEN_SLACK_H = 7
 GFS_RUNS = (0, 6, 12, 18)
 ICON_HOURLY_TO = 78
@@ -156,7 +186,7 @@ ICON_SHORT = {6: 120, 18: 120}
 LEVELS_FINE = (1000, 975, 950, 925, 900, 875, 850, 800, 750, 700, 650, 600, 550, 500, 400, 300)
 ICOND2_RUNS = (0, 6, 12, 18)
 ICOND2_GRID = (43.18, -3.94, 0.02, 746, 1215)
-SOURCES = {'hrrr': HRRR(id='hrrr', label='HRRR', runs=(0, 6, 12, 18), max_fhour=48, grid='lambert', levels=LEVELS_FINE, level_vars={'t': 'TMP', 'td': 'DPT', 'u': 'UGRD', 'v': 'VGRD', 'z': 'HGT', 'w': 'VVEL', 'clw': 'CLMR'}, surface={'zs': ('HGT', 'surface'), 'ps': ('PRES', 'surface'), 't2': ('TMP', '2 m above ground'), 'td2': ('DPT', '2 m above ground'), 'u10': ('UGRD', '10 m above ground'), 'v10': ('VGRD', '10 m above ground'), 'uh': ('UGRD', '80 m above ground'), 'vh': ('VGRD', '80 m above ground'), 'ustar': ('FRICV', 'surface'), 'gust': ('GUST', 'surface'), 'hpbl': ('HPBL', 'surface'), 'shf': ('SHTFL', 'surface'), 'sw': ('DSWRF', 'surface'), 'cape': ('CAPE', 'surface'), 'tcc': ('TCDC', 'entire atmosphere'), 'lcc': ('LCDC', 'low cloud layer'), 'mcc': ('MCDC', 'middle cloud layer'), 'hcc': ('HCDC', 'high cloud layer'), 'prate': ('APCP', 'surface ([1-9]\\d*-\\d+|0-1) hour acc fcst'), 'prate_now': ('PRATE', 'surface'), 'refmax': ('MAXREF', '1000 m above ground'), 'mslp': ('MSLMA', 'mean sea level'), 'smoke': ('MASSDEN', '8 m above ground'), 'tsfc': ('TMP', 'surface'), 'lsm': ('LAND', 'surface'), 'ice': ('ICEC', 'surface'), 'snod': ('SNOD', 'surface'), 'mstav': ('MSTAV', '0 m underground'), **GA_NCEP, 'ctop': ('HGT', 'cloud top'), **BAND_RAIN}, windowed={'prate': 'acc1h'}, fstep=lambda fh: True, hub_m=80.0, cloud_levels=(250, 200), tcc_column_max=True, snd_levels=(1000, 975, 950, 925, 900, 875, 850, 825, 800, 775, 750, 725, 700, 650, 600, 550, 500, 450, 400, 350, 300, 250, 200, 150), snd_step=3), 'gfs': GFS(id='gfs', label='GFS', runs=GFS_RUNS, max_fhour=384, levels=(1000, 975, 950, 925, 900, 850, 800, 750, 700, 650, 600, 550, 500, 400, 300), level_vars={'t': 'TMP', 'rh': 'RH', 'u': 'UGRD', 'v': 'VGRD', 'z': 'HGT', 'w': 'VVEL', 'clw': 'CLMR', 'cc': 'TCDC'}, moisture='rh', surface={'zs': ('HGT', 'surface'), 'ps': ('PRES', 'surface'), 't2': ('TMP', '2 m above ground'), 'td2': ('DPT', '2 m above ground'), 'u10': ('UGRD', '10 m above ground'), 'v10': ('VGRD', '10 m above ground'), 'uh': ('UGRD', '100 m above ground'), 'vh': ('VGRD', '100 m above ground'), 'ustar': ('FRICV', 'surface'), 'gust': ('GUST', 'surface'), 'hpbl': ('HPBL', 'surface'), 'shf': ('SHTFL', 'surface'), 'sw': ('DSWRF', 'surface'), 'cape': ('CAPE', 'surface'), 'tcc': ('TCDC', 'entire atmosphere'), 'lcc': ('LCDC', 'low cloud layer'), 'mcc': ('MCDC', 'middle cloud layer'), 'hcc': ('HCDC', 'high cloud layer'), 'prate': ('PRATE', 'surface \\d+-\\d+ hour ave fcst'), 'prate_now': ('PRATE', 'surface'), 'cprate': ('CPRAT', 'surface \\d+-\\d+ hour ave fcst'), 'cprate_now': ('CPRAT', 'surface'), 'mslp': ('PRMSL', 'mean sea level'), 'lsm': ('LAND', 'surface'), 'tsfc': ('TMP', 'surface'), 'ice': ('ICEC', 'surface'), 'snod': ('SNOD', 'surface'), 'soilw': ('SOILW', '0-0.1 m below ground'), 'wilt': ('WILT', 'surface'), 'fldcp': ('FLDCP', 'surface'), **GA_NCEP, **BAND_RAIN}, windowed={'shf': 'avg6', 'sw': 'avg6', 'prate': 'avg6', 'cprate': 'avg6'}, fstep=lambda fh: fh <= GFS_HOURLY_TO or (fh % 3 == 0 if fh <= GFS_3H_TO else fh % 6 == 0), cloud_levels=(250, 200), tcc_column_max=True, snd_levels=(1000, 975, 950, 925, 900, 850, 800, 750, 700, 650, 600, 550, 500, 450, 400, 350, 300, 250, 200, 150)), 'ecmwf': IFS(id='ecmwf', label='ECMWF', runs=(0, 12), max_fhour=240, idx_kind='ecmwf', omega=True, moisture='rh', cover_tops=('sigma', 0.8, 0.45), levels=(1000, 925, 850, 700, 600, 500, 400, 300), level_vars={'t': 't', 'rh': 'r', 'u': 'u', 'v': 'v', 'z': 'gh', 'w': 'w'}, surface={'t2': ('2t', 'sfc'), 'td2': ('2d', 'sfc'), 'u10': ('10u', 'sfc'), 'v10': ('10v', 'sfc'), 'uh': ('100u', 'sfc'), 'vh': ('100v', 'sfc'), 'ps': ('sp', 'sfc'), 'mslp': ('msl', 'sfc'), 'cape': ('mucape', 'sfc'), 'tcc': ('tcc', 'sfc'), 'lcc': ('lcc', 'sfc'), 'mcc': ('mcc', 'sfc'), 'hcc': ('hcc', 'sfc'), 'prate': ('tp', 'sfc'), 'prate_now': ('tprate', 'sfc'), 'zs': ('z', 'sfc'), 'gust': ('10fg', 'sfc'), 'sw': ('ssrd', 'sfc'), 'lsm': ('lsm', 'sfc'), 'ptype': ('ptype', 'sfc')}, windowed={'sw': 'acc', 'prate': 'accw'}, gust_window=True, alias={'10fg3': '10fg', '10fg6': '10fg'}, cloud_levels=(250, 200), zs_geopotential=True, zs_step0_only=True, fstep=lambda fh: fh % 3 == 0 if fh <= 144 else fh % 6 == 0, notes=["no boundary-layer height or heat flux in open data: parcel method, and heat flux from the model's sunshine and humidity", 'no ceiling, visibility, cloud-top or cloud-water fields in open data: ceiling from the cloud cover diagnosed on each level, the rest from the humidity profile, 2 m humidity and precipitation']), 'icon': OpenMeteo(id='icon', label='ICON', runs=ICON_RUNS, max_fhour=180, short_runs=ICON_SHORT, grid='latlon', moisture='rh', omega=False, cover_tops=('icon', 0.7895, 0.3948), levels=(1000, 950, 925, 900, 850, 800, 700, 600, 500, 400, 300), level_vars={'t': 'temperature', 'rh': 'relative_humidity', 'u': 'wind_u_component', 'v': 'wind_v_component', 'z': 'geopotential_height'}, surface={'zs': ('zs', ''), 'ps': ('ps', ''), 't2': ('temperature_2m', ''), 'td2': ('td2', ''), 'u10': ('wind_u_component_10m', ''), 'v10': ('wind_v_component_10m', ''), 'uh': ('wind_u_component_80m', ''), 'vh': ('wind_v_component_80m', ''), 'gust': ('wind_gusts_10m', ''), 'shf': ('shf', ''), 'sw': ('sw', ''), 'cape': ('cape', ''), 'tcc': ('cloud_cover', ''), 'lcc': ('cloud_cover_low', ''), 'mcc': ('cloud_cover_mid', ''), 'hcc': ('cloud_cover_high', ''), 'prate': ('precipitation', ''), 'mslp': ('pressure_msl', ''), 'cprate': ('showers', ''), 'tsfc': ('soil_temperature_0cm', ''), 'lsm': ('lsm', ''), 'ice': ('ice', ''), 'snod': ('snow_depth', ''), 'frz': ('freezing_level_height', ''), 'ptype': ('ptype', ''), 'soilm9': ('soil_moisture_3_to_9cm', '')}, windowed={'sw': 'mean', 'shf': 'mean', 'prate': 'sum', 'cprate': 'sum'}, gust_window=True, hub_m=80.0, cloud_levels=(250, 200), rh_over_water=True, cover_calibrated=True, fstep=lambda fh: 1 <= fh <= ICON_HOURLY_TO or (fh % 3 == 0 and ICON_HOURLY_TO < fh <= 180), notes=["DWD's ICON regridded to 0.125° by Open-Meteo (CC BY 4.0)", 'no boundary-layer height, vertical wind, cloud water, ceiling or visibility: parcel method, ceiling from the cloud cover diagnosed on each level, the rest from the humidity profile']), 'icond2': OpenMeteo(id='icond2', label='ICON-D2', runs=ICOND2_RUNS, max_fhour=48, grid='latlon', moisture='rh', omega=False, domain='dwd_icon_d2', grid_def=ICOND2_GRID, snd_levels=(1000, 975, 950, 850, 700, 600, 500, 400, 300, 250, 200), snd_step=4, cover_tops=('icon', 0.7895, 0.3948), levels=(1000, 975, 950, 850, 700, 600, 500, 400, 300), level_vars={'t': 'temperature', 'rh': 'relative_humidity', 'u': 'wind_u_component', 'v': 'wind_v_component', 'z': 'geopotential_height'}, surface={'zs': ('zs', ''), 'ps': ('ps', ''), 't2': ('temperature_2m', ''), 'td2': ('td2', ''), 'u10': ('wind_u_component_10m', ''), 'v10': ('wind_v_component_10m', ''), 'uh': ('wind_u_component_80m', ''), 'vh': ('wind_v_component_80m', ''), 'gust': ('wind_gusts_10m', ''), 'shf': ('shf', ''), 'sw': ('sw', ''), 'cape': ('cape', ''), 'tcc': ('cloud_cover', ''), 'lcc': ('cloud_cover_low', ''), 'mcc': ('cloud_cover_mid', ''), 'hcc': ('cloud_cover_high', ''), 'prate': ('precipitation', ''), 'mslp': ('pressure_msl', ''), 'tsfc': ('soil_temperature_0cm', ''), 'lsm': ('lsm', ''), 'ice': ('ice', ''), 'snod': ('snow_depth', ''), 'frz': ('freezing_level_height', ''), 'ptype': ('ptype', ''), 'soilm9': ('soil_moisture_3_to_9cm', ''), 'vis': ('visibility', '')}, windowed={'sw': 'mean', 'shf': 'mean', 'prate': 'sum'}, gust_window=True, hub_m=80.0, cloud_levels=(250, 200), rh_over_water=True, cover_calibrated=True, fstep=lambda fh: 1 <= fh <= 48, notes=["DWD's ICON-D2 (2.2 km) on a 0.02° grid by Open-Meteo (CC BY 4.0)", 'no boundary-layer height, vertical wind, cloud water, ceiling or radar: parcel method, ceiling from the cloud cover diagnosed on each level'])}
+SOURCES = {'hrrr': HRRR(id='hrrr', label='HRRR', runs=(0, 6, 12, 18), max_fhour=48, grid='lambert', levels=LEVELS_FINE, level_vars={'t': 'TMP', 'td': 'DPT', 'u': 'UGRD', 'v': 'VGRD', 'z': 'HGT', 'w': 'VVEL', 'clw': 'CLMR'}, surface={'zs': ('HGT', 'surface'), 'ps': ('PRES', 'surface'), 't2': ('TMP', '2 m above ground'), 'td2': ('DPT', '2 m above ground'), 'u10': ('UGRD', '10 m above ground'), 'v10': ('VGRD', '10 m above ground'), 'uh': ('UGRD', '80 m above ground'), 'vh': ('VGRD', '80 m above ground'), 'ustar': ('FRICV', 'surface'), 'gust': ('GUST', 'surface'), 'hpbl': ('HPBL', 'surface'), 'shf': ('SHTFL', 'surface'), 'sw': ('DSWRF', 'surface'), 'cape': ('CAPE', 'surface'), 'tcc': ('TCDC', 'entire atmosphere'), 'lcc': ('LCDC', 'low cloud layer'), 'mcc': ('MCDC', 'middle cloud layer'), 'hcc': ('HCDC', 'high cloud layer'), 'prate': ('APCP', 'surface ([1-9]\\d*-\\d+|0-1) hour acc fcst'), 'prate_now': ('PRATE', 'surface'), 'refmax': ('MAXREF', '1000 m above ground'), 'mslp': ('MSLMA', 'mean sea level'), 'smoke': ('MASSDEN', '8 m above ground'), 'tsfc': ('TMP', 'surface'), 'lsm': ('LAND', 'surface'), 'ice': ('ICEC', 'surface'), 'snod': ('SNOD', 'surface'), 'mstav': ('MSTAV', '0 m underground'), **GA_NCEP, 'ctop': ('HGT', 'cloud top'), **BAND_RAIN}, windowed={'prate': 'acc1h'}, fstep=lambda fh: True, hub_m=80.0, cloud_levels=(250, 200), tcc_column_max=True, snd_levels=(1000, 975, 950, 925, 900, 875, 850, 825, 800, 775, 750, 725, 700, 650, 600, 550, 500, 450, 400, 350, 300, 250, 200, 150), snd_step=3), 'gfs': GFS(id='gfs', label='GFS', runs=GFS_RUNS, max_fhour=384, levels=(1000, 975, 950, 925, 900, 850, 800, 750, 700, 650, 600, 550, 500, 400, 300), level_vars={'t': 'TMP', 'rh': 'RH', 'u': 'UGRD', 'v': 'VGRD', 'z': 'HGT', 'w': 'VVEL', 'clw': 'CLMR', 'cc': 'TCDC'}, moisture='rh', surface={'zs': ('HGT', 'surface'), 'ps': ('PRES', 'surface'), 't2': ('TMP', '2 m above ground'), 'td2': ('DPT', '2 m above ground'), 'u10': ('UGRD', '10 m above ground'), 'v10': ('VGRD', '10 m above ground'), 'uh': ('UGRD', '100 m above ground'), 'vh': ('VGRD', '100 m above ground'), 'ustar': ('FRICV', 'surface'), 'gust': ('GUST', 'surface'), 'hpbl': ('HPBL', 'surface'), 'shf': ('SHTFL', 'surface'), 'sw': ('DSWRF', 'surface'), 'cape': ('CAPE', 'surface'), 'tcc': ('TCDC', 'entire atmosphere'), 'lcc': ('LCDC', 'low cloud layer'), 'mcc': ('MCDC', 'middle cloud layer'), 'hcc': ('HCDC', 'high cloud layer'), 'prate': ('PRATE', 'surface \\d+-\\d+ hour ave fcst'), 'prate_now': ('PRATE', 'surface'), 'cprate': ('CPRAT', 'surface \\d+-\\d+ hour ave fcst'), 'cprate_now': ('CPRAT', 'surface'), 'mslp': ('PRMSL', 'mean sea level'), 'lsm': ('LAND', 'surface'), 'tsfc': ('TMP', 'surface'), 'ice': ('ICEC', 'surface'), 'snod': ('SNOD', 'surface'), 'soilw': ('SOILW', '0-0.1 m below ground'), 'wilt': ('WILT', 'surface'), 'fldcp': ('FLDCP', 'surface'), **GA_NCEP, **BAND_RAIN}, windowed={'shf': 'avg6', 'sw': 'avg6', 'prate': 'avg6', 'cprate': 'avg6'}, fstep=lambda fh: fh <= GFS_HOURLY_TO or (fh % 3 == 0 if fh <= GFS_3H_TO else fh % 6 == 0), cloud_levels=(250, 200), tcc_column_max=True, snd_levels=(1000, 975, 950, 925, 900, 850, 800, 750, 700, 650, 600, 550, 500, 450, 400, 350, 300, 250, 200, 150)), 'ecmwf': IFS(id='ecmwf', label='ECMWF', runs=(0, 6, 12, 18), max_fhour=240, short_runs={6: 144, 18: 144}, idx_kind='ecmwf', omega=True, moisture='rh', cover_tops=('sigma', 0.8, 0.45), levels=(1000, 925, 850, 700, 600, 500, 400, 300), level_vars={'t': 't', 'rh': 'r', 'u': 'u', 'v': 'v', 'z': 'gh', 'w': 'w'}, surface={'t2': ('2t', 'sfc'), 'td2': ('2d', 'sfc'), 'u10': ('10u', 'sfc'), 'v10': ('10v', 'sfc'), 'uh': ('100u', 'sfc'), 'vh': ('100v', 'sfc'), 'ps': ('sp', 'sfc'), 'mslp': ('msl', 'sfc'), 'cape': ('mucape', 'sfc'), 'tcc': ('tcc', 'sfc'), 'lcc': ('lcc', 'sfc'), 'mcc': ('mcc', 'sfc'), 'hcc': ('hcc', 'sfc'), 'prate': ('tp', 'sfc'), 'prate_now': ('tprate', 'sfc'), 'cprate': ('cp', 'sfc'), 'zs': ('z', 'sfc'), 'gust': ('10fg', 'sfc'), 'sw': ('ssrd', 'sfc'), 'lsm': ('lsm', 'sfc'), 'ptype': ('ptype', 'sfc'), 'tsfc': ('skt', 'sfc'), 'sdwe': ('sd', 'sfc'), 'rsn': ('rsn', 'sfc'), 'sithick': ('sithick', 'sfc'), 'soilm9': ('vsw', 'sol 1')}, windowed={'sw': 'acc', 'prate': 'accw', 'cprate': 'accw'}, gust_window=True, alias={'10fg3': '10fg', '10fg6': '10fg'}, cloud_levels=(250, 200), zs_geopotential=True, zs_step0_only=True, snd_levels=(1000, 925, 850, 700, 600, 500, 400, 300, 250, 200, 150), fstep=lambda fh: fh % 3 == 0 if fh <= 144 else fh % 6 == 0, derive=lambda s: ifs_derive(s), regular=True, notes=['ECMWF IFS 9 km open data (CC BY 4.0)', "no boundary-layer height or heat flux in open data: parcel method, and heat flux from the model's sunshine and humidity", 'no ceiling, visibility, cloud-top, freezing-level or cloud-water fields in open data: ceiling from the cloud cover diagnosed on each level, the rest from the humidity profile, 2 m humidity and precipitation']), 'icon': OpenMeteo(id='icon', label='ICON', runs=ICON_RUNS, max_fhour=180, short_runs=ICON_SHORT, grid='latlon', moisture='rh', omega=False, cover_tops=('icon', 0.7895, 0.3948), levels=(1000, 950, 925, 900, 850, 800, 700, 600, 500, 400, 300), level_vars={'t': 'temperature', 'rh': 'relative_humidity', 'u': 'wind_u_component', 'v': 'wind_v_component', 'z': 'geopotential_height'}, surface={'zs': ('zs', ''), 'ps': ('ps', ''), 't2': ('temperature_2m', ''), 'td2': ('td2', ''), 'u10': ('wind_u_component_10m', ''), 'v10': ('wind_v_component_10m', ''), 'uh': ('wind_u_component_80m', ''), 'vh': ('wind_v_component_80m', ''), 'gust': ('wind_gusts_10m', ''), 'shf': ('shf', ''), 'sw': ('sw', ''), 'cape': ('cape', ''), 'tcc': ('cloud_cover', ''), 'lcc': ('cloud_cover_low', ''), 'mcc': ('cloud_cover_mid', ''), 'hcc': ('cloud_cover_high', ''), 'prate': ('precipitation', ''), 'mslp': ('pressure_msl', ''), 'cprate': ('showers', ''), 'tsfc': ('soil_temperature_0cm', ''), 'lsm': ('lsm', ''), 'ice': ('ice', ''), 'snod': ('snow_depth', ''), 'frz': ('freezing_level_height', ''), 'ptype': ('ptype', ''), 'soilm9': ('soil_moisture_3_to_9cm', '')}, windowed={'sw': 'mean', 'shf': 'mean', 'prate': 'sum', 'cprate': 'sum'}, gust_window=True, hub_m=80.0, cloud_levels=(250, 200), rh_over_water=True, cover_calibrated=True, fstep=lambda fh: 1 <= fh <= ICON_HOURLY_TO or (fh % 3 == 0 and ICON_HOURLY_TO < fh <= 180), notes=["DWD's ICON regridded to 0.125° by Open-Meteo (CC BY 4.0)", 'no boundary-layer height, vertical wind, cloud water, ceiling or visibility: parcel method, ceiling from the cloud cover diagnosed on each level, the rest from the humidity profile']), 'icond2': OpenMeteo(id='icond2', label='ICON-D2', runs=ICOND2_RUNS, max_fhour=48, grid='latlon', moisture='rh', omega=False, domain='dwd_icon_d2', grid_def=ICOND2_GRID, snd_levels=(1000, 975, 950, 850, 700, 600, 500, 400, 300, 250, 200), snd_step=4, cover_tops=('icon', 0.7895, 0.3948), levels=(1000, 975, 950, 850, 700, 600, 500, 400, 300), level_vars={'t': 'temperature', 'rh': 'relative_humidity', 'u': 'wind_u_component', 'v': 'wind_v_component', 'z': 'geopotential_height'}, surface={'zs': ('zs', ''), 'ps': ('ps', ''), 't2': ('temperature_2m', ''), 'td2': ('td2', ''), 'u10': ('wind_u_component_10m', ''), 'v10': ('wind_v_component_10m', ''), 'uh': ('wind_u_component_80m', ''), 'vh': ('wind_v_component_80m', ''), 'gust': ('wind_gusts_10m', ''), 'shf': ('shf', ''), 'sw': ('sw', ''), 'cape': ('cape', ''), 'tcc': ('cloud_cover', ''), 'lcc': ('cloud_cover_low', ''), 'mcc': ('cloud_cover_mid', ''), 'hcc': ('cloud_cover_high', ''), 'prate': ('precipitation', ''), 'mslp': ('pressure_msl', ''), 'tsfc': ('soil_temperature_0cm', ''), 'lsm': ('lsm', ''), 'ice': ('ice', ''), 'snod': ('snow_depth', ''), 'frz': ('freezing_level_height', ''), 'ptype': ('ptype', ''), 'soilm9': ('soil_moisture_3_to_9cm', ''), 'vis': ('visibility', '')}, windowed={'sw': 'mean', 'shf': 'mean', 'prate': 'sum'}, gust_window=True, hub_m=80.0, cloud_levels=(250, 200), rh_over_water=True, cover_calibrated=True, fstep=lambda fh: 1 <= fh <= 48, notes=["DWD's ICON-D2 (2.2 km) on a 0.02° grid by Open-Meteo (CC BY 4.0)", 'no boundary-layer height, vertical wind, cloud water, ceiling or radar: parcel method, ceiling from the cloud cover diagnosed on each level'])}
 
 def candidate_runs(src: Source, now: datetime | None=None, back_hours: int=30):
     now = now or datetime.now(timezone.utc)

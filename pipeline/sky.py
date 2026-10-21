@@ -37,6 +37,7 @@ def area_median(a):
         warnings.simplefilter('ignore', RuntimeWarning)
         m = np.nanmedian(stack, axis=0)
     return np.where(np.isfinite(a), m, np.nan)
+FINE_STEP = 0.09
 CLASS_MEAN = 5
 SMOOTHED = ('wstar', 'cudepth', 'cloud', 'cloudlow', 'cloudmid', 'cloudhigh', 'sun')
 

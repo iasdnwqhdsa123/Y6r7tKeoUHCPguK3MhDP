@@ -11,7 +11,7 @@ from sources import OPEN_AHEAD_H, OPEN_SLACK_H, PAUSED, REQUIRED, SOURCES, candi
 AIRSPACE_MAX_AGE = timedelta(days=7)
 WAIT_MAX = timedelta(minutes=30)
 WAIT_STEP = timedelta(minutes=2)
-DUE = {'hrrr': timedelta(hours=1, minutes=45), 'gfs': timedelta(hours=5), 'icon': timedelta(hours=4, minutes=45), 'icond2': timedelta(hours=1, minutes=45)}
+DUE = {'hrrr': timedelta(hours=1, minutes=45), 'gfs': timedelta(hours=5), 'icon': timedelta(hours=4, minutes=45), 'icond2': timedelta(hours=1, minutes=45), 'ecmwf': timedelta(hours=9, minutes=45)}
 LATE_FOR = timedelta(hours=2)
 
 def late_run(src, now=None):
