@@ -1541,7 +1541,7 @@ def _pack_job(job):
         tiles.write_png(os.path.join(folder, f'{key}.png'), np.ascontiguousarray(mm[i]), COMPRESS_LEVEL)
     return len(keys)
 
-def write_points(rdir, hours_dir, times, elev_time, only=None, workers=1, block=POINT_BLOCK):
+def write_points(rdir, hours_dir, times, elev_time, only=None, workers=1, block=POINT_BLOCK, fields=POINT_FIELDS):
     if not times:
         return None
     stamps = [f'{t:%Y%m%d%H}' for t in sorted(times)]
@@ -1549,10 +1549,10 @@ def write_points(rdir, hours_dir, times, elev_time, only=None, workers=1, block=
     for st in stamps:
         with np.load(os.path.join(hours_dir, f'{st}.npz')) as h:
             files |= set(h.files)
-    names = [n for n in POINT_FIELDS if n in files and (only is None or n in only or n == 'elevation')]
+    names = [n for n in fields if n in files and (only is None or n in only or n == 'elevation')]
     with np.load(os.path.join(hours_dir, f'{elev_time:%Y%m%d%H}.npz')) as h:
         elev = h['elevation'] if 'elevation' in h.files else None
-        ny, nx = h['wstar'].shape
+        ny, nx = h['wstar' if 'wstar' in h.files else h.files[0]].shape
     if elev is None and 'elevation' in names:
         names.remove('elevation')
     B, W, nf = (block, block + 1, len(names))
@@ -1737,7 +1737,7 @@ def _publish_open(out, fbase, model, full, times, fields, cutoff, workers, point
             shutil.rmtree(os.path.join(fbase, old), ignore_errors=True)
     open(os.path.join(out, '.changed'), 'w').close()
     return manifest
-STORE_AHEAD_H = {'gfs': 60, 'icon': 60, 'ecmwf': 60}
+STORE_AHEAD_H = {'gfs': 60, 'icon': 60, 'ecmwf': 60, 'ens': 0}
 STORE_AFTER_FREE_H = {'hrrr': 12}
 
 def prune_store(hours_dir, ahead_h, now=None):
@@ -1821,7 +1821,14 @@ def main():
     ap.add_argument('--free-only', action='store_true', help='only refresh the free 24 h window from stored hours')
     ap.add_argument('--no-quarters', action='store_true', help="skip HRRR's 15-minute output")
     ap.add_argument('--python-physics', action='store_true', help='physics.py only (never the C++ physics)')
+    ap.add_argument('--last-fh', type=int, help="the ensemble's last step (testing)")
     args = ap.parse_args()
+    if args.model == 'ens':
+        import ens
+        region = list(REGIONS['gfs'])
+        if args.bbox:
+            region[:4] = [float(x) for x in args.bbox.split(',')]
+        return ens.build(args.out, last=args.last_fh or ens.LAST_FH, region=tuple(region), workers=args.workers, force=args.force)
     if args.free_only:
         write_free(args.out, args.model, workers=args.workers)
         hours_dir = os.path.join(args.out, args.model, '_hours')

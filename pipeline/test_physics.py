@@ -121,6 +121,84 @@ class WaterTemperature(unittest.TestCase):
         self.assertEqual(w[3], 25.0, 'no ice value: open water')
         self.assertIsNone(build.water_temp({'tsfc': s['tsfc']}), 'no land-sea mask: no field')
 
+class Ensemble(unittest.TestCase):
+
+    def test_steps_and_files(self):
+        from datetime import datetime, timezone
+        import ens
+        st = ens.steps()
+        self.assertEqual(len(st), 65)
+        self.assertIn(144, st)
+        self.assertIn(150, st)
+        self.assertNotIn(147, st)
+        self.assertEqual(st[-1], 240)
+        run = datetime(2026, 10, 21, 12, tzinfo=timezone.utc)
+        self.assertEqual(ens.SRC.idx_url(run, 150), 'https://data.ecmwf.int/forecasts/20261021/12z/ifs/0p25/enfo/20261021120000-150h-enfo-ef.index')
+        self.assertTrue(ens.SRC.url(run, 0, 1, 'oper').endswith('/20261021/12z/ifs/0p25/oper/20261021120000-0h-oper-fc.grib2'))
+
+    def test_heights_from_the_surface_pressure(self):
+        import ens
+        std = {925: 762.0, 850: 1457.0, 700: 3012.0, 600: 4206.0, 500: 5574.0}
+        t_lv = np.array([[15 - 6.5 * std[p] / 1000] for p in ens.LEVELS], np.float32)
+        z = ens.heights(np.zeros(1, np.float32), np.array([1013.25], np.float32), np.array([15.0], np.float32), t_lv)
+        for i, p in enumerate(ens.LEVELS):
+            self.assertAlmostEqual(float(z[i, 0]), std[p], delta=25)
+        z = ens.heights(np.array([1500.0], np.float32), np.array([850.0], np.float32), np.array([10.0], np.float32), t_lv)
+        self.assertLess(z[0, 0], 1500)
+        self.assertAlmostEqual(float(z[2, 0]) - 1500, 3012 - 1457, delta=60)
+
+    def test_usable_top_and_score_as_the_app(self):
+        import ens
+        ws = np.array([2.0, 2.0, 0.5, 2.0])
+        zi = np.array([1500.0, 1500.0, 1500.0, 1200.0])
+        base = np.array([np.nan, 1200.0, np.nan, 1500.0])
+        top = ens.usable_top(ws, zi, base)
+        self.assertAlmostEqual(top[0], 1500 * (0.6 + 0.4 * (1 - 1 / 2.6) / 0.8), delta=1)
+        self.assertAlmostEqual(top[1], 1200, delta=1)
+        self.assertEqual(top[2], 0)
+        self.assertTrue(1200 < top[3] < 1500)
+        s = ens.hour_score(np.array([2.2, 2.2, 2.2, 2.2, 0.0]), np.array([1500.0, 1500.0, 1500.0, 300.0, 1500.0]), np.array([0.0, 0.0, 0.6, 0.0, 0.0]), np.array([5.0, 13.0, 5.0, 5.0, 5.0]))
+        self.assertEqual(s.tolist(), [4, 3, 0, 0, 0])
+
+    def test_windows_and_days(self):
+        from datetime import datetime, timedelta, timezone
+        import ens
+        f = {'2t': np.zeros((2, 1)), 'ssr': np.full((2, 1), 3600000.0), 'str': np.full((2, 1), -360000.0), 'tp': np.full((2, 1), 0.003), 'cp': np.full((2, 1), 0.001)}
+        prev = {'ssr': np.zeros((2, 1)), 'str': np.zeros((2, 1)), 'tp': np.zeros((2, 1)), 'cp': np.zeros((2, 1))}
+        ens.window(f, prev, 3)
+        self.assertAlmostEqual(f['rnsw'][0, 0], 3600000.0 / 10800)
+        self.assertAlmostEqual(f['rain'][0, 0], 1.0)
+        self.assertAlmostEqual(f['conv'][0, 0], 1 / 3)
+        run = datetime(2026, 10, 21, 0, tzinfo=timezone.utc)
+        lon = np.array([0.0])
+        days = ens.Days(run, run + timedelta(hours=48), lon)
+        for h in range(0, 49, 3):
+            score = np.array([[3], [4], [1], [0]], np.int8) if h in (12, 15) else np.zeros((4, 1), np.int8)
+            days.add(run + timedelta(hours=h), lon, score, np.array([[h == 15], [False], [False], [False]]))
+        d = days.fields(run + timedelta(hours=12), lon)
+        self.assertEqual(d['day3'][0], 50)
+        self.assertEqual(d['day1'][0], 75)
+        self.assertEqual(d['daystorm'][0], 25)
+        self.assertTrue(np.isnan(days.fields(run + timedelta(hours=48), lon)['day1'][0]))
+
+    def test_point_packs_of_its_own_fields(self):
+        import os
+        import tempfile
+        from datetime import datetime, timezone
+        import build
+        import ens
+        with tempfile.TemporaryDirectory() as d:
+            hd = os.path.join(d, 'h')
+            os.makedirs(hd)
+            t = datetime(2026, 10, 21, 12, tzinfo=timezone.utc)
+            grids = {k: np.full((20, 20), 255, np.uint8) for k in ('t2_lo', 't2_mid', 't2_hi', 'elevation')}
+            grids['t2_mid'][5:10, 5:10] = 100
+            np.savez(os.path.join(hd, f'{t:%Y%m%d%H}.npz'), **grids)
+            pts = build.write_points(d, hd, [t], t, fields=ens.FIELDS)
+            self.assertEqual(pts['fields'], ['t2_lo', 't2_mid', 't2_hi', 'elevation'])
+            self.assertTrue(os.path.exists(os.path.join(d, 'pt.pack')))
+        self.assertEqual(build.STORE_AHEAD_H['ens'], 0)
+
 class EcmwfNineKm(unittest.TestCase):
 
     def test_regular_grid_maps_as_the_kd_tree_does(self):
@@ -345,7 +423,7 @@ class WindowedFields(unittest.TestCase):
                 check.main()
                 return dict((line.strip().split('=', 1) for line in f if '=' in line))
 
-        def site(models=('hrrr', 'gfs', 'ecmwf', 'icon', 'icond2'), free=True, maps=True, stale=False):
+        def site(models=('hrrr', 'gfs', 'ecmwf', 'icon', 'icond2', 'ens'), free=True, maps=True, stale=False):
 
             def pub(url):
                 if '/free/' in url:
@@ -358,12 +436,13 @@ class WindowedFields(unittest.TestCase):
         self.assertEqual(outputs(site(stale=True))['any'], 'true')
         self.assertEqual(outputs(site(stale=True), '--missing-only')['any'], 'false')
         o = outputs(site(models=(), free=False, maps=False), '--missing-only')
-        self.assertEqual((o['models'], o['free'], o['airspace']), ('hrrr gfs ecmwf icon icond2', 'true', 'true'))
+        self.assertEqual((o['models'], o['free'], o['airspace']), ('hrrr gfs ecmwf icon icond2 ens', 'true', 'true'))
         from sources import PAUSED, REQUIRED, SOURCES
         self.assertEqual(o['active'], json.dumps([m for m in SOURCES if m not in PAUSED]))
         self.assertEqual(json.loads(o['required']), ['hrrr', 'gfs'])
-        self.assertEqual(outputs(site(models=('hrrr', 'gfs', 'ecmwf', 'icond2')), '--missing-only')['models'], 'icon')
-        self.assertEqual(outputs(site(models=('hrrr', 'gfs', 'icon', 'icond2')), '--missing-only')['models'], 'ecmwf')
+        self.assertEqual(outputs(site(models=('hrrr', 'gfs', 'ecmwf', 'icond2', 'ens')), '--missing-only')['models'], 'icon')
+        self.assertEqual(outputs(site(models=('hrrr', 'gfs', 'icon', 'icond2', 'ens')), '--missing-only')['models'], 'ecmwf')
+        self.assertEqual(outputs(site(models=('hrrr', 'gfs', 'ecmwf', 'icon', 'icond2')), '--missing-only')['models'], 'ens')
         o = outputs(site(maps=False), '--missing-only')
         self.assertEqual((o['models'], o['airspace'], o['any']), ('', 'true', 'true'))
 
