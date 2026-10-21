@@ -111,10 +111,11 @@ def cu_cover(cudepth, overdev, reach=1.0):
     c = (CU_COVER[0] + CU_COVER[1] * clamp01(cudepth / 3000)) * clamp01(reach)
     c = np.where(overdev > 30, np.maximum(c, 0.4 + 0.3 * clamp01((overdev - 30) / 50)), c)
     return np.where(cudepth > 0, c, 0.0)
+CU_ZI, CU_WIDE = (1.0, 1.3)
 
 def cumulus_width(D, zi, m=1.0):
     ratio = np.where(D <= 0.5, 2.0, np.where(D <= 1, 2.5 - D, np.where(D <= 2, 2 - 0.5 * D, np.maximum(0.6, 1 - 0.15 * (D - 2)))))
-    return np.maximum(0.6, np.minimum(5, np.maximum(0.7 * zi * (0.6 + 0.5 * m), D * ratio)))
+    return np.maximum(0.6, np.minimum(5, np.maximum(CU_ZI * zi * (0.6 + 0.5 * m), D * ratio * (1 + (CU_WIDE - 1) * np.clip((3.5 - D) / 1.5, 0, 1)))))
 
 def classify(v):
     w, d, od = (v['wstar'], v['cudepth'], v['overdev'])
