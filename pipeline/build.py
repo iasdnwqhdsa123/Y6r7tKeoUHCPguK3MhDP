@@ -1773,6 +1773,14 @@ def store_fits(hours_dir, region, src_id=None):
                 return False
     return True
 
+def older_runs(tail, times):
+    have = set(times)
+    out = []
+    for t, r in tail:
+        if t in have and (not out or out[-1]['run'] != r.isoformat()):
+            out.append({'from': t.isoformat(), 'run': r.isoformat()})
+    return out
+
 def backfill_jobs(src, run, needed, hours_dir):
     have = {f[:-4] for f in os.listdir(hours_dir) if f.endswith('.npz') and (not f.endswith('.tmp.npz'))}
     end = run + timedelta(hours=src.last_fh(run))
@@ -1867,6 +1875,8 @@ def main():
     if back:
         log(f'{src.id}: backfilling {len(back)} hours from earlier runs ' + ', '.join(sorted({f'{r:%d %HZ}' for r, _ in back})))
     rest += back
+    end = run + timedelta(hours=src.last_fh(run))
+    tail = sorted(((r + timedelta(hours=fh), r) for r, fh in back if r + timedelta(hours=fh) > end))
     if rest:
         workers = max(1, min(args.workers, len(rest)))
         progress = Progress(src.id, len(rest))
@@ -1929,7 +1939,7 @@ def main():
     ntx = -(-len(lons) // tile)
     nty = -(-len(lats) // tile)
     grid = {'west': float(lons[0]), 'north': float(lats[0]), 'step': region[4], 'nx': len(lons), 'ny': len(lats), 'tile': tile, 'ntx': ntx, 'nty': nty}
-    manifest = {'model': src.id, 'label': src.label, 'run': run.isoformat(), 'runId': run_id, 'generated': datetime.now(timezone.utc).isoformat(timespec='seconds'), 'complete': not args.max_hours and len(done) == len(fhs), 'grid': grid, 'levels': overview_manifest(grid, levels, lpresent), 'days': days, 'quarters': qdays, 'fields': {**{k: {'min': ENC[k][0], 'max': ENC[k][1], 'transform': ENC[k][2], 'tiles': sorted(v)} for k, v in sorted(present.items())}, **quarter_manifest(qdays, qpresent)}, 'heights': 'agl', 'sunGate': True, 'rainGate': True, 'cuNear': True, 'bandsAgl': True, 'highAgl': True, 'bsRasp': True, 'windAltsFt': WIND_ALTS_FT, 'waveAltsFt': WAVE_ALTS_FT if 'wv12000' in present else [], 'notes': src.notes, 'points': points, 'sounding': soundings, 'pack': 1}
+    manifest = {'model': src.id, 'label': src.label, 'run': run.isoformat(), 'runId': run_id, 'generated': datetime.now(timezone.utc).isoformat(timespec='seconds'), 'complete': not args.max_hours and len(done) == len(fhs), 'older': older_runs(tail, times), 'grid': grid, 'levels': overview_manifest(grid, levels, lpresent), 'days': days, 'quarters': qdays, 'fields': {**{k: {'min': ENC[k][0], 'max': ENC[k][1], 'transform': ENC[k][2], 'tiles': sorted(v)} for k, v in sorted(present.items())}, **quarter_manifest(qdays, qpresent)}, 'heights': 'agl', 'sunGate': True, 'rainGate': True, 'cuNear': True, 'bandsAgl': True, 'highAgl': True, 'bsRasp': True, 'windAltsFt': WIND_ALTS_FT, 'waveAltsFt': WAVE_ALTS_FT if 'wv12000' in present else [], 'notes': src.notes, 'points': points, 'sounding': soundings, 'pack': 1}
     shutil.rmtree(rdir, ignore_errors=True)
     os.replace(build_dir, rdir)
     with open(latest + '.tmp', 'w') as f:

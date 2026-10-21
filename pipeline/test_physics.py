@@ -143,6 +143,16 @@ class EcmwfNineKm(unittest.TestCase):
         self.assertLess(h[3], 0)
         self.assertEqual(h[4], 0)
 
+    def test_older_runs_marked_where_they_take_over(self):
+        from datetime import datetime, timedelta, timezone
+        import build
+        r6, r0 = (datetime(2026, 10, 21, 6, tzinfo=timezone.utc), datetime(2026, 10, 21, 0, tzinfo=timezone.utc))
+        end = r6 + timedelta(hours=144)
+        tail = [(end + timedelta(hours=h), r0) for h in (6, 12, 18)]
+        times = [end - timedelta(hours=3), end] + [t for t, _ in tail[1:]]
+        self.assertEqual(build.older_runs(tail, times), [{'from': tail[1][0].isoformat(), 'run': r0.isoformat()}])
+        self.assertEqual(build.older_runs([], times), [])
+
     def test_snow_depth_and_sea_ice(self):
         from sources import ifs_derive
         s = ifs_derive({'sdwe': np.array([0.05, 0.0, 0.05]), 'rsn': np.array([100.0, 300.0, np.nan]), 'sithick': np.array([0.0, 0.5, np.nan]), 't2': np.zeros(3)})
@@ -269,12 +279,12 @@ class WindowedFields(unittest.TestCase):
             r['var'] = ec.alias.get(r['var'], r['var'])
         self.assertIn(ec.surface['gust'], grib.select(rows, [ec.surface['gust']]))
 
-    def test_ecmwf_ten_days(self):
+    def test_ecmwf_fifteen_days(self):
         from sources import DAYS
         ec = self.S['ecmwf']
-        self.assertEqual(DAYS['ecmwf'], 10)
-        self.assertGreaterEqual(ec.max_fhour, 240)
-        self.assertTrue(ec.fstep(144) and ec.fstep(150) and (not ec.fstep(147)) and ec.fstep(240))
+        self.assertEqual(DAYS['ecmwf'], 15)
+        self.assertEqual(ec.max_fhour, 360)
+        self.assertTrue(ec.fstep(144) and ec.fstep(150) and (not ec.fstep(147)) and ec.fstep(360))
 
     def test_waits_for_a_run_landing_late(self):
         from datetime import datetime, timezone
@@ -367,10 +377,10 @@ class WindowedFields(unittest.TestCase):
         run = datetime(2026, 10, 21, 0, tzinfo=timezone.utc)
         self.assertTrue(ec.url(run, 24, 'pl').endswith('/20261021/00z/ifs/0p1/oper/20261021000000-24h-oper-fc-pl.grib2'))
         self.assertTrue(ec.idx_url(run, 24, 'sfc').endswith('-24h-oper-fc-sfc.index'))
-        self.assertEqual([f for f in range(0, 241) if ec.fstep(f)][-3:], [228, 234, 240])
+        self.assertEqual([f for f in range(0, 361) if ec.fstep(f)][-3:], [348, 354, 360])
         self.assertTrue(ec.fstep(141) and (not ec.fstep(147)))
         self.assertEqual(ec.last_fh(run.replace(hour=6)), 144)
-        self.assertEqual(ec.last_fh(run), 240)
+        self.assertEqual(ec.last_fh(run), 360)
         from sources import candidate_runs
         self.assertEqual(gfs.runs, (0, 6, 12, 18))
         self.assertEqual([r.hour for r in candidate_runs(gfs, datetime(2026, 9, 27, 23, 30, tzinfo=timezone.utc), back_hours=24)], [18, 12, 6, 0])
