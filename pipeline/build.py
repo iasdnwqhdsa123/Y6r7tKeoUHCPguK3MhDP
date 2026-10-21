@@ -359,6 +359,7 @@ def no_deck(tcc, lcc=None, mcc=None, sun=None):
     over = lambda c: np.zeros(np.shape(tcc), bool) if c is None else np.nan_to_num(c, nan=0) >= OVERCAST
     shield = np.zeros(np.shape(tcc), bool) if sun is None or mcc is None else (np.nan_to_num(tcc, nan=0) >= OVERCAST) & (np.nan_to_num(mcc, nan=0) >= sky.BROKEN) & (np.nan_to_num(sun, nan=1) < sky.THICK_SUN)
     return np.isfinite(tcc) & ~over(lcc) & ~over(mcc) & ~shield
+CONV_RELIEF = (400.0, 800.0)
 
 def convective_rain(overdev, cudepth, refc, rain, showers=None, tcc=None, lcc=None, mcc=None, sun=None):
     conv = (overdev >= 30) | (cudepth >= 2500) | no_deck(tcc, lcc, mcc, sun) | (np.nan_to_num(rain, nan=0) >= sky.HEAVY_RAIN)
@@ -541,7 +542,8 @@ def analyse(s, lv, levels, grid_step, lat2d, lon2d=None, valid=None):
         below = z < zs + 30
         out[f'u_a{ft}'] = np.where(below, np.nan, u)
         out[f'v_a{ft}'] = np.where(below, np.nan, v)
-    out['conv'] = -(ddx(ub) + ddy(vb)) * np.maximum(zi, 300) + pump_lift
+    flat = np.clip((CONV_RELIEF[1] - relief) / (CONV_RELIEF[1] - CONV_RELIEF[0]), 0, 1)
+    out['conv'] = -(ddx(ub) + ddy(vb)) * np.maximum(zi, 300) * flat + pump_lift
     out['bumpy'] = np.where(np.isfinite(s['t2']), P.bumpiness(prof, ws_out, zi, s.get('gust'), s['u10'], s['v10'], s.get('ustar'), relief), np.nan)
     hilly = relief >= 150
     out['ridge'] = np.where(hilly, np.maximum(0, upslope), np.nan)
