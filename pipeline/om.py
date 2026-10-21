@@ -199,3 +199,38 @@ def fetch_hour(urls, static_url, grid: Grid, keys, workers=8):
         if f.available():
             out[k] = f
     return out
+
+def gaussian_rows(n=1280):
+    import numpy as np
+    x, _ = np.polynomial.legendre.leggauss(2 * n)
+    lats = np.degrees(np.arcsin(x))[::-1]
+    i = np.arange(1, 2 * n + 1)
+    nlon = np.where(i <= n, 4 * i + 16, 4 * (2 * n + 1 - i) + 16)
+    start = np.concatenate([[0], np.cumsum(nlon)[:-1]])
+    return (lats, nlon, start)
+
+def gaussian_index(lats, lons, rows):
+    import numpy as np
+    glat, nlon, start = rows
+    j = np.searchsorted(-glat, -np.asarray(lats))
+    j = np.clip(j, 1, len(glat) - 1)
+    row = np.where(np.abs(glat[j - 1] - lats) <= np.abs(glat[j] - lats), j - 1, j)
+    n = nlon[row][:, None]
+    k = np.round(np.asarray(lons)[None, :] % 360 / 360 * n).astype(np.int64) % n
+    return start[row][:, None] + k
+
+def read_flat(path, names):
+    import numpy as np
+    r = open_file(path)
+    out = {}
+    for i in range(r.num_children):
+        c = r.get_child_by_index(i)
+        if c.is_array and c.name in names:
+            unit = None
+            for j in range(c.num_children):
+                a = c.get_child_by_index(j)
+                if a.name == 'unit':
+                    unit = a.read_scalar()
+            v = np.asarray(c.read_array((slice(0, c.shape[0]), slice(0, c.shape[1]))), np.float32).reshape(-1)
+            out[c.name] = _to_si(v, unit)
+    return out
