@@ -270,6 +270,15 @@ def heat_from_sunshine(ghi, t2, td2, land=None):
     frac = np.clip(0.09 + 0.0203 * np.minimum(np.maximum(t2 - td2, 0), 16), 0.05, 0.42)
     heat = frac * np.maximum(ghi, 0)
     return heat if land is None else heat * (land >= 0.5)
+HEAT_RN = (0.4105, 0.0139, -0.767)
+HEAT_RN_SHARE = (0.03, 0.7)
+
+def heat_from_net_radiation(rn, t2, td2, soil, land=None):
+    a, b, c = HEAT_RN
+    spread = np.clip(np.nan_to_num(t2 - td2, nan=0), 0, 25)
+    w = 0.25 if soil is None else np.nan_to_num(soil, nan=0.25)
+    heat = np.nan_to_num(rn, nan=0) * np.clip(a + b * spread + c * w, *HEAT_RN_SHARE)
+    return (heat if land is None else np.where(land >= 0.5, heat, 0)).astype(np.float32)
 
 def water_temp(s):
     t, land = (s.get('tsfc'), s.get('lsm'))
@@ -796,7 +805,7 @@ def _window_mean(src, run, fh, canon, now_vals, earlier):
         step = fh - prev
         return ((now_vals - a_prev) / (step * 3600) * (1000 if kind == 'accw' else 1), step)
     raise ValueError(kind)
-SUNLIT = {'sw', 'shf'}
+SUNLIT = {'sw', 'shf', 'rnsw'}
 
 def resolve_windows(src, run, fh, native, earlier):
     for canon in src.windowed:
@@ -961,6 +970,9 @@ def load_hour(src, run, fh, regrid_holder, region, valid, raw=None):
         s['hub_m'] = src.hub_m
         if src.derive:
             s = src.derive(s)
+        rnsw, rnlw = (s.pop('rnsw', None), s.pop('rnlw', None))
+        if s.get('shf') is None and rnsw is not None and (rnlw is not None):
+            s['shf'] = heat_from_net_radiation(rnsw + rnlw, s['t2'], s['td2'], s.get('soilm9'), s.get('lsm'))
         if src.snd_levels:
             if windows is not None and src.snd_step != 1:
                 raise ValueError('snd_step > 1 needs the whole grid (no KEEP windows)')

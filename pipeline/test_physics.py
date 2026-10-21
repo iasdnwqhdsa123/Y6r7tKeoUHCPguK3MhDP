@@ -133,6 +133,16 @@ class EcmwfNineKm(unittest.TestCase):
             np.testing.assert_array_equal(a(f), b(f))
             np.testing.assert_array_equal(a.peak(f), b.peak(f))
 
+    def test_heat_flux_from_net_radiation(self):
+        import build
+        rn = np.array([500.0, 500.0, 500.0, -80.0, 500.0])
+        h = build.heat_from_net_radiation(rn, np.array([25.0, 25.0, 15.0, 10.0, 25.0]), np.array([5.0, 5.0, 14.0, 8.0, 5.0]), np.array([0.1, 0.4, 0.3, 0.3, 0.1]), np.array([1.0, 1.0, 1.0, 1.0, 0.0]))
+        self.assertGreater(h[0], h[1])
+        self.assertGreater(h[1], h[2])
+        self.assertTrue(150 < h[0] < 350)
+        self.assertLess(h[3], 0)
+        self.assertEqual(h[4], 0)
+
     def test_snow_depth_and_sea_ice(self):
         from sources import ifs_derive
         s = ifs_derive({'sdwe': np.array([0.05, 0.0, 0.05]), 'rsn': np.array([100.0, 300.0, np.nan]), 'sithick': np.array([0.0, 0.5, np.nan]), 't2': np.zeros(3)})
