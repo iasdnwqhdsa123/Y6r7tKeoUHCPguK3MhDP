@@ -93,6 +93,48 @@ jobs:
           self="${SELF#*/.github/workflows/}"; self="${self%%@*}"
           gh api -X PUT "repos/${{ github.repository }}/actions/workflows/$self/enable" && echo "kept on"
 
+  hours:
+    name: hours (${{ matrix.shard }})
+    needs: check
+    if: needs.check.outputs.any == 'true' && contains(format(' {0} ', needs.check.outputs.models), ' ecmwf ') && !inputs.recompute
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+    env:
+      WORKERS: "2"
+      M: ecmwf
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pipeline/requirements.txt
+      - run: pip install -r pipeline/requirements.txt
+      - name: Hours, share ${{ matrix.shard }}
+        run: cd pipeline && python build.py --model "$M" --out ../dist-data --shard ${{ matrix.shard }}/3 ${{ inputs.force && '--force' || '' }}
+      - name: Pack them
+        id: pack
+        run: |
+          mkdir -p /tmp/hours
+          cd "dist-data/$M/_hours" && ls *.npz > /dev/null 2>&1 || { echo "no hours"; exit 0; }
+          pack() { tar -cf - *.npz *.run; }
+          if [ -n "$DATA_PATH_SECRET" ]; then pack | openssl enc -aes-256-ctr -pbkdf2 -pass env:DATA_PATH_SECRET -out "/tmp/hours/hours-$M-${{ matrix.shard }}.tar.enc"
+          else pack > "/tmp/hours/hours-$M-${{ matrix.shard }}.tar"; fi
+          ls -l /tmp/hours
+          echo "has=true" >> "$GITHUB_OUTPUT"
+      - name: Hand them on
+        if: steps.pack.outputs.has == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: hours-${{ env.M }}-${{ matrix.shard }}
+          path: /tmp/hours
+          retention-days: 1
+          compression-level: 0
+
   model:
     needs: check
     if: needs.check.outputs.any == 'true'
@@ -108,6 +150,7 @@ jobs:
     env:
       WORKERS: "2"
       M: ${{ matrix.model }}
+      HOUR_SHARDS: "3"
     steps:
       - uses: actions/checkout@v7
 
@@ -222,7 +265,13 @@ jobs:
         env:
           NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
           NETLIFY_SITE_ID: ${{ secrets.NETLIFY_DATA_SITE_ID }}
+          MODELS: ${{ needs.check.outputs.models }}
+          GH_TOKEN: ${{ github.token }}
         run: |
+          if [ "$M" = ecmwf ] && [[ " $MODELS " == *" $M "* ]] && [ "${{ inputs.recompute && 'yes' || '' }}" != yes ]; then
+            (cd pipeline && python build.py --model "$M" --out ../dist-data --shard "0/$HOUR_SHARDS" ${{ inputs.force && '--force' || '' }}) || echo "::warning::$M's first share failed: the build computes its hours"
+            .github/scripts/shard-hours.sh "$M" "$HOUR_SHARDS"
+          fi
           (cd pipeline && python build.py --model "$M" --out ../dist-data ${{ inputs.force && '--force' || '' }} ${{ inputs.recompute && '--recompute' || '' }})
           .github/scripts/pre-upload.sh "$M"
           df -h / && du -sh "dist-data/$M" "dist-data/$M/_hours" 2>/dev/null || true

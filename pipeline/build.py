@@ -34,9 +34,9 @@ def keep_mask(src_id, lat2d, lon2d):
 
 def published_mask(src_id, lat2d, lon2d, fields):
     keep, t2 = (keep_mask(src_id, lat2d, lon2d), fields.get('t2'))
-    if t2 is None or np.isfinite(t2).all():
+    have = None if t2 is None else t2 != 255 if t2.dtype == np.uint8 else np.isfinite(t2)
+    if have is None or have.all():
         return keep
-    have = np.isfinite(t2)
     return have if keep is None else keep & have
 
 def keep_windows(src_id, region, halo=1):
@@ -82,6 +82,27 @@ def analyse_parts(parts, coords, grid_step, valid, windows, shape):
     done = [analyse(s, lv, levels, grid_step, lat2d, lon2d, valid) for (s, lv, levels), (lat2d, lon2d) in zip(parts, coords)]
     names = dict.fromkeys((k for part in done for k in part))
     return {k: paste(windows, [part.get(k) for part in done], shape) for k in names}
+
+def paste_codes(windows, grids, shape):
+    if windows is None:
+        return grids[0]
+    out = None
+    for ((y0, y1, x0, x1), (iy0, iy1, ix0, ix1)), v in zip(windows, grids):
+        if v is None:
+            continue
+        if out is None:
+            out = np.full(shape, 255, np.uint8)
+        out[y0 + iy0:y0 + iy1, x0 + ix0:x0 + ix1] = v[iy0:iy1, ix0:ix1]
+    return out
+
+def analyse_codes(parts, coords, grid_step, valid, windows, shape):
+    done = []
+    for (s, lv, levels), (lat2d, lon2d) in zip(parts, coords):
+        d = analyse(s, lv, levels, grid_step, lat2d, lon2d, valid)
+        done.append({k: quantize(v, *ENC[k]) for k, v in d.items() if v is not None and k in ENC})
+        del d
+    names = dict.fromkeys((k for part in done for k in part))
+    return {k: paste_codes(windows, [part.get(k) for part in done], shape) for k in names}
 
 def part_coords(regrids):
     return [np.meshgrid(rg.lats, rg.lons, indexing='ij') for rg in regrids]
@@ -1273,12 +1294,12 @@ def _process_hour(job, raw=None):
         log(f'  f{fh:03d} skipped: {e}')
         return None
     rg, windows = (holder['r'], holder['windows'])
-    lat2d = np.repeat(rg.lats[:, None], len(rg.lons), axis=1)
-    lon2d = np.repeat(rg.lons[None, :], len(rg.lats), axis=0)
-    fields = analyse_parts(parts, part_coords(holder['parts']), region[4], valid, windows, lat2d.shape)
-    fields['elevation'] = paste(windows, [s['zs'] for s, _, _ in parts], lat2d.shape)
-    q = {k: quantize(v, *ENC[k]) for k, v in fields.items() if v is not None and k in ENC}
-    keep = published_mask(src.id, lat2d, lon2d, fields)
+    if 'll' not in holder:
+        holder['ll'] = (np.repeat(rg.lats[:, None], len(rg.lons), axis=1), np.repeat(rg.lons[None, :], len(rg.lats), axis=0))
+    lat2d, lon2d = holder['ll']
+    q = analyse_codes(parts, part_coords(holder['parts']), region[4], valid, windows, lat2d.shape)
+    q['elevation'] = paste_codes(windows, [quantize(s['zs'], *ENC['elevation']) for s, _, _ in parts], lat2d.shape)
+    keep = published_mask(src.id, lat2d, lon2d, q)
     if keep is not None:
         for v in q.values():
             v[~keep] = 255
@@ -1376,6 +1397,10 @@ def _lane(jobs, results):
             trim_malloc()
             results.put((i, r))
 LANE_RUN = 12
+
+def shard_hours(fhs, i, n, run=1):
+    blocks = [fhs[k:k + run] for k in range(0, len(fhs), run)]
+    return [fh for b in blocks[i::n] for fh in b]
 
 def lane_jobs(jobs, workers, run=1):
     indexed = list(enumerate(jobs))
@@ -1956,6 +1981,7 @@ def main():
     ap.add_argument('--no-quarters', action='store_true', help="skip HRRR's 15-minute output")
     ap.add_argument('--python-physics', action='store_true', help='physics.py only (never the C++ physics)')
     ap.add_argument('--last-fh', type=int, help="the ensemble's last step (testing)")
+    ap.add_argument('--shard', help="i/n: compute only share i (0…n-1) of the run's hours into the store, nothing published (shard_hours)")
     args = ap.parse_args()
     if args.model == 'ens':
         import ens
@@ -1982,10 +2008,18 @@ def main():
         mid = [f for f in fhs if (run + timedelta(hours=f)).hour in (18, 19, 20)] or fhs
         fhs = sorted(set(mid[:args.max_hours]))
     log(f'{src.id}: run {run:%Y-%m-%d %HZ}, {len(fhs)} valid times')
+    shard = None
+    if args.shard:
+        i, n = (int(x) for x in args.shard.split('/'))
+        fhs = shard_hours(fhs, i, n, LANE_RUN if src.between_to else 1)
+        shard = (i, n)
+        log(f'{src.id}: shard {i + 1} of {n}: {len(fhs)} hours')
+        if not fhs:
+            return 0
     run_id = f'{run:%Y%m%d%H}'
     base = os.path.join(args.out, src.id)
     latest = os.path.join(base, 'latest.json')
-    if os.path.exists(latest) and (not args.force):
+    if os.path.exists(latest) and (not args.force) and (shard is None):
         with open(latest) as f:
             cur = json.load(f)
         if cur.get('runId') == run_id and cur.get('complete'):
@@ -2013,7 +2047,7 @@ def main():
     results = [_process_hour(fhs[0])]
     trim_malloc()
     rest = fhs[1:]
-    back = backfill_jobs(src, run, needed, hours_dir) if not args.max_hours else []
+    back = backfill_jobs(src, run, needed, hours_dir) if not args.max_hours and shard is None else []
     if back:
         log(f'{src.id}: backfilling {len(back)} hours from earlier runs ' + ', '.join(sorted({f'{r:%d %HZ}' for r, _ in back})))
     rest += back
@@ -2031,6 +2065,9 @@ def main():
     done = [t for t in results[:len(fhs)] if t is not None]
     if not done:
         raise SystemExit('no hours processed')
+    if shard is not None:
+        log(f'{src.id}: shard {shard[0] + 1} of {shard[1]}: {len(done)} of {len(fhs)} hours computed')
+        return 0
     qdir = os.path.join(base, '_quarters')
     if src.id == 'hrrr' and (not args.no_quarters):
         os.makedirs(qdir, exist_ok=True)

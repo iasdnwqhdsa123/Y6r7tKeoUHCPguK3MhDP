@@ -352,6 +352,30 @@ class EcmwfHourly(unittest.TestCase):
         self.assertEqual([j for _, j in shares[1]], list(range(12, 24)))
         self.assertEqual(build.lane_jobs(jobs, 2, 1), [list(enumerate(jobs))[0::2], list(enumerate(jobs))[1::2]])
 
+    def test_hour_shards_take_every_hour_once(self):
+        import build
+        fhs = list(range(0, 91)) + list(range(93, 145, 3)) + list(range(150, 361, 6))
+        shares = [build.shard_hours(fhs, i, 3, 12) for i in range(3)]
+        self.assertEqual(sorted((h for s in shares for h in s)), fhs)
+        self.assertEqual(shares[1][:12], fhs[12:24])
+        self.assertLessEqual(max(map(len, shares)) - min(map(len, shares)), 12)
+        self.assertEqual(build.shard_hours([0, 3], 2, 3, 12), [])
+
+    def test_hours_coded_per_window_as_whole(self):
+        import build
+        shape = (6, 8)
+        windows = [((0, 4, 0, 5), (1, 3, 1, 4)), ((2, 6, 4, 8), (1, 4, 1, 4))]
+        rng = np.random.default_rng(1)
+        grids = [rng.uniform(-5, 40, (4, 5)).astype(np.float32), rng.uniform(-5, 40, (4, 4)).astype(np.float32)]
+        grids[1][2, 2] = np.nan
+        enc = build.ENC['t2']
+        whole = build.quantize(build.paste(windows, grids, shape), *enc)
+        codes = build.paste_codes(windows, [build.quantize(g, *enc) for g in grids], shape)
+        np.testing.assert_array_equal(codes, whole)
+        self.assertIsNone(build.paste_codes(windows, [None, None], shape))
+        lat2d, lon2d = np.meshgrid(np.arange(6.0), np.arange(8.0), indexing='ij')
+        np.testing.assert_array_equal(build.published_mask('icond2', lat2d, lon2d, {'t2': codes}), build.published_mask('icond2', lat2d, lon2d, {'t2': build.paste(windows, grids, shape)}))
+
 class WindowedFields(unittest.TestCase):
 
     def setUp(self):
