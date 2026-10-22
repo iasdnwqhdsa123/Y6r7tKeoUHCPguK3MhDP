@@ -104,7 +104,7 @@ jobs:
       matrix:
         shard: [1, 2]
     env:
-      WORKERS: "2"
+      WORKERS: "3" # as ECMWF's model job (below)
       M: ecmwf
     steps:
       - uses: actions/checkout@v7
@@ -148,7 +148,7 @@ jobs:
       matrix:
         model: ${{ fromJSON(needs.check.outputs.active) }}
     env:
-      WORKERS: "2"
+      WORKERS: ${{ matrix.model == 'ecmwf' && '3' || '2' }}
       M: ${{ matrix.model }}
       HOUR_SHARDS: "3"
     steps:
