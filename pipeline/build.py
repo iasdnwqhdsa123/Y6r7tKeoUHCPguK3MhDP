@@ -5,10 +5,11 @@ import math
 import os
 import shutil
 import sys
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 import numpy as np
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from scipy.spatial import cKDTree
 import grib
 import physics
@@ -260,10 +261,11 @@ def sunshine(sw, valid, lat, lon):
     clear = solar_estimate(valid, lat, lon, 0)
     return np.where(sun_elevation(valid, lat, lon) >= SUN_MIN_ELEV, np.clip(np.nan_to_num(sw, nan=0) / np.maximum(clear, 1), 0, 1.2), np.nan)
 
-def instant_factor(valid, hours, lat, lon):
+def instant_factor(valid, hours, lat, lon, end=None):
     now = solar_estimate(valid, lat, lon, 0)
     n = 12
-    mean = sum((solar_estimate(valid - timedelta(hours=hours * k / n), lat, lon, 0) * (0.5 if k in (0, n) else 1) for k in range(n + 1))) / n
+    end = end or valid
+    mean = sum((solar_estimate(end - timedelta(hours=hours * k / n), lat, lon, 0) * (0.5 if k in (0, n) else 1) for k in range(n + 1))) / n
     return np.where(mean > 20, np.clip(now / np.maximum(mean, 0.001), 0, 2.5), np.where(now > 1, 1.0, 0.0))
 
 def heat_from_sunshine(ghi, t2, td2, land=None):
@@ -782,7 +784,22 @@ def general_aviation(s, lv, levels, prof, rain, grid_step, ddx, ddy, cc=None, zi
         slr = np.where(snowing, P.kuchera_ratio(prof), np.nan)
     return {'ceil': ceil, 'vis': vis, 'fltcat': P.flight_category(ceil, vis), 'ptype': nan(ptype), 'slr': slr, 'refc': nan(refc), 'snowshare': None if share is None else np.where(snowing, share, np.nan), 'frzl': nan(frzl), 'ctop': nan(ctop), 'ceiltop': None if ceiltop is None else nan(ceiltop), 'icing': nan(icing), 'icebase': icebase, 'icetop': icetop, 'turb': nan(turb), 'turbz': np.where(turb >= 2, turbz, np.nan), 'turbbase': turbbase, 'turbtop': turbtop, 'llws': nan(llws)}
 
+class Blend:
+    __slots__ = ('m0', 'm1', 'a', 'fh0', 'fh1', 'nearest')
+
+    def __init__(self, m0, m1, a, fh0, fh1, nearest=False):
+        self.m0, self.m1, self.a, self.fh0, self.fh1, self.nearest = (m0, m1, a, fh0, fh1, nearest)
+
+    def values(self):
+        if self.nearest:
+            return grib.decode(self.m0 if self.a < 0.5 else self.m1)[0]
+        v0, v1 = (grib.decode(self.m0)[0], grib.decode(self.m1)[0])
+        return ((1 - self.a) * v0 + self.a * v1).astype(np.float32)
+BLEND_NEAREST = ('ptype',)
+
 def _decode(m, region=None, boxes=None):
+    if isinstance(m, Blend):
+        return m.values()
     if hasattr(m, 'read'):
         return m.read(region, boxes)
     return grib.decode(m)[0]
@@ -795,6 +812,12 @@ def prev_step(src, fh):
     p = fh - 1
     while p > 0 and (not src.fstep(p)):
         p -= 1
+    return p
+
+def next_step(src, fh):
+    p = fh + 1
+    while not src.fstep(p):
+        p += 1
     return p
 
 def _window_mean(src, run, fh, canon, now_vals, earlier):
@@ -828,6 +851,8 @@ SUNLIT = {'sw', 'shf', 'rnsw'}
 
 def resolve_windows(src, run, fh, native, earlier):
     for canon in src.windowed:
+        if isinstance(native.get(canon), tuple):
+            continue
         if native.get(canon) is None:
             native[canon] = native.get(f'{canon}_now')
             continue
@@ -837,9 +862,58 @@ def resolve_windows(src, run, fh, native, earlier):
         native['gust'] = None
     return native
 
+def snd_hour(src, fh):
+    return bool(src.snd_levels) and fh <= SND_AHEAD_H.get(src.id, 10 ** 6) and bool(src.fstep(fh))
+STEPS_KEPT = 3
+_STEPS: dict = {}
+_STEPS_LOCK = threading.Lock()
+
+def step_messages(src, run, fh, wanted):
+    if not src.between_to:
+        return src.fetch(run, fh, src.inventory(run, fh, wanted))
+    key = (src.id, run, fh, wanted is None)
+    with _STEPS_LOCK:
+        fut, mine = (_STEPS.pop(key, None), False)
+        if fut is None:
+            fut, mine = (Future(), True)
+        _STEPS[key] = fut
+        while len(_STEPS) > STEPS_KEPT:
+            _STEPS.pop(next(iter(_STEPS)))
+    if mine:
+        try:
+            fut.set_result(src.fetch(run, fh, src.inventory(run, fh, wanted)))
+        except Exception as e:
+            fut.set_exception(e)
+            with _STEPS_LOCK:
+                if _STEPS.get(key) is fut:
+                    del _STEPS[key]
+    return fut.result()
+
+def kept_step(src, run, fh):
+    with _STEPS_LOCK:
+        for (sid, r, f, _), fut in _STEPS.items():
+            if sid == src.id and r == run and (f == fh) and fut.done() and (fut.exception() is None):
+                return fut.result()
+    return None
+
 def fetch_hour(src, run, fh):
-    sounding = fh <= SND_AHEAD_H.get(src.id, 10 ** 6)
-    return src.fetch(run, fh, src.inventory(run, fh, None if sounding else src.wanted(sounding=False)))
+    if src.fstep(fh):
+        return step_messages(src, run, fh, None if snd_hour(src, fh) else src.wanted(sounding=False))
+    fh0, fh1 = (prev_step(src, fh), next_step(src, fh))
+    r0, r1 = (step_messages(src, run, f, None if snd_hour(src, f) else src.wanted(sounding=False)) for f in (fh0, fh1))
+    a = (fh - fh0) / (fh1 - fh0)
+    keep = set(src.wanted(sounding=False))
+    nearest = {src.surface[c] for c in BLEND_NEAREST if c in src.surface}
+    return {k: Blend(m, r1[k], a, fh0, fh1, k in nearest) for k, m in r0.items() if k in r1 and k in keep}
+
+def blend_window(src, canon, m, run):
+    kind = src.windowed[canon]
+    if kind not in ('acc', 'accw'):
+        raise ValueError(f'{src.id} {canon}: {kind} has no window between steps')
+    v0, v1 = (grib.decode(m.m0)[0], grib.decode(m.m1)[0])
+    step = m.fh1 - m.fh0
+    mean = (v1 - v0) / (step * 3600) * (1000 if kind == 'accw' else 1)
+    return ('win', mean.astype(np.float32), step, run + timedelta(hours=m.fh1))
 
 def total_of_bands(tcc, bands):
     clear = np.prod([1 - np.clip(np.nan_to_num(b, nan=0), 0, 100) / 100 for b in bands], axis=0)
@@ -848,19 +922,33 @@ def total_of_bands(tcc, bands):
 def inside_of(s):
     return np.isfinite(s['t2'])
 
-def open_meteo_extra(src, run, fh):
+def open_meteo_extra(src, run, fh, between=False):
     if not src.om_extra:
         return {}
     import om
     domain, names = src.om_extra
+    names = {k: (v, None) for k, v in names.items()}
+    if fh <= src.between_to:
+        names.update(src.om_hourly)
+        if between:
+            names.update(src.om_between)
     valid = run + timedelta(hours=fh)
     url = f'{OpenMeteoBase}/data_spatial/{domain}/{run:%Y/%m/%d/%H%M}Z/{valid:%Y-%m-%dT%H%M}.om'
     try:
-        flat = om.read_flat(om.download(url, workers=8), set(names.values()))
+        flat = om.read_flat(om.download(url, workers=8), {v for v, _ in names.values()})
     except Exception as e:
         log(f'  f{fh:03d}: no Open-Meteo {domain} hour ({e}): without {', '.join(names)}')
         return {}
-    return {canon: flat[v] for canon, v in names.items() if v in flat}
+    return {canon: (flat[v], conv) for canon, (v, conv) in names.items() if v in flat}
+
+def om_convert(v, conv, valid, lat2d, lon2d):
+    if conv == 'K':
+        return v - 273.15
+    if conv == 'Pa':
+        return v / 100
+    if conv == 'sun':
+        return v * instant_factor(valid, 1, lat2d, lon2d)
+    return v
 OpenMeteoBase = 'https://openmeteo.s3.amazonaws.com'
 CIN_LID = (100.0, 250.0)
 BLH_HEAT = (20.0, 80.0)
@@ -893,12 +981,13 @@ def load_hour(src, run, fh, regrid_holder, region, valid, raw=None):
     if regrid_holder.get('r') is None and hasattr(src, 'static_url'):
         regrid_holder['r'], regrid_holder['rot'] = (Regridder.identity(region), None)
     if regrid_holder.get('r') is None:
-        any_msg = next(iter(raw.values()))
+        one = lambda m: m.m0 if isinstance(m, Blend) else m
+        any_msg = one(next(iter(raw.values())))
         lat, lon = grib.latlons(any_msg)
         if lat.ndim == 1 or src.grid == 'latlon':
             lat = lat.reshape(lat.shape[0], -1)
         regrid_holder['r'] = Regridder.regular(lat, lon, region) if src.regular else Regridder(lat, lon, region)
-        regrid_holder['rot'] = grib.earth_rotation(raw.get(src.surface['u10']) or any_msg)
+        regrid_holder['rot'] = grib.earth_rotation(one(raw.get(src.surface['u10'])) or any_msg)
     rg = regrid_holder['r']
     if 'parts' not in regrid_holder:
         windows = regrid_holder['windows'] = keep_windows(src.id, region)
@@ -907,10 +996,18 @@ def load_hour(src, run, fh, regrid_holder, region, valid, raw=None):
     windows, parts = (regrid_holder['windows'], regrid_holder['parts'])
     boxes = regrid_holder['boxes']
     coords = [np.meshgrid(p.lats, p.lons, indexing='ij') for p in parts]
-    grib_msg = lambda m: isinstance(m, (bytes, bytearray))
+    grib_msg = lambda m: isinstance(m, (bytes, bytearray, Blend))
+    between = any((isinstance(m, Blend) for m in raw.values()))
+
+    def sfc(nk):
+        name, k = nk
+        m = raw[k]
+        if isinstance(m, Blend) and name in src.windowed:
+            return blend_window(src, name, m, run)
+        return _decode(m, region, boxes)
     with ThreadPoolExecutor(DECODE_THREADS) as ex:
         sk = [(name, k) for name, k in src.surface.items() if raw.get(k) is not None]
-        vals = ex.map(lambda nk: _decode(raw[nk[1]], region, boxes), sk) if all((grib_msg(raw[k]) for _, k in sk)) else map(lambda nk: _decode(raw[nk[1]], region, boxes), sk)
+        vals = ex.map(sfc, sk) if all((grib_msg(raw[k]) for _, k in sk)) else map(sfc, sk)
         native = {name: None for name in src.surface}
         native.update(zip([n for n, _ in sk], vals))
         decoded = {}
@@ -921,8 +1018,9 @@ def load_hour(src, run, fh, regrid_holder, region, valid, raw=None):
     def earlier(pfh, key):
         if pfh not in cache:
             keys = [src.surface[c] for c in src.windowed if native.get(c) is not None]
+            have = kept_step(src, run, pfh)
             try:
-                cache[pfh] = _fetch(src, run, pfh, keys)
+                cache[pfh] = {k: grib.decode(have[k])[0] for k in keys if k in have} if have is not None and all((k in have for k in keys)) else _fetch(src, run, pfh, keys)
             except Exception as e:
                 log(f'  f{fh:03d}: earlier step f{pfh:03d} unavailable ({e})')
                 cache[pfh] = {}
@@ -943,7 +1041,7 @@ def load_hour(src, run, fh, regrid_holder, region, valid, raw=None):
             a = p(v[1])
             if name not in SUNLIT:
                 return a
-            f = instant_factor(valid, v[2], lat2d, lon2d)
+            f = instant_factor(valid, v[2], lat2d, lon2d, end=v[3] if len(v) > 3 else None)
             return np.where(a > 0, a * f, a) if name == 'shf' else a * f
         if isinstance(v, tuple) and v[0] == 'done':
             return v[1][i]
@@ -965,7 +1063,7 @@ def load_hour(src, run, fh, regrid_holder, region, valid, raw=None):
     sndp = {c: [get((src.level_vars[c], f'{l} mb')) for l in snd_extra] for c in src.snd_vars()} if snd_extra else {}
     rot = regrid_holder.get('rot')
     levels = np.array(src.levels, dtype=np.float32)
-    extra = open_meteo_extra(src, run, fh)
+    extra = open_meteo_extra(src, run, fh, between)
     if extra and 'om_idx' not in regrid_holder:
         import om
         rows = om.gaussian_rows()
@@ -1034,8 +1132,13 @@ def load_hour(src, run, fh, regrid_holder, region, valid, raw=None):
             s['zs'] = np.maximum(0, P.RD * tv / P.G * np.log(s['mslp'] / s['ps']))
         if s.get('sw') is None:
             s['sw'] = solar_estimate(valid, lat2d, lon2d, s.get('tcc', np.zeros_like(s['t2'])))
-        for k, flat in extra.items():
-            s[k] = np.where(inside_of(s), flat[regrid_holder['om_idx'][i]], np.nan).astype(np.float32)
+        for k, (flat, conv) in extra.items():
+            v = om_convert(flat[regrid_holder['om_idx'][i]], conv, valid, lat2d, lon2d)
+            if k == 'sw' and s.get('rnsw') is not None and (s.get('sw') is not None):
+                absorbed = np.clip(s['rnsw'] / np.maximum(s['sw'], 0.001), 0, 1)
+                s['rnsw'] = np.where(np.isfinite(v) & (s['sw'] > 5), v * absorbed, s['rnsw']).astype(np.float32)
+            old = s.get(k)
+            s[k] = np.where(inside_of(s), v if old is None else np.where(np.isfinite(v), v, old), np.nan).astype(np.float32)
         snow = s.pop('snowrate', None)
         if snow is not None and s.get('prate') is not None:
             s['snowshare'] = np.where(s['prate'] >= 0.05, np.clip(snow / np.maximum(s['prate'], 1e-06), 0, 1), np.nan).astype(np.float32)
@@ -1051,7 +1154,7 @@ def load_hour(src, run, fh, regrid_holder, region, valid, raw=None):
         rnsw, rnlw = (s.pop('rnsw', None), s.pop('rnlw', None))
         if s.get('shf') is None and rnsw is not None and (rnlw is not None):
             s['shf'] = heat_from_net_radiation(rnsw + rnlw, s['t2'], s['td2'], s.get('soilm9'), s.get('lsm'))
-        if src.snd_levels:
+        if snd_hour(src, fh):
             if windows is not None and src.snd_step != 1:
                 raise ValueError('snd_step > 1 needs the whole grid (no KEEP windows)')
             s['_snd'] = sounding_column(src, s, lv, levels, {c: [x[i] for x in v] for c, v in sndp.items()}, snd_extra, lon2d, rot)
@@ -1061,7 +1164,7 @@ SND_VARS = ('t', 'dpd', 'u', 'v', 'z', 'w')
 SND_SFC = {'ps': (400.0, 1100.0), 'sw': (0.0, 1270.0)}
 SND_MAP = ('elevation', 't2', 'td2', 'mslp', 'cloud', 'cloudlow', 'cloudmid', 'cloudhigh', 'rain', 'showers', 'cape', 'zi', 'heat', 'u_sfc', 'v_sfc', 'gust', 'vis', *(f'cc{p}' for p in P.CC_LEVELS))
 SND_BLOCK = 8
-SND_AHEAD_H = {'gfs': 48, 'ecmwf': 48}
+SND_AHEAD_H = {'gfs': 48, 'ecmwf': 144}
 
 def snd_enc(p):
     h = 44330.8 * (1 - (p / 1013.25) ** 0.190263)
@@ -1179,7 +1282,7 @@ def _process_hour(job, raw=None):
     if _CTX.pop('pick_physics', False):
         pick_physics(q, lambda: analyse_parts(parts, part_coords(holder['parts']), region[4], valid, windows, lat2d.shape), fh, keep)
     q.update(sky.cloud_overview(q, ENC, region[4] <= sky.FINE_STEP))
-    if src.snd_levels and valid - run <= timedelta(hours=SND_AHEAD_H.get(src.id, 10 ** 6)):
+    if snd_hour(src, fh):
         snd = sounding_grid(src, parts, windows, lat2d.shape, q)
         if snd is not None:
             q['snd'] = snd
@@ -1249,14 +1352,20 @@ def _lane(jobs, results):
                 r = None
             del raw
             results.put((i, r))
+LANE_RUN = 12
 
-def process_lanes(jobs, workers, progress=None):
+def lane_jobs(jobs, workers, run=1):
+    indexed = list(enumerate(jobs))
+    blocks = [indexed[i:i + run] for i in range(0, len(indexed), run)]
+    return [[j for b in blocks[w::workers] for j in b] for w in range(workers)]
+
+def process_lanes(jobs, workers, progress=None, run=1):
     import multiprocessing as mp
     import queue as _queue
     ctx = mp.get_context('fork')
     results = ctx.Queue()
-    indexed = list(enumerate(jobs))
-    procs = [ctx.Process(target=_lane, args=(indexed[w::workers], results), daemon=True) for w in range(workers)]
+    shares = lane_jobs(jobs, workers, run)
+    procs = [ctx.Process(target=_lane, args=(shares[w], results), daemon=True) for w in range(workers)]
     for p in procs:
         p.start()
     out, got = ([None] * len(jobs), 0)
@@ -1737,7 +1846,7 @@ def _publish_open(out, fbase, model, full, times, fields, cutoff, workers, point
             shutil.rmtree(os.path.join(fbase, old), ignore_errors=True)
     open(os.path.join(out, '.changed'), 'w').close()
     return manifest
-STORE_AHEAD_H = {'gfs': 60, 'icon': 60, 'ecmwf': 60, 'ens': 0}
+STORE_AHEAD_H = {'gfs': 60, 'icon': 60, 'ecmwf': 48, 'ens': 0}
 STORE_AFTER_FREE_H = {'hrrr': 12}
 
 def prune_store(hours_dir, ahead_h, now=None):
@@ -1794,7 +1903,7 @@ def backfill_jobs(src, run, needed, hours_dir):
             runs = candidate_runs(src, t, back_hours=24)
         for r in runs:
             fh = int((t - r).total_seconds() // 3600)
-            if r < run and 0 <= fh <= src.last_fh(r) and src.fstep(fh):
+            if r < run and 0 <= fh <= src.last_fh(r) and src.builds(fh):
                 jobs.append((r, fh))
                 break
     return jobs
@@ -1892,7 +2001,7 @@ def main():
                 results.append(_process_hour(fh))
                 progress.tick()
         else:
-            results += process_lanes(rest, workers, progress)
+            results += process_lanes(rest, workers, progress, run=LANE_RUN if src.between_to else 1)
     done = [t for t in results[:len(fhs)] if t is not None]
     if not done:
         raise SystemExit('no hours processed')

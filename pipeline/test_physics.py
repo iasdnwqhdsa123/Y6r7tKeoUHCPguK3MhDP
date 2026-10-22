@@ -238,6 +238,120 @@ class EcmwfNineKm(unittest.TestCase):
         np.testing.assert_array_equal(s['ice'], [0, 1, 0])
         self.assertFalse({'sdwe', 'rsn', 'sithick'} & set(s))
 
+class EcmwfHourly(unittest.TestCase):
+
+    def test_which_hours_are_built(self):
+        from sources import SOURCES
+        e, g = (SOURCES['ecmwf'], SOURCES['gfs'])
+        self.assertTrue(all((e.builds(h) for h in range(0, 91))))
+        self.assertEqual([h for h in range(88, 152) if e.builds(h)], [88, 89, 90, 93, 96, 99, 102, 105, 108, 111, 114, 117, 120, 123, 126, 129, 132, 135, 138, 141, 144, 150])
+        self.assertEqual([h for h in range(118, 128) if g.builds(h)], [118, 119, 120, 123, 126])
+
+    def test_complete_run_checks_its_last_file_step(self):
+        from datetime import datetime, timedelta, timezone
+        import sources
+        src = sources.SOURCES['ecmwf']
+        run = datetime(2026, 10, 21, 12, tzinfo=timezone.utc)
+        seen, orig = ([], sources.grib.exists)
+        sources.grib.exists = lambda url: seen.append(url) or True
+        try:
+            r, fhs = sources.latest_complete_run(src, [run + timedelta(hours=h) for h in (1, 2, 3, 91, 92, 93)], log=lambda *a: None, now=run)
+        finally:
+            sources.grib.exists = orig
+        self.assertEqual((r, fhs), (run, [1, 2, 3, 93]))
+        self.assertEqual(seen, [src.idx_url(run, 93)])
+
+    def test_an_hour_between_steps_blends_their_messages(self):
+        from datetime import datetime, timezone
+        from unittest import mock
+        import build
+        from sources import SOURCES
+        src = SOURCES['ecmwf']
+        run = datetime(2026, 10, 21, 12, tzinfo=timezone.utc)
+        t, pt = (('t', '850 mb'), src.surface['ptype'])
+        snd_only = next((k for k in src.wanted() if k not in src.wanted(sounding=False)))
+        steps = {6: {t: [270.0], pt: [1.0], snd_only: [1.0]}, 9: {t: [273.0], pt: [5.0], snd_only: [2.0]}}
+        asked = []
+        fake = lambda s, r, fh, wanted: asked.append((fh, wanted is None)) or steps[fh]
+        with mock.patch.object(build, 'step_messages', fake), mock.patch.object(build.grib, 'decode', lambda m: (np.asarray(m, np.float32), None)):
+            raw = build.fetch_hour(src, run, 7)
+            self.assertEqual(asked, [(6, True), (9, True)])
+            self.assertEqual(set(raw), {t, pt})
+            np.testing.assert_allclose(build._decode(raw[t]), [271.0])
+            np.testing.assert_allclose(build._decode(raw[pt]), [1.0])
+            np.testing.assert_allclose(build._decode(build.fetch_hour(src, run, 8)[pt]), [5.0])
+            self.assertIs(build.fetch_hour(src, run, 9), steps[9])
+
+    def test_accumulations_between_steps_take_the_steps_window(self):
+        from datetime import datetime, timedelta, timezone
+        from unittest import mock
+        import build
+        from sources import SOURCES
+        src = SOURCES['ecmwf']
+        run = datetime(2026, 10, 21, 12, tzinfo=timezone.utc)
+        m = build.Blend([0.003], [0.006], 1 / 3, 6, 9)
+        with mock.patch.object(build.grib, 'decode', lambda x: (np.asarray(x, np.float64), None)):
+            kind, mean, hours, end = build.blend_window(src, 'prate', m, run)
+        self.assertEqual((kind, hours, end), ('win', 3, run + timedelta(hours=9)))
+        self.assertAlmostEqual(float(mean[0]) * 3600, 1.0, places=5)
+        native = {'prate': ('win', mean, 3, end)}
+        build.resolve_windows(src, run, 7, native, lambda *a: self.fail('no earlier file between steps'))
+        self.assertEqual(native['prate'][0], 'win')
+
+    def test_sunshine_over_a_window_that_ends_after_the_hour(self):
+        from datetime import datetime, timedelta, timezone
+        import build
+        lat, lon = (np.array([[40.0]]), np.array([[-75.0]]))
+        v = datetime(2026, 10, 21, 19, tzinfo=timezone.utc)
+        np.testing.assert_allclose(build.instant_factor(v, 3, lat, lon, end=v), build.instant_factor(v, 3, lat, lon))
+        f = float(build.instant_factor(v, 3, lat, lon, end=v + timedelta(hours=2))[0, 0])
+        mean = np.mean([float(build.solar_estimate(v + timedelta(hours=2) - timedelta(hours=3 * k / 1200), lat, lon, 0)[0, 0]) for k in range(1201)])
+        self.assertAlmostEqual(f, float(build.solar_estimate(v, lat, lon, 0)[0, 0]) / mean, places=2)
+        self.assertGreater(f, 1)
+
+    def test_soundings_at_the_files_steps_to_144_h(self):
+        import build
+        from sources import SOURCES
+        e, g = (SOURCES['ecmwf'], SOURCES['gfs'])
+        self.assertEqual([h for h in range(0, 13) if build.snd_hour(e, h)], [0, 3, 6, 9, 12])
+        self.assertTrue(build.snd_hour(e, 144))
+        self.assertFalse(build.snd_hour(e, 150))
+        self.assertTrue(build.snd_hour(g, 47))
+        self.assertFalse(build.snd_hour(g, 49))
+
+    def test_open_meteo_values_in_load_hours_units(self):
+        from datetime import datetime, timezone
+        import build
+        lat, lon = (np.array([[40.0]]), np.array([[-75.0]]))
+        v = datetime(2026, 10, 21, 19, tzinfo=timezone.utc)
+        np.testing.assert_allclose(build.om_convert(np.array([[283.15]]), 'K', v, lat, lon), [[10.0]])
+        np.testing.assert_allclose(build.om_convert(np.array([[101300.0]]), 'Pa', v, lat, lon), [[1013.0]])
+        np.testing.assert_allclose(build.om_convert(np.array([[2.5]]), None, v, lat, lon), [[2.5]])
+        np.testing.assert_allclose(build.om_convert(np.array([[400.0]]), 'sun', v, lat, lon), 400 * build.instant_factor(v, 1, lat, lon))
+
+    def test_a_step_is_fetched_once_for_the_hours_round_it(self):
+        from datetime import datetime, timezone
+        from unittest import mock
+        import build
+        from sources import SOURCES
+        src = SOURCES['ecmwf']
+        run = datetime(2026, 10, 21, 12, tzinfo=timezone.utc)
+        calls = []
+        with mock.patch.object(type(src), 'fetch', lambda self, r, fh, sel: calls.append(fh) or {'fh': fh}), mock.patch.object(type(src), 'inventory', lambda self, r, fh, wanted=None: {}), mock.patch.object(build, '_STEPS', {}):
+            for fh in (6, 9, 6, 9, 12, 15, 6):
+                self.assertEqual(build.step_messages(src, run, fh, None), {'fh': fh})
+            self.assertEqual(build.kept_step(src, run, 6), {'fh': 6})
+            self.assertIsNone(build.kept_step(src, run, 9))
+        self.assertEqual(calls, [6, 9, 12, 15, 6])
+
+    def test_lanes_take_runs_of_hours(self):
+        import build
+        jobs = list(range(30))
+        shares = build.lane_jobs(jobs, 2, 12)
+        self.assertEqual([j for _, j in shares[0]], list(range(12)) + list(range(24, 30)))
+        self.assertEqual([j for _, j in shares[1]], list(range(12, 24)))
+        self.assertEqual(build.lane_jobs(jobs, 2, 1), [list(enumerate(jobs))[0::2], list(enumerate(jobs))[1::2]])
+
 class WindowedFields(unittest.TestCase):
 
     def setUp(self):
