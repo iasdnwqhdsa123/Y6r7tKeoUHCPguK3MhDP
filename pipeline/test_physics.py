@@ -728,6 +728,113 @@ class FreeWindow(unittest.TestCase):
         self.assertIsNone(build.write_free(out, 'ecmwf'))
         self.assertEqual([build.free_ahead(m).total_seconds() / 3600 for m in ('hrrr', 'gfs', 'icon', 'ecmwf')], [24, 48, 48, 24])
 
+class Fronts(unittest.TestCase):
+
+    @staticmethod
+    def field(wind=(0.0, 0.0), ps=1000.0, flat=False):
+        lats = np.arange(55, 24.99, -0.25)
+        lons = np.arange(-120, -69.99, 0.25)
+        la, lo = np.meshgrid(lats, lons, indexing='ij')
+        t = 10.0 - (0 if flat else 4.0) * (np.tanh((la - 40.0) / 1.5) + 1) / 2 * 2
+        td = t - 8.0
+        u, v = (np.full(la.shape, wind[0]), np.full(la.shape, wind[1]))
+        mslp = 1012 - 15 * np.exp(-(((la - 45) / 4) ** 2 + ((lo + 95) / 6) ** 2))
+        return (lats, lons, t, td, u, v, np.full(la.shape, ps) if np.isscalar(ps) else ps, mslp)
+
+    def test_theta_w(self):
+        import fronts
+        self.assertAlmostEqual(float(fronts.theta_w(20.0, 20.0, 1000.0)) - 273.15, 20.0, delta=0.3)
+        self.assertLess(float(fronts.theta_w(20.0, 5.0, 1000.0)), float(fronts.theta_w(20.0, 15.0, 1000.0)))
+        self.assertGreater(float(fronts.theta_w(5.0, 0.0, 850.0)) - 273.15, 5.0)
+
+    def test_a_front_its_place_type_and_side(self):
+        import fronts
+        for wind, kind in (((0.0, 8.0), 'w'), ((0.0, -8.0), 'c'), ((8.0, 0.0), 's')):
+            res = fronts.detect(*self.field(wind)[:6], ps=self.field()[6], mslp=self.field()[7])
+            self.assertTrue(res['fronts'], wind)
+            longest = max(res['fronts'], key=lambda f: len(f[1]))
+            self.assertEqual(longest[0], kind, wind)
+            pts = np.array(longest[1])
+            self.assertTrue(np.all((pts[:, 1] < 40.5) & (pts[:, 1] > 37.0)), pts[:, 1])
+            self.assertGreater(float(np.ptp(pts[:, 0])), 20)
+            self.assertLess(pts[-1, 0], pts[0, 0])
+
+    def test_none_without_a_zone_or_underground(self):
+        import fronts
+        f = self.field((0.0, -8.0), flat=True)
+        self.assertEqual(fronts.detect(*f[:6], ps=f[6], mslp=f[7])['fronts'], [])
+        f = self.field((0.0, -8.0), ps=800.0)
+        self.assertEqual(fronts.detect(*f[:6], ps=f[6], mslp=f[7])['fronts'], [])
+        lats, lons, t, td, u, v, ps, mp = self.field((0.0, -8.0))
+        self.assertEqual(fronts.detect(lats[40:70], lons[:40], t[40:70, :40], td[40:70, :40], u[40:70, :40], v[40:70, :40], ps=ps[40:70, :40])['fronts'], [])
+
+    def test_pressure_centres(self):
+        import fronts
+        f = self.field()
+        cs = fronts.detect(*f[:6], ps=f[6], mslp=f[7])['centres']
+        lows = [c for c in cs if c[0] == 'L']
+        self.assertEqual(len(lows), 1)
+        self.assertAlmostEqual(lows[0][1], -95, delta=1)
+        self.assertAlmostEqual(lows[0][2], 45, delta=1)
+        self.assertLess(lows[0][3], 1000)
+
+    def test_encode_round_trip_and_size(self):
+        import json
+        import fronts
+        f = self.field((0.0, -8.0))
+        res = fronts.detect(*f[:6], ps=f[6], mslp=f[7])
+        enc = fronts.encode(res)
+        back = fronts.decode(enc)
+        self.assertEqual([k for k, _ in back['fronts']], [k for k, _ in res['fronts']])
+        for (_, a), (_, b) in zip(res['fronts'], back['fronts']):
+            self.assertLess(np.abs(np.array(a)[[0, -1]] - np.array(b)[[0, -1]]).max(), fronts.COORD)
+        self.assertLess(len(json.dumps(enc, separators=(',', ':'))), 2000)
+
+    def test_joined_across_a_gap(self):
+        import fronts
+        a = np.array([[-100.0, 40.0], [-98.0, 40.0], [-96.0, 40.0]])
+        b = np.array([[-95.0, 40.1], [-93.0, 40.1]])
+        c = np.array([[-95.0, 41.0], [-95.0, 43.0]])
+        self.assertEqual(len(fronts.join_lines([a, b])), 1)
+        self.assertEqual(len(fronts.join_lines([a, c])), 2)
+
+    def test_published_by_the_day_never_as_tiles(self):
+        import json
+        import tempfile
+        from datetime import datetime, timedelta, timezone
+        import build
+        import fronts
+        with tempfile.TemporaryDirectory() as d:
+            hours, rdir = (os.path.join(d, '_hours'), os.path.join(d, 'run'))
+            os.makedirs(hours)
+            f = self.field((0.0, -8.0))
+            enc = json.dumps(fronts.encode(fronts.detect(*f[:6], ps=f[6], mslp=f[7])), separators=(',', ':')).encode()
+            t0 = datetime(2026, 10, 22, 12, tzinfo=timezone.utc)
+            times = [t0 + timedelta(hours=h) for h in (0, 6, 24)]
+            q = np.full((4, 4), 100, np.uint8)
+            for t in times:
+                np.savez(os.path.join(hours, f'{t:%Y%m%d%H}.npz'), wstar=q, elevation=q, fronts=np.frombuffer(enc, np.uint8))
+            self.assertTrue(build.write_fronts(rdir, hours, times))
+            with open(os.path.join(rdir, build.day_key(t0), 'fronts.json')) as fh:
+                day = json.load(fh)
+            self.assertEqual(sorted(day), ['2026102212', '2026102218'])
+            self.assertEqual(day['2026102212'], json.loads(enc))
+            self.assertTrue(os.path.exists(os.path.join(rdir, build.day_key(times[2]), 'fronts.json')))
+            _, present, _ = build.write_tiles(rdir, hours, times, 4, t0)
+            self.assertNotIn('fronts', present)
+            self.assertIn('wstar', present)
+
+    def test_a_failing_part_costs_the_hour_nothing(self):
+        import build
+
+        class Rg:
+            lats = np.arange(50, 24.99, -0.25)
+            lons = np.arange(-120, -69.99, 0.25)
+        broken = {'t': [np.zeros(3)], 'td': [np.zeros(3)], 'u': [np.zeros(3)], 'v': [np.zeros(3)]}
+        self.assertIsNone(build.hour_fronts([({}, broken, (850,))], [Rg()]))
+        out = build.hour_fronts([({}, {}, (1000, 850))], [Rg()])
+        self.assertEqual(bytes(out), b'{"f":[],"p":[]}')
+
 class ReuseHours(unittest.TestCase):
 
     def test_kept_when_computed_from_same_run(self):

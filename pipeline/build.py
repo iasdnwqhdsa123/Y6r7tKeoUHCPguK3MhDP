@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 import numpy as np
 from concurrent.futures import Future, ThreadPoolExecutor
 from scipy.spatial import cKDTree
+import fronts
 import grib
 import physics
 import physics as P
@@ -1306,6 +1307,9 @@ def _process_hour(job, raw=None):
     if _CTX.pop('pick_physics', False):
         pick_physics(q, lambda: analyse_parts(parts, part_coords(holder['parts']), region[4], valid, windows, lat2d.shape), fh, keep)
     q.update(sky.cloud_overview(q, ENC, region[4] <= sky.FINE_STEP))
+    fr = hour_fronts(parts, holder['parts'], fh)
+    if fr is not None:
+        q['fronts'] = fr
     if snd_hour(src, fh):
         snd = sounding_grid(src, parts, windows, lat2d.shape, q)
         if snd is not None:
@@ -1317,6 +1321,28 @@ def _process_hour(job, raw=None):
         f.write(f'{run:%Y%m%d%H}')
     log(f'  f{fh:03d} {valid:%a %HZ} done in {time.time() - t0:.1f}s')
     return valid
+
+def hour_fronts(parts, regrids, fh=0):
+    try:
+        res = fronts.merge([fronts.from_part(s, lv, levels, rg.lats, rg.lons) for (s, lv, levels), rg in zip(parts, regrids)])
+        return np.frombuffer(json.dumps(fronts.encode(res), separators=(',', ':')).encode(), np.uint8)
+    except Exception as e:
+        log(f'  f{fh:03d} fronts skipped: {e!r}')
+        return None
+NOT_TILES = {'elevation', 'snd', 'fronts'}
+
+def write_fronts(rdir, hours_dir, times, day_of=None):
+    folders: dict[str, dict] = {}
+    for t in times:
+        with np.load(os.path.join(hours_dir, f'{t:%Y%m%d%H}.npz')) as h:
+            if 'fronts' not in h.files:
+                continue
+            folders.setdefault((day_of or day_key)(t), {})[f'{t:%Y%m%d%H}'] = json.loads(h['fronts'].tobytes())
+    for folder, hours in folders.items():
+        os.makedirs(os.path.join(rdir, folder), exist_ok=True)
+        with open(os.path.join(rdir, folder, 'fronts.json'), 'w') as f:
+            json.dump(hours, f, separators=(',', ':'))
+    return bool(folders)
 NATIVE_TOLERANCE = 0.0001
 
 def pick_physics(q, compute, fh, keep=None):
@@ -1675,7 +1701,7 @@ def write_tiles(rdir, hours_dir, times, tile, elev_time, only=None, levels=(), w
         for st in stamps:
             with np.load(os.path.join(hours_dir, f'{st}.npz')) as h:
                 files |= set(h.files)
-        names = sorted(files - {'elevation', 'snd'})
+        names = sorted(files - NOT_TILES)
         if only is not None:
             names = [n for n in names if n in only]
         same = reuse is not None and reuse[1].get(day) == stamps and os.path.isdir(os.path.join(reuse[0], day))
@@ -1867,6 +1893,7 @@ def _publish_open(out, fbase, model, full, times, fields, cutoff, workers, point
     daily = [t for t in times if t not in hourly]
     days, present, lpresent = write_tiles(rdir, hours_dir, daily, tile, times[-1], only=fields, levels=levels, workers=workers, reuse=reuse)
     pts = write_points(rdir, hours_dir, daily, times[-1], only=fields, workers=workers) if points else None
+    has_fronts = points and write_fronts(rdir, hours_dir, daily)
     hours, hpts = ([], {})
     if hourly:
         folder = lambda t: f'h/{hour_token(model, free_id, f'{t:%Y%m%d%H}')}'
@@ -1876,6 +1903,8 @@ def _publish_open(out, fbase, model, full, times, fields, cutoff, workers, point
         for k, by_name in hlp.items():
             for name, keys in by_name.items():
                 lpresent[k].setdefault(name, set()).update(keys)
+        if points:
+            has_fronts = write_fronts(rdir, hours_dir, sorted(hourly), day_of=folder) or has_fronts
         for t in sorted(hourly):
             st = f'{t:%Y%m%d%H}'
             hours.append(st)
@@ -1886,7 +1915,7 @@ def _publish_open(out, fbase, model, full, times, fields, cutoff, workers, point
     last_open = max(daily) if daily else times[0] - timedelta(hours=1)
     qtimes = [q for q in stored_quarters(os.path.join(base, '_quarters'), times[0], cutoff) if q <= last_open] if model == 'hrrr' else []
     qdays, qpresent = write_quarters(rdir, os.path.join(base, '_quarters'), qtimes, tile, only=fields, workers=workers) if qtimes else ({}, {})
-    manifest = {**full, 'runId': free_id, 'tier': 'free', 'freeUntil': cutoff.isoformat(), 'generated': datetime.now(timezone.utc).isoformat(timespec='seconds'), 'days': days, 'fields': {**{k: {**full['fields'][k], 'tiles': sorted(v)} for k, v in sorted(present.items()) if k in full['fields']}, **quarter_manifest(qdays, qpresent)}, 'quarters': qdays, 'levels': [{**lv, 'tiles': {k: sorted(v) for k, v in sorted(lpresent[lv['k']].items()) if k in full['fields']}} for lv in full.get('levels', [])], 'waveAltsFt': full.get('waveAltsFt', []) if any((k.startswith('wv') for k in present)) else [], 'points': pts, 'sounding': None, 'hours': hours, 'hourPoints': hpts, 'pack': 1}
+    manifest = {**full, 'runId': free_id, 'tier': 'free', 'freeUntil': cutoff.isoformat(), 'generated': datetime.now(timezone.utc).isoformat(timespec='seconds'), 'days': days, 'fields': {**{k: {**full['fields'][k], 'tiles': sorted(v)} for k, v in sorted(present.items()) if k in full['fields']}, **quarter_manifest(qdays, qpresent)}, 'quarters': qdays, 'levels': [{**lv, 'tiles': {k: sorted(v) for k, v in sorted(lpresent[lv['k']].items()) if k in full['fields']}} for lv in full.get('levels', [])], 'waveAltsFt': full.get('waveAltsFt', []) if any((k.startswith('wv') for k in present)) else [], 'points': pts, 'sounding': None, 'hours': hours, 'hourPoints': hpts, 'fronts': 1 if has_fronts else 0, 'pack': 1}
     with open(os.path.join(fbase, 'latest.json'), 'w') as f:
         json.dump(manifest, f, separators=(',', ':'))
     for old in os.listdir(fbase):
@@ -2115,6 +2144,7 @@ def main():
     qtimes = stored_quarters(qdir, min(needed), max(needed), prune=True) if src.id == 'hrrr' else []
     qdays, qpresent = write_quarters(build_dir, qdir, qtimes, tile, workers=args.workers) if qtimes else ({}, {})
     log(f'{src.id}: tiles for {len(times)} hours in {_fmt_dur(time.time() - t0)}')
+    has_fronts = write_fronts(build_dir, hours_dir, times)
     t0 = time.time()
     points = write_points(build_dir, hours_dir, times, done[0], workers=args.workers)
     log(f'{src.id}: point packs ({(len(points['tiles']) if points else 0)}) in {_fmt_dur(time.time() - t0)}')
@@ -2125,7 +2155,7 @@ def main():
     ntx = -(-len(lons) // tile)
     nty = -(-len(lats) // tile)
     grid = {'west': float(lons[0]), 'north': float(lats[0]), 'step': region[4], 'nx': len(lons), 'ny': len(lats), 'tile': tile, 'ntx': ntx, 'nty': nty}
-    manifest = {'model': src.id, 'label': src.label, 'run': run.isoformat(), 'runId': run_id, 'generated': datetime.now(timezone.utc).isoformat(timespec='seconds'), 'complete': not args.max_hours and len(done) == len(fhs), 'older': older_runs(tail, times), 'grid': grid, 'levels': overview_manifest(grid, levels, lpresent), 'days': days, 'quarters': qdays, 'fields': {**{k: {'min': ENC[k][0], 'max': ENC[k][1], 'transform': ENC[k][2], 'tiles': sorted(v)} for k, v in sorted(present.items())}, **quarter_manifest(qdays, qpresent)}, 'heights': 'agl', 'sunGate': True, 'rainGate': True, 'cuNear': True, 'bandsAgl': True, 'highAgl': True, 'bsRasp': True, 'windAltsFt': WIND_ALTS_FT, 'waveAltsFt': WAVE_ALTS_FT if 'wv12000' in present else [], 'notes': src.notes, 'points': points, 'sounding': soundings, 'pack': 1}
+    manifest = {'model': src.id, 'label': src.label, 'run': run.isoformat(), 'runId': run_id, 'generated': datetime.now(timezone.utc).isoformat(timespec='seconds'), 'complete': not args.max_hours and len(done) == len(fhs), 'older': older_runs(tail, times), 'grid': grid, 'levels': overview_manifest(grid, levels, lpresent), 'days': days, 'quarters': qdays, 'fields': {**{k: {'min': ENC[k][0], 'max': ENC[k][1], 'transform': ENC[k][2], 'tiles': sorted(v)} for k, v in sorted(present.items())}, **quarter_manifest(qdays, qpresent)}, 'heights': 'agl', 'sunGate': True, 'rainGate': True, 'cuNear': True, 'bandsAgl': True, 'highAgl': True, 'bsRasp': True, 'windAltsFt': WIND_ALTS_FT, 'waveAltsFt': WAVE_ALTS_FT if 'wv12000' in present else [], 'notes': src.notes, 'points': points, 'sounding': soundings, 'fronts': 1 if has_fronts else 0, 'pack': 1}
     shutil.rmtree(rdir, ignore_errors=True)
     os.replace(build_dir, rdir)
     with open(latest + '.tmp', 'w') as f:
