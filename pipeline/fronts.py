@@ -9,8 +9,8 @@ WIND_SMOOTH_KM = 150.0
 GRAD_MIN = 0.4
 TFP_MIN = 0.3
 MIN_LEN_KM = 400.0
-MIN_PART_KM = 250.0
-MOVE_MS = 2.0
+MIN_PART_KM = 500.0
+MOVE_MS = 1.5
 ALONG_KM = 300.0
 JOIN_KM = 200.0
 JOIN_TURN = 50.0
@@ -24,6 +24,14 @@ UNDERGROUND_HPA = 10.0
 EDGE_KM = 150.0
 TGRAD_MIN = 0.3
 MIN_SPAN_DEG = 12.0
+SUB_FROM, SUB_TO = (36.0, 30.0)
+SUB_LEN = 2.0
+SUB_RATIO = 0.6
+LINE_GRAD = 0.6
+WIND_SFC = 0.5
+OCC_LOW_KM = 400.0
+OCC_DEPTH = 8.0
+OCC_PART_KM = 150.0
 
 def theta_e(t_c, td_c, p_hpa):
     t = np.asarray(t_c, np.float64) + 273.15
@@ -266,7 +274,25 @@ def centres(grid, mslp):
             out.append((kind, float(lon), float(lat), float(p[y, x])))
     return out
 
-def detect(lats, lons, t_c, td_c, u, v, ps=None, mslp=None, p_hpa=LEVEL):
+def _ramp(lat):
+    return float(np.clip((SUB_FROM - abs(float(lat))) / max(SUB_FROM - SUB_TO, 1e-06), 0, 1))
+
+def _surround(g, pm):
+    p = smooth(pm, *g.sigma(CENTRE_SMOOTH_KM))
+    sy, sx = g.sigma(CENTRE_KM)
+    size = (max(3, int(round(2 * sy)) | 1), max(3, int(round(2 * sx)) | 1))
+    return ndimage.uniform_filter(np.where(np.isfinite(p), p, np.nanmean(p)), size, mode='nearest')
+
+def _occluded(g, lon, lat, lows, pmean):
+    ny, nx = pmean.shape
+    out = np.zeros(len(lon), bool)
+    for _, x, y, hpa in lows:
+        fy, fx = g.cell(x, y)
+        if float(pmean[int(np.clip(round(float(fy)), 0, ny - 1)), int(np.clip(round(float(fx)), 0, nx - 1))]) - hpa >= OCC_DEPTH:
+            out |= km_between(lon, lat, x, y) <= OCC_LOW_KM
+    return out
+
+def detect(lats, lons, t_c, td_c, u, v, ps=None, mslp=None, p_hpa=LEVEL, u10=None, v10=None):
     lats, lons = (np.asarray(lats, np.float64), np.asarray(lons, np.float64))
     if abs(lats[-1] - lats[0]) < MIN_SPAN_DEG or abs(lons[-1] - lons[0]) < MIN_SPAN_DEG:
         return {'fronts': [], 'centres': []}
@@ -281,6 +307,10 @@ def detect(lats, lons, t_c, td_c, u, v, ps=None, mslp=None, p_hpa=LEVEL):
         u = np.where(under, np.nan, u)
         v = np.where(under, np.nan, v)
     tw, t_c, u, v = (block_mean(np.asarray(a, np.float64), k) for a in (tw, t_c, u, v))
+    if WIND_SFC > 0 and u10 is not None and (v10 is not None):
+        u10, v10 = (block_mean(np.asarray(a, np.float64), k) for a in (u10, v10))
+        u = np.where(np.isfinite(u), (1 - WIND_SFC) * u + WIND_SFC * u10, u10)
+        v = np.where(np.isfinite(v), (1 - WIND_SFC) * v + WIND_SFC * v10, v10)
     g = Grid(lats[:tw.shape[0] * k:k] + (lats[1] - lats[0]) * (k - 1) / 2, lons[:tw.shape[1] * k:k] + (lons[1] - lons[0]) * (k - 1) / 2)
     under = block_mean(under.astype(np.float64), k) > 0.5
     ey, ex = g.sigma(EDGE_KM)
@@ -301,20 +331,27 @@ def detect(lats, lons, t_c, td_c, u, v, ps=None, mslp=None, p_hpa=LEVEL):
     tn = tgx * nx_ + tgy * ny_
     hk = 100000.0
     keep = (tfp * hk * hk > TFP_MIN) & (G * hk > GRAD_MIN) & (tn * hk > TGRAD_MIN) & ~near_under
+    cs = centres(g, pm) if pm is not None else []
+    lows = [c for c in cs if c[0] == 'L']
+    pmean = _surround(g, pm) if lows else None
     fronts = []
     lines = [np.array(g.lonlat(np.array([p[0] for p in ln]), np.array([p[1] for p in ln]))).T for ln in zero_lines(loc, keep)]
     for ll in join_lines(lines):
         lon, lat = (ll[:, 0], ll[:, 1])
         seg = km_between(lon[:-1], lat[:-1], lon[1:], lat[1:])
-        if seg.sum() < MIN_LEN_KM:
+        if seg.sum() < MIN_LEN_KM * (SUB_LEN if np.median(np.abs(lat)) < SUB_TO else 1.0):
+            continue
+        fy0, fx0 = g.cell(lon, lat)
+        line_g = float(np.nanmean(sample(G, fy0, fx0))) * hk
+        if line_g < LINE_GRAD:
+            continue
+        ramp = _ramp(np.median(lat))
+        if ramp > 0 and float(np.nanmean(sample(tn, fy0, fx0))) * hk < SUB_RATIO * ramp * line_g:
             continue
         if len(lon) >= 5:
             lon = np.r_[lon[0], np.convolve(lon, np.ones(3) / 3, 'valid'), lon[-1]]
             lat = np.r_[lat[0], np.convolve(lat, np.ones(3) / 3, 'valid'), lat[-1]]
         fy, fx = g.cell(lon, lat)
-        c = np.cos(np.radians(lat.mean()))
-        idx = simplify(np.c_[lon * c * 111.2, lat * 111.2], SIMPLIFY_KM)
-        lon, lat, fy, fx = (lon[idx], lat[idx], fy[idx], fx[idx])
         n_x, n_y = (sample(nx_, fy, fx), sample(ny_, fy, fx))
         across = sample(us, fy, fx) * n_x + sample(vs, fy, fx) * n_y
         seg = km_between(lon[:-1], lat[:-1], lon[1:], lat[1:])
@@ -322,6 +359,9 @@ def detect(lats, lons, t_c, td_c, u, v, ps=None, mslp=None, p_hpa=LEVEL):
         sm = np.array([np.nanmean(across[np.abs(dist - d) <= ALONG_KM / 2]) for d in dist])
         types = np.where(sm > MOVE_MS, 'c', np.where(sm < -MOVE_MS, 'w', 's'))
         seg_types = _runs(types[:-1], seg, MIN_PART_KM)
+        if lows:
+            occ = _occluded(g, lon, lat, lows, pmean)
+            seg_types = _runs(np.where(occ[:-1] & occ[1:], 'o', np.array(seg_types)), seg, OCC_PART_KM)
         i = 0
         while i < len(seg_types):
             j = i
@@ -332,11 +372,14 @@ def detect(lats, lons, t_c, td_c, u, v, ps=None, mslp=None, p_hpa=LEVEL):
             dxs = np.diff(plon) * np.cos(np.radians(plat[:-1]))
             dys = np.diff(plat)
             left = np.nansum(-dys * pnx[:-1] + dxs * pny[:-1])
+            c = math.cos(math.radians(float(plat.mean())))
+            keep_i = simplify(np.c_[plon * c * 111.2, plat * 111.2], SIMPLIFY_KM)
+            plon, plat = (plon[keep_i], plat[keep_i])
             if left < 0:
                 plon, plat = (plon[::-1], plat[::-1])
             fronts.append((str(seg_types[i]), list(zip(plon.tolist(), plat.tolist()))))
             i = j + 1
-    return {'fronts': fronts, 'centres': centres(g, pm) if pm is not None else []}
+    return {'fronts': fronts, 'centres': cs}
 
 def merge(results):
     out = {'fronts': [], 'centres': []}
@@ -376,4 +419,4 @@ def from_part(s, lv, levels, lats, lons):
     if LEVEL not in levels or lv.get('t') is None or lv.get('td') is None or (lv.get('u') is None):
         return None
     i = levels.index(LEVEL)
-    return detect(lats, lons, lv['t'][i], lv['td'][i], lv['u'][i], lv['v'][i], ps=s.get('ps'), mslp=s.get('mslp'))
+    return detect(lats, lons, lv['t'][i], lv['td'][i], lv['u'][i], lv['v'][i], ps=s.get('ps'), mslp=s.get('mslp'), u10=s.get('u10'), v10=s.get('v10'))

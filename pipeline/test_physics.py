@@ -768,6 +768,43 @@ class Fronts(unittest.TestCase):
         lats, lons, t, td, u, v, ps, mp = self.field((0.0, -8.0))
         self.assertEqual(fronts.detect(lats[40:70], lons[:40], t[40:70, :40], td[40:70, :40], u[40:70, :40], v[40:70, :40], ps=ps[40:70, :40])['fronts'], [])
 
+    def test_subtropics_a_moisture_edge_isnt_a_front(self):
+        import fronts
+        lats = np.arange(40, 9.99, -0.25)
+        lons = np.arange(-120, -69.99, 0.25)
+        la, lo = np.meshgrid(lats, lons, indexing='ij')
+        step = (np.tanh((la - 24.0) / 1.5) + 1) / 2
+        u, v = (np.zeros(la.shape), np.full(la.shape, -8.0))
+        ps, mslp = (np.full(la.shape, 1000.0), np.full(la.shape, 1012.0))
+        t = 24.0 - 8.0 * step
+        self.assertTrue(fronts.detect(lats, lons, t, t - 8.0, u, v, ps=ps, mslp=mslp)['fronts'])
+        t = np.full(la.shape, 24.0) - 1.0 * step
+        td = 18.0 - 14.0 * step
+        self.assertEqual(fronts.detect(lats, lons, t, td, u, v, ps=ps, mslp=mslp)['fronts'], [])
+        self.assertGreater(fronts.SUB_FROM, 30)
+
+    def test_occluded_next_to_a_deep_low(self):
+        import fronts
+        lats, lons, t, td, u, v, ps, _ = self.field((0.0, -8.0))
+        la, lo = np.meshgrid(lats, lons, indexing='ij')
+        deep = 1012 - 25 * np.exp(-(((la - 40.5) / 3) ** 2 + ((lo + 95) / 4) ** 2))
+        res = fronts.detect(lats, lons, t, td, u, v, ps=ps, mslp=deep)
+        occ = [p for k, p in res['fronts'] if k == 'o']
+        self.assertTrue(occ, [k for k, _ in res['fronts']])
+        pts = np.array([q for p in occ for q in p])
+        self.assertLess(fronts.km_between(pts[:, 0], pts[:, 1], -95.0, 40.5).max(), fronts.OCC_LOW_KM + 50)
+        self.assertTrue(any((k == 'c' for k, _ in res['fronts'])))
+        shallow = 1012 - 4 * np.exp(-(((la - 40.5) / 3) ** 2 + ((lo + 95) / 4) ** 2))
+        self.assertFalse(any((k == 'o' for k, _ in fronts.detect(lats, lons, t, td, u, v, ps=ps, mslp=shallow)['fronts'])))
+
+    def test_typed_with_the_surface_wind_too(self):
+        import fronts
+        lats, lons, t, td, u, v, ps, mslp = self.field((0.0, -1.0))
+        self.assertEqual(max(fronts.detect(lats, lons, t, td, u, v, ps=ps, mslp=mslp)['fronts'], key=lambda f: len(f[1]))[0], 's')
+        u10, v10 = (np.zeros(u.shape), np.full(v.shape, -6.0))
+        res = fronts.detect(lats, lons, t, td, u, v, ps=ps, mslp=mslp, u10=u10, v10=v10)
+        self.assertEqual(max(res['fronts'], key=lambda f: len(f[1]))[0], 'c')
+
     def test_pressure_centres(self):
         import fronts
         f = self.field()
