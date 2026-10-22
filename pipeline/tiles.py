@@ -126,6 +126,35 @@ def png_bytes(img, level=None):
     h, w = img.shape
     idat = deflate.zlib_compress(png_filter(img).tobytes(), PNG_LEVEL if level is None else level)
     return _SIG + _chunk(b'IHDR', struct.pack('>IIBBBBB', w, h, 8, 0, 0, 0, 0)) + _chunk(b'IDAT', idat) + _chunk(b'IEND', b'')
+HOUR_LEVEL = 6
+
+def png_hours(stack, level=None):
+    stack = np.ascontiguousarray(stack, np.uint8)
+    n, T, W = stack.shape
+    img = stack.reshape(-1, W)
+    rows = png_filter(img).reshape(n * T, W + 1).copy()
+    x = img[::T].astype(np.int16)
+    a = np.zeros_like(x)
+    a[:, 1:] = x[:, :-1]
+    none, sub = (x.astype(np.uint8), (x - a).astype(np.uint8))
+    cost = lambda r: np.abs(r.view(np.int8).astype(np.int32)).sum(axis=1)
+    use_sub = cost(sub) < cost(none)
+    first = rows[::T]
+    first[:, 0] = use_sub
+    first[:, 1:] = np.where(use_sub[:, None], sub, none)
+    rows[::T] = first
+    c = zlib.compressobj(HOUR_LEVEL if level is None else level, zlib.DEFLATED, 15, 9)
+    head = c.compress(b'')
+    segs = [c.compress(rows[k * T:(k + 1) * T].tobytes()) + c.flush(zlib.Z_FULL_FLUSH) for k in range(n)]
+    stream = head + b''.join(segs) + c.flush(zlib.Z_FINISH)
+    at = 8 + 25 + 8
+    offs = [at + 2]
+    s = at + len(head)
+    for g in segs:
+        s += len(g)
+        offs.append(s)
+    png = _SIG + _chunk(b'IHDR', struct.pack('>IIBBBBB', W, n * T, 8, 0, 0, 0, 0)) + _chunk(b'IDAT', stream) + _chunk(b'IEND', b'')
+    return (png, offs)
 
 def png_encode(img, fallback_level=4):
     if deflate is None:

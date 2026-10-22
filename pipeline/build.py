@@ -1592,12 +1592,14 @@ PNG_TOO_UNTIL = datetime(2026, 10, 11, 19, tzinfo=timezone.utc)
 
 def png_too():
     return datetime.now(timezone.utc) < PNG_TOO_UNTIL
+HOUR_SEGS = True
 
 def _write_strips(stack, tile, folder):
     stack = stack if stack.ndim == 3 else stack[None]
     n, ny, nx = stack.shape
     ntx, nty = (-(-nx // tile), -(-ny // tile))
     keys, blobs = (set(), [b''] * (ntx * nty))
+    hours = [None] * (ntx * nty) if n > 1 and HOUR_SEGS else None
     for ty in range(0, ny, tile):
         for tx in range(0, nx, tile):
             block = stack[:, ty:ty + tile, tx:tx + tile]
@@ -1605,11 +1607,15 @@ def _write_strips(stack, tile, folder):
                 continue
             pad = np.full((n, tile, tile), 255, np.uint8)
             pad[:, :block.shape[1], :block.shape[2]] = block
-            blobs[ty // tile * ntx + tx // tile] = tiles.png_encode(pad.reshape(-1, tile), COMPRESS_LEVEL)
+            i = ty // tile * ntx + tx // tile
+            if hours is not None:
+                blobs[i], hours[i] = tiles.png_hours(pad)
+            else:
+                blobs[i] = tiles.png_encode(pad.reshape(-1, tile), COMPRESS_LEVEL)
             keys.add(f'{tx // tile}_{ty // tile}')
     if keys:
         os.makedirs(os.path.dirname(folder), exist_ok=True)
-        pack.write_pack(folder + '.pack', blobs, ntx, nty)
+        pack.write_pack(folder + '.pack', blobs, ntx, nty, hours, n)
         if png_too():
             os.makedirs(folder, exist_ok=True)
             for k in keys:
@@ -2155,7 +2161,7 @@ def main():
     ntx = -(-len(lons) // tile)
     nty = -(-len(lats) // tile)
     grid = {'west': float(lons[0]), 'north': float(lats[0]), 'step': region[4], 'nx': len(lons), 'ny': len(lats), 'tile': tile, 'ntx': ntx, 'nty': nty}
-    manifest = {'model': src.id, 'label': src.label, 'run': run.isoformat(), 'runId': run_id, 'generated': datetime.now(timezone.utc).isoformat(timespec='seconds'), 'complete': not args.max_hours and len(done) == len(fhs), 'older': older_runs(tail, times), 'grid': grid, 'levels': overview_manifest(grid, levels, lpresent), 'days': days, 'quarters': qdays, 'fields': {**{k: {'min': ENC[k][0], 'max': ENC[k][1], 'transform': ENC[k][2], 'tiles': sorted(v)} for k, v in sorted(present.items())}, **quarter_manifest(qdays, qpresent)}, 'heights': 'agl', 'sunGate': True, 'rainGate': True, 'cuNear': True, 'bandsAgl': True, 'highAgl': True, 'bsRasp': True, 'windAltsFt': WIND_ALTS_FT, 'waveAltsFt': WAVE_ALTS_FT if 'wv12000' in present else [], 'notes': src.notes, 'points': points, 'sounding': soundings, 'fronts': 1 if has_fronts else 0, 'pack': 1}
+    manifest = {'model': src.id, 'label': src.label, 'run': run.isoformat(), 'runId': run_id, 'generated': datetime.now(timezone.utc).isoformat(timespec='seconds'), 'complete': not args.max_hours and len(done) == len(fhs), 'older': older_runs(tail, times), 'grid': grid, 'levels': overview_manifest(grid, levels, lpresent), 'days': days, 'quarters': qdays, 'fields': {**{k: {'min': ENC[k][0], 'max': ENC[k][1], 'transform': ENC[k][2], 'tiles': sorted(v)} for k, v in sorted(present.items())}, **quarter_manifest(qdays, qpresent)}, 'heights': 'agl', 'sunGate': True, 'rainGate': True, 'cuNear': True, 'bandsAgl': True, 'highAgl': True, 'bsRasp': True, 'windAltsFt': WIND_ALTS_FT, 'waveAltsFt': WAVE_ALTS_FT if 'wv12000' in present else [], 'notes': src.notes, 'points': points, 'sounding': soundings, 'fronts': 1 if has_fronts else 0, 'pack': 1, 'hourSegs': 1 if HOUR_SEGS else 0}
     shutil.rmtree(rdir, ignore_errors=True)
     os.replace(build_dir, rdir)
     with open(latest + '.tmp', 'w') as f:

@@ -1805,6 +1805,68 @@ class Packs(unittest.TestCase):
             with self.assertRaises(ValueError):
                 pack.write_pack(p, [b'a'], 2, 2)
 
+    def test_hour_segments(self):
+        import io
+        import tempfile
+        import zlib
+        from PIL import Image
+        import build
+        import pack
+        import tiles
+        rng = np.random.default_rng(3)
+        base = np.cumsum(np.cumsum(rng.integers(-2, 3, (5, 9, 11)), 1), 2)
+        day = np.clip(base - base.min(), 0, 254).astype(np.uint8)
+        day[2] = 7
+        day[3, :, 8:] = 255
+        png, offs = tiles.png_hours(day)
+        self.assertEqual(len(offs), 6)
+        whole = np.array(Image.open(io.BytesIO(png)))
+        np.testing.assert_array_equal(whole, day.reshape(-1, 11))
+
+        def unfilter(raw, w, h):
+            rows = np.frombuffer(raw, np.uint8).reshape(h, w + 1)
+            out = np.zeros((h, w), np.int64)
+            for y in range(h):
+                f, x = (rows[y, 0], rows[y, 1:].astype(np.int64))
+                prev = out[y - 1] if y else np.zeros(w, np.int64)
+                if y == 0:
+                    self.assertIn(f, (0, 1))
+                for i in range(w):
+                    a = out[y, i - 1] if i else 0
+                    b, c = (prev[i], prev[i - 1] if i else 0)
+                    p = a + b - c
+                    pr = a if abs(p - a) <= abs(p - b) and abs(p - a) <= abs(p - c) else b if abs(p - b) <= abs(p - c) else c
+                    out[y, i] = x[i] + (0, a, b, (a + b) // 2, pr)[f] & 255
+            return out.astype(np.uint8)
+        for k in range(5):
+            seg = png[offs[k]:offs[k + 1]]
+            raw = zlib.decompressobj(-15).decompress(seg + b'\x03\x00')
+            np.testing.assert_array_equal(unfilter(raw, 11, 9), day[k])
+        with tempfile.TemporaryDirectory() as d:
+            folder = os.path.join(d, '20261022', 'wstar')
+            keys = build._write_strips(np.repeat(day, 2, axis=2), 11, folder)
+            self.assertEqual(keys, {'0_0', '1_0'})
+            p = folder + '.pack'
+            at = pack.read_hours(p)
+            self.assertEqual(at.shape, (2, 6))
+            ntx, nty, ends, start = pack.read_index(p)
+            first = np.array(Image.open(io.BytesIO(pack.read_tile(p, '1_0'))))
+            np.testing.assert_array_equal(first.reshape(5, 11, 11)[:, :9], np.repeat(day, 2, axis=2)[:, :, 11:])
+            self.assertTrue((first.reshape(5, 11, 11)[:, 9:] == 255).all())
+            seg = pack.read_hour(p, 1, 4)
+            raw = zlib.decompressobj(-15).decompress(seg + b'\x03\x00')
+            np.testing.assert_array_equal(unfilter(raw, 11, 11)[:9], np.repeat(day, 2, axis=2)[4, :, 11:])
+            build._write_strips(day[0], 11, os.path.join(d, 'elevation'))
+            self.assertIsNone(pack.read_hours(os.path.join(d, 'elevation.pack')))
+        was = build.HOUR_SEGS
+        try:
+            build.HOUR_SEGS = False
+            with tempfile.TemporaryDirectory() as d:
+                build._write_strips(day, 11, os.path.join(d, 'w'))
+                self.assertIsNone(pack.read_hours(os.path.join(d, 'w.pack')))
+        finally:
+            build.HOUR_SEGS = was
+
     def test_pngs_too_until_the_cutoff(self):
         import tempfile
         from datetime import datetime, timezone
