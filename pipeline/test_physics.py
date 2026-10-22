@@ -352,6 +352,31 @@ class EcmwfHourly(unittest.TestCase):
         self.assertEqual([j for _, j in shares[1]], list(range(12, 24)))
         self.assertEqual(build.lane_jobs(jobs, 2, 1), [list(enumerate(jobs))[0::2], list(enumerate(jobs))[1::2]])
 
+    def test_stalled_range_asked_of_the_next_mirror(self):
+        import grib
+        from unittest import mock
+        asked = []
+
+        class Ok:
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return b'data'
+
+        def urlopen(req, timeout):
+            asked.append((req.full_url, req.get_header('Range'), timeout))
+            if 'one' in req.full_url:
+                raise TimeoutError('stalled')
+            return Ok()
+        with mock.patch.object(grib.urllib.request, 'urlopen', urlopen), mock.patch.object(grib.time, 'sleep', lambda s: None):
+            self.assertEqual(grib.http_get(['https://one/f', 'https://two/f'], (5, 9), tries=4, timeout=15), b'data')
+        self.assertEqual(asked, [('https://one/f', 'bytes=5-9', 15), ('https://two/f', 'bytes=5-9', 15)])
+
     def test_hour_shards_take_every_hour_once(self):
         import build
         fhs = list(range(0, 91)) + list(range(93, 145, 3)) + list(range(150, 361, 6))

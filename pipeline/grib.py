@@ -8,13 +8,14 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 UA = {'User-Agent': 'wx-pipeline/1.0'}
 
-def http_get(url: str, rng: tuple[int, int | None] | None=None, tries: int=6) -> bytes:
+def http_get(url, rng: tuple[int, int | None] | None=None, tries: int=6, timeout: float=90) -> bytes:
+    urls = [url] if isinstance(url, str) else list(url)
     headers = dict(UA)
     if rng:
         headers['Range'] = f'bytes={rng[0]}-{('' if rng[1] is None else rng[1])}'
     for attempt in range(tries):
         try:
-            with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=90) as r:
+            with urllib.request.urlopen(urllib.request.Request(urls[attempt % len(urls)], headers=headers), timeout=timeout) as r:
                 return r.read()
         except urllib.error.HTTPError as e:
             if e.code in (403, 404, 409) or attempt == tries - 1:
@@ -128,13 +129,13 @@ def latlons(msg: bytes):
     finally:
         eccodes.codes_release(gid)
 
-def fetch_messages(url: str, idx_rows: dict, workers: int=8, gap: int=64 * 1024, tries: int=6) -> dict:
+def fetch_messages(url, idx_rows: dict, workers: int=8, gap: int=64 * 1024, tries: int=6, timeout: float=90) -> dict:
     by_offset = {r['offset']: k for k, r in idx_rows.items()}
     groups = _merge_ranges(list(idx_rows.values()), gap)
 
     def get(group):
         a, b, rows = group
-        blob = http_get(url, (a, b), tries)
+        blob = http_get(url, (a, b), tries, timeout)
         out = {}
         for r in rows:
             start = r['offset'] - a

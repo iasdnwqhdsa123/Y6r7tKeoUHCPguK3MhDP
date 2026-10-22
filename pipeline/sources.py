@@ -142,7 +142,8 @@ class IFS(Source):
             for part in self.PARTS:
                 mine = {k: r for k, r in sel.items() if r.get('part', 'sfc') == part}
                 if mine:
-                    out.update(grib.fetch_messages(self.url(run, fh, part), mine, workers=self.workers, gap=1 << 20, tries=2))
+                    urls = [self.url(run, fh, part, (self.mirror + k) % len(self.MIRRORS)) for k in range(len(self.MIRRORS))]
+                    out.update(grib.fetch_messages(urls, mine, workers=self.workers, gap=1 << 20, tries=4, timeout=30))
             return out
         return self._each_mirror(one)
 

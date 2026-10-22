@@ -65,13 +65,15 @@ def wanted(rows):
         if lt == 'sfc' and (p in SFC or p in GUSTS) or (lt == 'pl' and p == 't' and (int(lev) in LEVELS)) or (lt == 'sol' and (p, lev) == SOIL):
             sel[p, lev, int(r['number'])] = {'offset': r['_offset'], 'end': r['_offset'] + r['_length'] - 1}
     return sel
+RANGE_TIMEOUT = 15
 
 def fetch_step(run, fh):
 
     def one(m):
-        text = grib.http_get(SRC.idx_url(run, fh, m), tries=3).decode()
+        text = grib.http_get(SRC.idx_url(run, fh, m), tries=3, timeout=RANGE_TIMEOUT).decode()
         rows = [json.loads(line) for line in text.splitlines() if line.strip()]
-        return grib.fetch_messages(SRC.url(run, fh, m), wanted(rows), workers=RANGE_WORKERS, gap=0, tries=4)
+        urls = [SRC.url(run, fh, k) for k in (m, *(k for k in range(len(SRC.MIRRORS)) if k != m))]
+        return grib.fetch_messages(urls, wanted(rows), workers=RANGE_WORKERS, gap=0, tries=6, timeout=RANGE_TIMEOUT)
     return _mirrors(one)
 
 def fetch_static(run):
