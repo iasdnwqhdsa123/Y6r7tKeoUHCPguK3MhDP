@@ -219,7 +219,7 @@ def gaussian_index(lats, lons, rows):
     k = np.round(np.asarray(lons)[None, :] % 360 / 360 * n).astype(np.int64) % n
     return start[row][:, None] + k
 
-def read_flat(path, names):
+def read_flat(path, names, take=None):
     import numpy as np
     r = open_file(path)
     out = {}
@@ -232,5 +232,5 @@ def read_flat(path, names):
                 if a.name == 'unit':
                     unit = a.read_scalar()
             v = np.asarray(c.read_array((slice(0, c.shape[0]), slice(0, c.shape[1]))), np.float32).reshape(-1)
-            out[c.name] = _to_si(v, unit)
+            out[c.name] = _to_si(v, unit) if take is None else take(_to_si(v, unit))
     return out

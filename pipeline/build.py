@@ -793,8 +793,10 @@ class Blend:
     def values(self):
         if self.nearest:
             return grib.decode(self.m0 if self.a < 0.5 else self.m1)[0]
-        v0, v1 = (grib.decode(self.m0)[0], grib.decode(self.m1)[0])
-        return ((1 - self.a) * v0 + self.a * v1).astype(np.float32)
+        v = grib.decode(self.m0)[0]
+        v *= 1 - self.a
+        v += self.a * grib.decode(self.m1)[0]
+        return v
 BLEND_NEAREST = ('ptype',)
 
 def _decode(m, region=None, boxes=None):
@@ -864,7 +866,7 @@ def resolve_windows(src, run, fh, native, earlier):
 
 def snd_hour(src, fh):
     return bool(src.snd_levels) and fh <= SND_AHEAD_H.get(src.id, 10 ** 6) and bool(src.fstep(fh))
-STEPS_KEPT = 3
+STEPS_KEPT = 2
 _STEPS: dict = {}
 _STEPS_LOCK = threading.Lock()
 
@@ -922,7 +924,7 @@ def total_of_bands(tcc, bands):
 def inside_of(s):
     return np.isfinite(s['t2'])
 
-def open_meteo_extra(src, run, fh, between=False):
+def open_meteo_extra(src, run, fh, between=False, idx=None):
     if not src.om_extra:
         return {}
     import om
@@ -935,7 +937,8 @@ def open_meteo_extra(src, run, fh, between=False):
     valid = run + timedelta(hours=fh)
     url = f'{OpenMeteoBase}/data_spatial/{domain}/{run:%Y/%m/%d/%H%M}Z/{valid:%Y-%m-%dT%H%M}.om'
     try:
-        flat = om.read_flat(om.download(url, workers=8), {v for v, _ in names.values()})
+        take = None if idx is None else lambda a: [a[i] for i in idx]
+        flat = om.read_flat(om.download(url, workers=8), {v for v, _ in names.values()}, take)
     except Exception as e:
         log(f'  f{fh:03d}: no Open-Meteo {domain} hour ({e}): without {', '.join(names)}')
         return {}
@@ -1063,11 +1066,11 @@ def load_hour(src, run, fh, regrid_holder, region, valid, raw=None):
     sndp = {c: [get((src.level_vars[c], f'{l} mb')) for l in snd_extra] for c in src.snd_vars()} if snd_extra else {}
     rot = regrid_holder.get('rot')
     levels = np.array(src.levels, dtype=np.float32)
-    extra = open_meteo_extra(src, run, fh, between)
-    if extra and 'om_idx' not in regrid_holder:
+    if src.om_extra and 'om_idx' not in regrid_holder:
         import om
         rows = om.gaussian_rows()
         regrid_holder['om_idx'] = [om.gaussian_index(p.lats, p.lons, rows) for p in parts]
+    extra = open_meteo_extra(src, run, fh, between, regrid_holder.get('om_idx'))
     out = []
     for i in range(len(parts)):
         lat2d, lon2d = coords[i]
@@ -1133,7 +1136,7 @@ def load_hour(src, run, fh, regrid_holder, region, valid, raw=None):
         if s.get('sw') is None:
             s['sw'] = solar_estimate(valid, lat2d, lon2d, s.get('tcc', np.zeros_like(s['t2'])))
         for k, (flat, conv) in extra.items():
-            v = om_convert(flat[regrid_holder['om_idx'][i]], conv, valid, lat2d, lon2d)
+            v = om_convert(flat[i], conv, valid, lat2d, lon2d)
             if k == 'sw' and s.get('rnsw') is not None and (s.get('sw') is not None):
                 absorbed = np.clip(s['rnsw'] / np.maximum(s['sw'], 0.001), 0, 1)
                 s['rnsw'] = np.where(np.isfinite(v) & (s['sw'] > 5), v * absorbed, s['rnsw']).astype(np.float32)
@@ -1333,6 +1336,25 @@ def pick_physics(q, compute, fh, keep=None):
     log(f'physics: C++ (matches physics.py on f{fh:03d}: {len(q) - len(near)} of {len(q)} fields identical' + (f'; {', '.join(near)}' if near else '') + f'; checked in {time.time() - t0:.1f}s)')
 PREFETCH_AHEAD = 2
 
+def lean_malloc():
+    try:
+        import ctypes
+        libc = ctypes.CDLL('libc.so.6')
+        libc.mallopt(-3, 1 << 20)
+        return libc
+    except Exception:
+        return None
+
+def trim_malloc():
+    import gc
+    gc.collect()
+    if _LIBC is not None:
+        try:
+            _LIBC.malloc_trim(0)
+        except Exception:
+            pass
+_LIBC = None
+
 def _lane(jobs, results):
     from collections import deque
     from concurrent.futures import ThreadPoolExecutor
@@ -1351,6 +1373,7 @@ def _lane(jobs, results):
                 log(f'  {job}: failed ({e!r})')
                 r = None
             del raw
+            trim_malloc()
             results.put((i, r))
 LANE_RUN = 12
 
@@ -1915,6 +1938,8 @@ def pick_run(src, needed):
     return (run, fhs)
 
 def main():
+    global _LIBC
+    _LIBC = lean_malloc()
     ap = argparse.ArgumentParser()
     ap.add_argument('--model', required=True, choices=SOURCES)
     ap.add_argument('--out', default='dist-data')
@@ -1986,6 +2011,7 @@ def main():
             f.write(keep_now)
     _CTX.update({'src': src, 'run': run, 'region': region, 'hours': hours_dir, 'holder': {}, 'recompute': args.recompute, 'pick_physics': not args.python_physics})
     results = [_process_hour(fhs[0])]
+    trim_malloc()
     rest = fhs[1:]
     back = backfill_jobs(src, run, needed, hours_dir) if not args.max_hours else []
     if back:
