@@ -283,11 +283,16 @@ jobs:
           MODELS: ${{ needs.check.outputs.models }}
           GH_TOKEN: ${{ github.token }}
         run: |
+          pin=""
           if [ "$M" = ecmwf ] && [[ " $MODELS " == *" $M "* ]] && [ "${{ inputs.recompute && 'yes' || '' }}" != yes ]; then
-            (cd pipeline && python build.py --model "$M" --out ../dist-data --shard "0/$HOUR_SHARDS" ${{ inputs.force && '--force' || '' }}) || echo "::warning::$M's first share failed: the build computes its hours"
+            rm -f "dist-data/$M/_hours/SHARD_RUN"
+            if (cd pipeline && python build.py --model "$M" --out ../dist-data --shard "0/$HOUR_SHARDS" ${{ inputs.force && '--force' || '' }}); then
+              pin="$(cat "dist-data/$M/_hours/SHARD_RUN" 2> /dev/null || true)"
+            else echo "::warning::$M's first share failed: the build computes its hours"; fi
+            rm -f "dist-data/$M/_hours/SHARD_RUN"
             .github/scripts/shard-hours.sh "$M" "$HOUR_SHARDS"
           fi
-          (cd pipeline && python build.py --model "$M" --out ../dist-data ${{ inputs.force && '--force' || '' }} ${{ inputs.recompute && '--recompute' || '' }})
+          (cd pipeline && python build.py --model "$M" --out ../dist-data ${pin:+--run "$pin"} ${{ inputs.force && '--force' || '' }} ${{ inputs.recompute && '--recompute' || '' }})
           .github/scripts/pre-upload.sh "$M"
           df -h / && du -sh "dist-data/$M" "dist-data/$M/_hours" 2>/dev/null || true
 

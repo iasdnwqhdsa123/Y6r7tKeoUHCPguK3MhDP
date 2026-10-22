@@ -1956,7 +1956,11 @@ def backfill_jobs(src, run, needed, hours_dir):
                 break
     return jobs
 
-def pick_run(src, needed):
+def pick_run(src, needed, pin=None):
+    if pin:
+        run = datetime.strptime(pin, '%Y%m%d%H').replace(tzinfo=timezone.utc)
+        fhs = [int((v - run).total_seconds() // 3600) for v in needed]
+        return (run, [f for f in fhs if 0 <= f <= src.last_fh(run) and src.builds(f)])
     run, fhs = latest_complete_run(src, needed, log)
     if run is None:
         raise SystemExit(f'no complete {src.id} run found')
@@ -1982,6 +1986,7 @@ def main():
     ap.add_argument('--python-physics', action='store_true', help='physics.py only (never the C++ physics)')
     ap.add_argument('--last-fh', type=int, help="the ensemble's last step (testing)")
     ap.add_argument('--shard', help="i/n: compute only share i (0…n-1) of the run's hours into the store, nothing published (shard_hours)")
+    ap.add_argument('--run', help="YYYYMMDDHH: this run, not the newest complete one (the hour shards')")
     args = ap.parse_args()
     if args.model == 'ens':
         import ens
@@ -2003,7 +2008,7 @@ def main():
     if args.step:
         region[4] = args.step
     needed = needed_times(src, args.days)
-    run, fhs = pick_run(src, needed)
+    run, fhs = pick_run(src, needed, args.run)
     if args.max_hours:
         mid = [f for f in fhs if (run + timedelta(hours=f)).hour in (18, 19, 20)] or fhs
         fhs = sorted(set(mid[:args.max_hours]))
@@ -2067,6 +2072,8 @@ def main():
         raise SystemExit('no hours processed')
     if shard is not None:
         log(f'{src.id}: shard {shard[0] + 1} of {shard[1]}: {len(done)} of {len(fhs)} hours computed')
+        with open(os.path.join(hours_dir, 'SHARD_RUN'), 'w') as f:
+            f.write(run_id)
         return 0
     qdir = os.path.join(base, '_quarters')
     if src.id == 'hrrr' and (not args.no_quarters):

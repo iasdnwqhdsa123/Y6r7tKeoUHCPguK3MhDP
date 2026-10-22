@@ -377,6 +377,19 @@ class EcmwfHourly(unittest.TestCase):
             self.assertEqual(grib.http_get(['https://one/f', 'https://two/f'], (5, 9), tries=4, timeout=15), b'data')
         self.assertEqual(asked, [('https://one/f', 'bytes=5-9', 15), ('https://two/f', 'bytes=5-9', 15)])
 
+    def test_build_pinned_to_the_shards_run(self):
+        import build
+        from datetime import datetime, timedelta, timezone
+        from sources import SOURCES
+        src = SOURCES['ecmwf']
+        run = datetime(2026, 10, 22, 0, tzinfo=timezone.utc)
+        needed = [run + timedelta(hours=h) for h in range(-6, 400)]
+        got, fhs = build.pick_run(src, needed, '2026102200')
+        self.assertEqual(got, run)
+        self.assertEqual(fhs[0], 0)
+        self.assertEqual(fhs[-1], 360)
+        self.assertTrue(all((src.builds(f) for f in fhs)))
+
     def test_hour_shards_take_every_hour_once(self):
         import build
         fhs = list(range(0, 91)) + list(range(93, 145, 3)) + list(range(150, 361, 6))
