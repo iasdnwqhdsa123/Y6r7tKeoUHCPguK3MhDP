@@ -17,6 +17,7 @@ JOIN_TURN = 50.0
 CENTRE_KM = 800.0
 CENTRE_HPA = 2.0
 CENTRE_SMOOTH_KM = 100.0
+CENTRE_RAW_KM = 200.0
 LEVEL = 850
 COORD = 0.1
 SIMPLIFY_KM = 12.0
@@ -257,6 +258,7 @@ def join_lines(lines, km=None, max_turn=None):
 def centres(grid, mslp):
     if mslp is None or not np.isfinite(mslp).any():
         return []
+    raw = np.asarray(mslp, np.float64)
     p = smooth(mslp, *grid.sigma(CENTRE_SMOOTH_KM))
     sy, sx = grid.sigma(CENTRE_KM)
     size = (max(3, int(round(2 * sy)) | 1), max(3, int(round(2 * sx)) | 1))
@@ -270,8 +272,17 @@ def centres(grid, mslp):
         for y, x in zip(ys.tolist(), xs.tolist()):
             if y < 2 or x < 2 or y > ny - 3 or (x > nx - 3):
                 continue
+            ry, rx = (max(1, int(round(sy * CENTRE_RAW_KM / CENTRE_KM))), max(1, int(round(sx * CENTRE_RAW_KM / CENTRE_KM))))
+            box = raw[max(0, y - ry):y + ry + 1, max(0, x - rx):x + rx + 1]
+            if np.isfinite(box).any():
+                k = np.nanargmin(box) if sign < 0 else np.nanargmax(box)
+                by, bx = np.unravel_index(k, box.shape)
+                y, x = (max(0, y - ry) + by, max(0, x - rx) + bx)
+                val = float(raw[y, x])
+            else:
+                val = float(p[y, x])
             lon, lat = grid.lonlat(y, x)
-            out.append((kind, float(lon), float(lat), float(p[y, x])))
+            out.append((kind, float(lon), float(lat), val))
     return out
 
 def _ramp(lat):
@@ -419,12 +430,26 @@ CNN_FILE = 'fronts_cnn.json'
 ML_STEP = 0.25
 ML_P0 = 0.25
 ML_LINE_P = 0.25
-ML_SMOOTH_KM = 25.0
+ML_SMOOTH_KM = 35.0
 ML_MIN_KM = 200.0
 ML_JOIN_KM = 350.0
-ML_PART_KM = 200.0
+ML_PART_KM = 400.0
 ML_LAT = (20.0, 72.0)
 ML_TYPE_W = (1.0, 1.5, 1.0, 1.0)
+DUP_KM = 250.0
+DUP_TURN = 35.0
+DUP_RATIO = 1.3
+DUP_MIN_KM = 200.0
+HAIRPIN = 150.0
+HAIRPIN_KM = 150.0
+HIGH_M = 1500.0
+HIGH_LINE_P = 0.35
+HIGH_MIN_KM = 300.0
+CURL = 0.4
+CURL_KM = 800.0
+SEA_P0 = 0.15
+SEA_LINE_P = 0.18
+SEA_M = 2.0
 BLEND_H = 2
 TYPE_H = 6
 PREV_H = 3
@@ -562,7 +587,7 @@ def _prev_maps(g, prev):
     dist, (ny_i, nx_i) = ndimage.distance_transform_edt(~mask, sampling=(g.dy / 1000, float(np.median(g.dx)) / 1000), return_indices=True)
     return (dist <= KEEP_KM, tmap[ny_i, nx_i])
 
-def ml_lines(g, prob, nx_, ny_, prev=None):
+def ml_lines(g, prob, nx_, ny_, prev=None, zs=None):
     near, ptype = _prev_maps(g, prev) if prev else (None, None)
     lat_ok = (np.abs(g.lats) >= ML_LAT[0]) & (np.abs(g.lats) <= ML_LAT[1])
     pa = smooth(np.where(lat_ok[:, None], 1 - prob[0], 0.0), *g.sigma(ML_SMOOTH_KM))
@@ -577,18 +602,41 @@ def ml_lines(g, prob, nx_, ny_, prev=None):
     nrm = np.hypot(ex, ey) + 1e-30
     sgn = np.where(np.nan_to_num(ex * nx_ + ey * ny_) < 0, -1.0, 1.0) / nrm
     across = (px * ex + py * ey) * sgn
-    keep = (pa > (ML_P0 if near is None else np.where(near, KEEP_P0, ML_P0))) & (lam < 0)
+    p0 = ML_P0 if near is None else np.where(near, KEEP_P0, ML_P0)
+    sea = None
+    if zs is not None and SEA_P0 > 0:
+        sea = np.nan_to_num(zs, nan=0.0) < SEA_M
+        p0 = np.where(sea, np.minimum(p0, SEA_P0), p0)
+    keep = (pa > p0) & (lam < 0)
     cls = [smooth(prob[i], *g.sigma(50.0)) * ML_TYPE_W[i - 1] for i in range(1, 5)]
     raw = [np.array(g.lonlat(np.array([p[0] for p in ln]), np.array([p[1] for p in ln]))).T for ln in zero_lines(across, keep)]
     out = []
-    for ll in join_lines(raw, km=ML_JOIN_KM):
+    cands = []
+    joined = join_lines(raw, km=ML_JOIN_KM)
+    if HAIRPIN > 0:
+        joined = [q for ll in joined for q in _hairpins(ll)]
+    for ll in joined:
         lon, lat = (ll[:, 0], ll[:, 1])
-        if km_between(lon[:-1], lat[:-1], lon[1:], lat[1:]).sum() < ML_MIN_KM:
+        L = km_between(lon[:-1], lat[:-1], lon[1:], lat[1:]).sum()
+        if L < ML_MIN_KM:
             continue
         fy, fx = g.cell(lon, lat)
         cont = near is not None and float(np.mean(sample(near.astype(np.float64), fy, fx) > 0.5)) >= 0.5
-        if float(np.nanmean(sample(pa, fy, fx))) < (KEEP_LINE_P if cont else ML_LINE_P):
+        pmean = float(np.nanmean(sample(pa, fy, fx)))
+        need = KEEP_LINE_P if cont else ML_LINE_P
+        if sea is not None and float(np.mean(sample(sea.astype(np.float64), fy, fx) > 0.5)) > 0.5:
+            need = min(need, SEA_LINE_P)
+        if pmean < need:
             continue
+        if CURL > 0 and L < CURL_KM and (km_between(lon[0], lat[0], lon[-1], lat[-1]) < CURL * L):
+            continue
+        if zs is not None and (HIGH_LINE_P > 0 or HIGH_MIN_KM > 0) and (float(np.nanmean(sample(zs, fy, fx) > HIGH_M)) > 0.5):
+            if pmean < HIGH_LINE_P or L < HIGH_MIN_KM:
+                continue
+        cands.append((pmean * L, lon, lat, pmean))
+    if DUP_KM > 0:
+        cands = _undouble(cands)
+    for _, lon, lat, _pm in cands:
         if len(lon) >= 5:
             lon = np.r_[lon[0], np.convolve(lon, np.ones(3) / 3, 'valid'), lon[-1]]
             lat = np.r_[lat[0], np.convolve(lat, np.ones(3) / 3, 'valid'), lat[-1]]
@@ -625,6 +673,75 @@ def ml_lines(g, prob, nx_, ny_, prev=None):
             i = j + 1
     return out
 
+def _dense(lon, lat, km=25.0):
+    seg = km_between(lon[:-1], lat[:-1], lon[1:], lat[1:])
+    P, H = ([], [])
+    for i, s in enumerate(seg):
+        n = max(1, int(s // km))
+        h = math.atan2(lat[i + 1] - lat[i], (lon[i + 1] - lon[i]) * math.cos(math.radians(lat[i])))
+        for j in range(n):
+            f = j / n
+            P.append((lon[i] + (lon[i + 1] - lon[i]) * f, lat[i] + (lat[i + 1] - lat[i]) * f))
+            H.append(h)
+    return (np.array(P), np.array(H))
+
+def _undouble(cands):
+    kept, keptP, keptH, keptM = ([], [], [], [])
+    for c in sorted(cands, key=lambda c: -c[0]):
+        P, H = _dense(c[1], c[2])
+        dup = np.zeros(len(P), bool)
+        if keptP and len(P):
+            KP, KH, KM = (np.concatenate(keptP), np.concatenate(keptH), np.concatenate(keptM))
+            for n, (p, h) in enumerate(zip(P, H)):
+                d = km_between(p[0], p[1], KP[:, 0], KP[:, 1])
+                dd = np.abs((KH - h + np.pi / 2) % np.pi - np.pi / 2)
+                dup[n] = ((d < DUP_KM) & (dd < math.radians(DUP_TURN)) & (c[3] < DUP_RATIO * KM)).any()
+        pieces = [(c[1], c[2])] if not dup.any() else []
+        if dup.any():
+            Q = np.r_[P, [[c[1][-1], c[2][-1]]]]
+            i = 0
+            while i < len(P):
+                if dup[i]:
+                    i += 1
+                    continue
+                j = i
+                while j + 1 < len(P) and (not dup[j + 1]):
+                    j += 1
+                q = Q[i:j + 2]
+                if len(q) >= 2 and km_between(q[:-1, 0], q[:-1, 1], q[1:, 0], q[1:, 1]).sum() >= DUP_MIN_KM:
+                    pieces.append((q[:, 0], q[:, 1]))
+                i = j + 1
+        for lon, lat in pieces:
+            kept.append((c[0], lon, lat, c[3]))
+            PP, HH = _dense(lon, lat)
+            keptP.append(PP)
+            keptH.append(HH)
+            keptM.append(np.full(len(HH), c[3]))
+    return kept
+
+def _hairpins(ll):
+    if len(ll) < 4:
+        return [ll]
+    lon, lat = (ll[:, 0], ll[:, 1])
+    d = np.r_[0, np.cumsum(km_between(lon[:-1], lat[:-1], lon[1:], lat[1:]))]
+    h = np.arctan2(np.diff(lat), np.diff(lon) * np.cos(np.radians(lat[:-1])))
+    cuts, last = ([], 0)
+    for i in range(1, len(ll) - 1):
+        j = np.searchsorted(d, d[i] + HAIRPIN_KM)
+        k = np.searchsorted(d, d[i] - HAIRPIN_KM)
+        if j >= len(h) or k < 0 or i - last < 3:
+            continue
+        turn = abs((h[min(j, len(h) - 1)] - h[max(k, 0)] + np.pi) % (2 * np.pi) - np.pi)
+        if turn > np.radians(HAIRPIN):
+            cuts.append(i)
+            last = i
+    out, a = ([], 0)
+    for c in cuts:
+        out.append(ll[a:c + 1])
+        a = c
+    out.append(ll[a:])
+    return [q for q in out if len(q) >= 2]
+
 def detect_ml(lats, lons, t850, td850, u850, v850, ps, mslp, t2, td2, u10, v10, zs):
     W = _weights()
     if W is None:
@@ -645,8 +762,8 @@ def detect_ml(lats, lons, t850, td850, u850, v850, ps, mslp, t2, td2, u10, v10, 
         lats = -lats[::-1]
     X, g, (nx_, ny_) = features(lats, lons, *fields)
     prob = probabilities(W, X)
-    lines = _unmirror(ml_lines(g, prob, nx_, ny_), south)
-    return {'fronts': lines, 'centres': cs, 'state': {'g': g, 'p': prob, 'n': (nx_, ny_), 'south': south}}
+    lines = _unmirror(ml_lines(g, prob, nx_, ny_, zs=X[FEATURES.index('zs')] * 1000.0), south)
+    return {'fronts': lines, 'centres': cs, 'state': {'g': g, 'p': prob, 'n': (nx_, ny_), 'south': south, 'z': X[FEATURES.index('zs')] * 1000.0}}
 
 def _unmirror(lines, south):
     return [(kind, [(x, -y) for x, y in pts[::-1]]) for kind, pts in lines] if south else lines
@@ -659,6 +776,8 @@ def pack_states(states):
         arrs[f'g{k}'] = np.array([g.lats[0], g.lats[1] - g.lats[0], len(g.lats), g.lons[0], g.lons[1] - g.lons[0], len(g.lons), float(st['south'])])
         arrs[f'p{k}'] = np.rint(np.clip(st['p'], 0, 1) * 250).astype(np.uint8)
         arrs[f'n{k}'] = np.rint(np.nan_to_num(np.stack(st['n'])) * 127).astype(np.int8)
+        if st.get('z') is not None:
+            arrs[f'z{k}'] = np.rint(np.clip(np.nan_to_num(st['z']), 0, 5100) / 20).astype(np.uint8)
     buf = io.BytesIO()
     np.savez_compressed(buf, **arrs)
     return np.frombuffer(buf.getvalue(), np.uint8)
@@ -667,11 +786,11 @@ def unpack_states(b):
     import io
     out = []
     with np.load(io.BytesIO(np.asarray(b, np.uint8).tobytes())) as z:
-        for k in range(len(z.files) // 3):
+        for k in range(sum((1 for f in z.files if f.startswith('g')))):
             lat0, dlat, ny, lon0, dlon, nx, south = z[f'g{k}']
             g = Grid(lat0 + dlat * np.arange(int(ny)), lon0 + dlon * np.arange(int(nx)))
             n = z[f'n{k}'].astype(np.float64) / 127
-            out.append({'g': g, 'p': z[f'p{k}'].astype(np.float32) / 250, 'n': (n[0], n[1]), 'south': bool(south), 'key': (round(float(lat0), 4), round(float(dlat), 4), int(ny), round(float(lon0), 4), round(float(dlon), 4), int(nx))})
+            out.append({'g': g, 'p': z[f'p{k}'].astype(np.float32) / 250, 'n': (n[0], n[1]), 'south': bool(south), 'z': z[f'z{k}'].astype(np.float32) * 20 if f'z{k}' in z.files else None, 'key': (round(float(lat0), 4), round(float(dlat), 4), int(ny), round(float(lon0), 4), round(float(dlon), 4), int(nx))})
     return out
 
 def day_fronts(hours, load):
@@ -711,7 +830,7 @@ def day_fronts(hours, load):
             p = np.concatenate([acc / wsum, typ / tsum])
             before = prev.get(st['key'])
             pv = before[1] if before and 0 < (t - before[0]).total_seconds() <= PREV_H * 3600 else None
-            ln = ml_lines(st['g'], p, *st['n'], prev=pv)
+            ln = ml_lines(st['g'], p, *st['n'], prev=pv, zs=st.get('z'))
             prev[st['key']] = (t, ln)
             lines += _unmirror(ln, st['south'])
         out[t] = {'f': encode({'fronts': lines, 'centres': []})['f'], 'p': enc.get('p', [])}

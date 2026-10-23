@@ -23,6 +23,12 @@ from tiles import downsample, downsample_peak
 REGIONS = {'hrrr': (-125.0, 24.0, -66.5, 50.0, 0.03), 'gfs': (-170.0, -54.75, 179.75, 70.0, 0.25), 'ecmwf': (-170.0, -54.9, 179.9, 70.0, 0.1), 'icon': (-170.0, -54.875, 179.75, 70.0, 0.125), 'icond2': (-3.94, 43.18, 20.34, 58.08, 0.02)}
 KEEP = {'gfs': ((-130.0, 20.25, -52.0, 56.0), (-168.0, 59.0, -130.25, 70.0), (-163.0, 54.5, -148.0, 59.0), (-137.0, 54.5, -130.25, 59.0), (-25.0, 34.0, 44.75, 70.0), (-13.0, 27.0, 12.0, 34.0), (-76.0, -54.75, -53.0, -16.0), (-53.0, -34.0, -34.0, -2.0), (-82.0, -16.0, -66.0, 12.5), (11.0, -35.0, 36.0, -16.0), (166.0, -48.0, 179.0, -34.0), (114.0, -35.5, 120.5, -28.5), (131.5, -26.0, 136.5, -21.5), (144.0, -27.0, 154.0, -18.5), (136.0, -39.5, 154.0, -27.0), (143.5, -44.0, 148.75, -39.5), (72.0, 26.0, 97.0, 37.0))}
 KEEP['icon'] = KEEP['ecmwf'] = KEEP['gfs']
+FRONTS_BOXES = {'gfs': ((-170.0, 15.0, 50.0, 70.0),)}
+FRONTS_BOXES['ecmwf'] = FRONTS_BOXES['gfs']
+
+def fronts_cover(boxes, fboxes):
+    inside = lambda b, f: b[0] >= f[0] - 1e-06 and b[1] >= f[1] - 1e-06 and (b[2] <= f[2] + 1e-06) and (b[3] <= f[3] + 1e-06)
+    return [any((inside(b, f) for f in fboxes)) for b in boxes]
 
 def keep_mask(src_id, lat2d, lon2d):
     boxes = KEEP.get(src_id)
@@ -40,10 +46,7 @@ def published_mask(src_id, lat2d, lon2d, fields):
         return keep
     return have if keep is None else keep & have
 
-def keep_windows(src_id, region, halo=1):
-    boxes = KEEP.get(src_id)
-    if not boxes:
-        return None
+def boxes_windows(region, boxes, halo=1):
     lons, lats = target_grid(region)
     out = []
     for w, s, e, n in boxes:
@@ -55,6 +58,12 @@ def keep_windows(src_id, region, halo=1):
         x0, x1 = (max(0, xs[0] - halo), min(len(lons), xs[-1] + 1 + halo))
         out.append(((y0, y1, x0, x1), (ys[0] - y0, ys[-1] + 1 - y0, xs[0] - x0, xs[-1] + 1 - x0)))
     return out
+
+def keep_windows(src_id, region, halo=1):
+    boxes = KEEP.get(src_id)
+    if not boxes:
+        return None
+    return boxes_windows(region, boxes, halo)
 
 def _crop(a, y0, y1, x0, x1, shape):
     if isinstance(a, np.ndarray) and a.ndim >= 2 and (a.shape[-2:] == shape):
@@ -1002,7 +1011,7 @@ def cloud_top_from_olr(olr, t, z, t_hi, p_lv, p_hi):
     above = Z[-1] + np.minimum(np.maximum(T[-1] - tb, 0) / 0.0065, 3000)
     return (np.where(found, inside, above).astype(np.float32), tb)
 
-def load_hour(src, run, fh, regrid_holder, region, valid, raw=None):
+def load_hour(src, run, fh, regrid_holder, region, valid, raw=None, fronts_out=None):
     raw = fetch_hour(src, run, fh) if raw is None else raw
     if regrid_holder.get('r') is None and hasattr(src, 'static_url'):
         regrid_holder['r'], regrid_holder['rot'] = (Regridder.identity(region), None)
@@ -1017,6 +1026,7 @@ def load_hour(src, run, fh, regrid_holder, region, valid, raw=None):
     rg = regrid_holder['r']
     if 'parts' not in regrid_holder:
         windows = regrid_holder['windows'] = keep_windows(src.id, region)
+        regrid_holder['boxes_ll'] = [b for b in KEEP.get(src.id, ()) if boxes_windows(region, [b])]
         regrid_holder['parts'] = [rg] if windows is None else [rg.part(*w) for w, _ in windows]
         regrid_holder['boxes'] = None if windows is None else [w for w, _ in windows]
     windows, parts = (regrid_holder['windows'], regrid_holder['parts'])
@@ -1038,7 +1048,15 @@ def load_hour(src, run, fh, regrid_holder, region, valid, raw=None):
         native.update(zip([n for n, _ in sk], vals))
         decoded = {}
         lk = [k for k, m in raw.items() if k not in src.surface.values() and grib_msg(m)]
-        decoded.update(zip(lk, ex.map(lambda k: [p(f) for f in [_decode(raw[k], region, boxes)] for p in parts], lk)))
+        fbox = FRONTS_BOXES.get(src.id) if fronts_out is not None and src.levels and (850 in src.levels) else None
+        f850, want850 = ({}, {(src.level_vars[c], '850 mb') for c in ('t', 'rh', 'td', 'u', 'v') if c in src.level_vars} if fbox else set())
+
+        def cut(k):
+            f = _decode(raw[k], region, boxes)
+            if k in want850:
+                f850[k] = f
+            return [p(f) for p in parts]
+        decoded.update(zip(lk, ex.map(cut, lk)))
     cache = {}
 
     def earlier(pfh, key):
@@ -1057,6 +1075,7 @@ def load_hour(src, run, fh, regrid_holder, region, valid, raw=None):
             key = src.surface['zs']
             z0 = native.get('zs') if fh == 0 else _fetch(src, run, 0, [key]).get(key)
             regrid_holder['zs'] = [None if z0 is None else p(z0 / (P.G if src.zs_geopotential else 1)) for p in parts]
+            regrid_holder['zs_whole'] = None if z0 is None else z0 / (P.G if src.zs_geopotential else 1)
         native['zs'] = ('done', regrid_holder['zs'])
 
     def surface(v, name, i):
@@ -1185,6 +1204,43 @@ def load_hour(src, run, fh, regrid_holder, region, valid, raw=None):
                 raise ValueError('snd_step > 1 needs the whole grid (no KEEP windows)')
             s['_snd'] = sounding_column(src, s, lv, levels, {c: [x[i] for x in v] for c, v in sndp.items()}, snd_extra, lon2d, rot)
         out.append((s, lv, levels))
+    if fbox:
+        try:
+            fronts_out.extend(fronts_fields(src, rg, region, fbox, native, f850, regrid_holder))
+        except Exception as e:
+            log(f"  f{fh:03d} fronts' wide windows skipped: {e!r}")
+    return out
+
+def fronts_fields(src, rg, region, fboxes, native, f850, holder):
+    if 'fparts' not in holder:
+        holder['fparts'] = [rg.part(*w) for w, _ in boxes_windows(region, fboxes, halo=0)]
+    need = ('t2', 'td2', 'u10', 'v10', 'ps', 'mslp')
+    plain = lambda v: v if isinstance(v, np.ndarray) else None
+    if any((plain(native.get(k)) is None for k in need)):
+        return []
+    lvk = {c: (src.level_vars[c], '850 mb') for c in ('t', 'rh', 'td', 'u', 'v') if c in src.level_vars}
+    moist = 'rh' if src.moisture == 'rh' else 'td'
+    if any((f850.get(lvk.get(c)) is None for c in ('t', moist, 'u', 'v'))):
+        return []
+    zs_whole = holder.get('zs_whole') if src.zs_step0_only else plain(native.get('zs'))
+    if zs_whole is not None and src.zs_geopotential and (not src.zs_step0_only):
+        zs_whole = zs_whole / P.G
+    rot = holder.get('rot')
+    out = []
+    for p in holder['fparts']:
+        lat2d, lon2d = np.meshgrid(p.lats, p.lons, indexing='ij')
+        s = {k: p(native[k]) for k in need}
+        s['u10'], s['v10'] = grib.earth_winds(s['u10'], s['v10'], lon2d, rot)
+        t = p(f850[lvk['t']]) - 273.15
+        u, v = grib.earth_winds(p(f850[lvk['u']]), p(f850[lvk['v']]), lon2d, rot)
+        td = P.dewpoint_from_rh(t, p(f850[lvk['rh']])) if moist == 'rh' else p(f850[lvk['td']]) - 273.15
+        s['t2'], s['td2'] = (s['t2'] - 273.15, s['td2'] - 273.15)
+        s['ps'], s['mslp'] = (s['ps'] / 100, s['mslp'] / 100)
+        if zs_whole is not None:
+            s['zs'] = p(zs_whole)
+        else:
+            s['zs'] = np.maximum(0, P.RD * (s['t2'] + 273.15) / P.G * np.log(s['mslp'] / s['ps']))
+        out.append((s, {'t': t[None], 'td': td[None], 'u': u[None], 'v': v[None]}, np.array([850.0], np.float32), p))
     return out
 SND_VARS = ('t', 'dpd', 'u', 'v', 'z', 'w')
 SND_SFC = {'ps': (400.0, 1100.0), 'sw': (0.0, 1270.0)}
@@ -1291,7 +1347,8 @@ def _process_hour(job, raw=None):
     try:
         if isinstance(raw, Exception):
             raise raw
-        parts = load_hour(src, run, fh, holder, region, valid, raw=raw)
+        wide = []
+        parts = load_hour(src, run, fh, holder, region, valid, raw=raw, fronts_out=wide)
     except Exception as e:
         log(f'  f{fh:03d} skipped: {e}')
         return None
@@ -1308,7 +1365,12 @@ def _process_hour(job, raw=None):
     if _CTX.pop('pick_physics', False):
         pick_physics(q, lambda: analyse_parts(parts, part_coords(holder['parts']), region[4], valid, windows, lat2d.shape), fh, keep)
     q.update(sky.cloud_overview(q, ENC, region[4] <= sky.FINE_STEP))
-    fr = hour_fronts(parts, holder['parts'], fh)
+    if wide:
+        cover = fronts_cover(holder['boxes_ll'] if 'boxes_ll' in holder else KEEP.get(src.id, ()), FRONTS_BOXES[src.id])
+        rest = [i for i, c in enumerate(cover) if not c] if holder.get('windows') is not None else []
+        fr = hour_fronts([(s, lv, lev) for s, lv, lev, _ in wide] + [parts[i] for i in rest], [r for *_, r in wide] + [holder['parts'][i] for i in rest], fh)
+    else:
+        fr = hour_fronts(parts, holder['parts'], fh)
     if fr is not None:
         q['fronts'], fp = fr
         if fp is not None:

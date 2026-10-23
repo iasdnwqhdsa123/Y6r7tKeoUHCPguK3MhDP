@@ -827,6 +827,35 @@ class Fronts(unittest.TestCase):
             self.assertLess(np.abs(np.array(a)[[0, -1]] - np.array(b)[[0, -1]]).max(), fronts.COORD)
         self.assertLess(len(json.dumps(enc, separators=(',', ':'))), 2000)
 
+    def test_fronts_drawn_once(self):
+        import fronts
+        lon = np.linspace(-100, -80, 41)
+        strong = (1.0 * 900, lon[10:31], np.full(21, 40.0), 0.6)
+        weak = (0.5 * 1700, lon, np.full(41, 41.35), 0.5)
+        kept = fronts._undouble([strong, weak])
+        self.assertEqual(len(kept), 3)
+        spans = sorted(((float(k[1].min()), float(k[1].max())) for k in kept[1:]))
+        self.assertLess(spans[0][1], -94)
+        self.assertGreater(spans[1][0], -86)
+        cross = (0.4 * 900, np.full(21, -90.0), np.linspace(36, 44, 21), 0.4)
+        self.assertEqual(len(fronts._undouble([strong, cross])), 2)
+        go = np.c_[np.linspace(-100, -90, 21), np.full(21, 40.0)]
+        back = np.c_[np.linspace(-90, -100, 21), np.full(21, 41.0)]
+        pin = np.r_[go, [[-89.5, 40.5]], back]
+        self.assertEqual(len(fronts._hairpins(pin)), 2)
+        self.assertEqual(len(fronts._hairpins(go)), 1)
+
+    def test_centre_pressure_from_the_field(self):
+        import fronts
+        g = fronts.Grid(np.arange(60, 29.99, -0.25), np.arange(-110, -69.99, 0.25))
+        la, lo = np.meshgrid(g.lats, g.lons, indexing='ij')
+        r2 = (la - 45) ** 2 + ((lo + 90) * 0.7) ** 2
+        p = 1013 - 25 * np.exp(-r2 / 1.5)
+        c, = fronts.centres(g, p)
+        self.assertEqual(c[0], 'L')
+        self.assertAlmostEqual(c[3], float(p.min()), places=3)
+        self.assertLess(abs(c[2] - 45), 0.3)
+
     def test_network_weights_inputs_and_layers(self):
         import fronts
         W = fronts._weights()
@@ -852,7 +881,7 @@ class Fronts(unittest.TestCase):
     def test_network_fronts_both_hemispheres_and_fallback(self):
         import fronts
         lats, lons, t, td, u, v, ps, mslp = self.field((0.0, -8.0))
-        zs = np.zeros(t.shape)
+        zs = np.full(t.shape, 100.0)
         u10 = np.zeros(t.shape)
         v10 = np.repeat((3.0 - 11.0 * (np.tanh((lats - 40.0) / 0.5) + 1) / 2)[:, None], len(lons), 1)
         res = fronts.detect_ml(lats, lons, t, td, u, v, ps, mslp, t + 2, td + 2, u10, v10, zs)
