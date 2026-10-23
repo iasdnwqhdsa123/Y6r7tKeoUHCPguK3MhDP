@@ -1310,7 +1310,9 @@ def _process_hour(job, raw=None):
     q.update(sky.cloud_overview(q, ENC, region[4] <= sky.FINE_STEP))
     fr = hour_fronts(parts, holder['parts'], fh)
     if fr is not None:
-        q['fronts'] = fr
+        q['fronts'], fp = fr
+        if fp is not None:
+            q['frontp'] = fp
     if snd_hour(src, fh):
         snd = sounding_grid(src, parts, windows, lat2d.shape, q)
         if snd is not None:
@@ -1326,19 +1328,37 @@ def _process_hour(job, raw=None):
 def hour_fronts(parts, regrids, fh=0):
     try:
         res = fronts.merge([fronts.from_part(s, lv, levels, rg.lats, rg.lons) for (s, lv, levels), rg in zip(parts, regrids)])
-        return np.frombuffer(json.dumps(fronts.encode(res), separators=(',', ':')).encode(), np.uint8)
+        fp = fronts.pack_states(res['states']) if res['states'] else None
+        return (np.frombuffer(json.dumps(fronts.encode(res), separators=(',', ':')).encode(), np.uint8), fp)
     except Exception as e:
         log(f'  f{fh:03d} fronts skipped: {e!r}')
         return None
-NOT_TILES = {'elevation', 'snd', 'fronts'}
+NOT_TILES = {'elevation', 'snd', 'fronts', 'frontp'}
 
-def write_fronts(rdir, hours_dir, times, day_of=None):
+def write_fronts(rdir, hours_dir, times, day_of=None, around=None):
     folders: dict[str, dict] = {}
-    for t in times:
+    own = []
+    for t in sorted(set(around or ()) | set(times)):
         with np.load(os.path.join(hours_dir, f'{t:%Y%m%d%H}.npz')) as h:
-            if 'fronts' not in h.files:
-                continue
-            folders.setdefault((day_of or day_key)(t), {})[f'{t:%Y%m%d%H}'] = json.loads(h['fronts'].tobytes())
+            if 'fronts' in h.files:
+                own.append((t, json.loads(h['fronts'].tobytes())))
+
+    def states(t):
+        try:
+            with np.load(os.path.join(hours_dir, f'{t:%Y%m%d%H}.npz')) as h:
+                return fronts.unpack_states(h['frontp']) if 'frontp' in h.files else None
+        except Exception:
+            return None
+    try:
+        steady = fronts.day_fronts(own, states)
+    except Exception as e:
+        log(f'  fronts over the hours skipped: {e!r}')
+        steady = dict(own)
+    want = set(times)
+    for t, enc in steady.items():
+        if t not in want:
+            continue
+        folders.setdefault((day_of or day_key)(t), {})[f'{t:%Y%m%d%H}'] = enc
     for folder, hours in folders.items():
         os.makedirs(os.path.join(rdir, folder), exist_ok=True)
         with open(os.path.join(rdir, folder, 'fronts.json'), 'w') as f:
@@ -1900,7 +1920,7 @@ def _publish_open(out, fbase, model, full, times, fields, cutoff, workers, point
     daily = [t for t in times if t not in hourly]
     days, present, lpresent = write_tiles(rdir, hours_dir, daily, tile, times[-1], only=fields, levels=levels, workers=workers, reuse=reuse)
     pts = write_points(rdir, hours_dir, daily, times[-1], only=fields, workers=workers) if points else None
-    has_fronts = points and write_fronts(rdir, hours_dir, daily)
+    has_fronts = points and write_fronts(rdir, hours_dir, daily, around=times)
     hours, hpts = ([], {})
     if hourly:
         folder = lambda t: f'h/{hour_token(model, free_id, f'{t:%Y%m%d%H}')}'
@@ -1911,7 +1931,7 @@ def _publish_open(out, fbase, model, full, times, fields, cutoff, workers, point
             for name, keys in by_name.items():
                 lpresent[k].setdefault(name, set()).update(keys)
         if points:
-            has_fronts = write_fronts(rdir, hours_dir, sorted(hourly), day_of=folder) or has_fronts
+            has_fronts = write_fronts(rdir, hours_dir, sorted(hourly), day_of=folder, around=times) or has_fronts
         for t in sorted(hourly):
             st = f'{t:%Y%m%d%H}'
             hours.append(st)

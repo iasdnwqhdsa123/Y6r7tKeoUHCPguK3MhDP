@@ -878,7 +878,38 @@ class Fronts(unittest.TestCase):
             self.assertEqual(fronts.from_part(s, lv, [850], lats, lons), fronts.detect(lats, lons, t, td, u, v, ps=ps, mslp=mslp, u10=u10, v10=v10))
         finally:
             fronts.CNN_FILE, fronts._CNN = (keep_file, keep)
-        self.assertEqual(fronts.from_part(s, lv, [850], lats, lons), res)
+        again = fronts.from_part(s, lv, [850], lats, lons)
+        self.assertEqual((again['fronts'], again['centres']), (res['fronts'], res['centres']))
+        st = fronts.unpack_states(fronts.pack_states([res['state'], sres['state']]))
+        self.assertEqual([x['south'] for x in st], [False, True])
+        self.assertLess(float(np.abs(st[0]['p'] - res['state']['p']).max()), 0.003)
+        self.assertEqual(st[0]['key'], fronts.unpack_states(fronts.pack_states([res['state']]))[0]['key'])
+
+    def test_steady_from_hour_to_hour(self):
+        import fronts
+        from datetime import datetime, timedelta, timezone
+        lats, lons = (np.arange(55.0, 25.0, -0.25), np.arange(-115.0, -75.0, 0.25))
+        g = fronts.Grid(lats, lons)
+        ridge = np.exp(-((lats - 40.0) / 0.6) ** 2)[:, None] * np.ones(len(lons))
+        nx_, ny_ = (np.zeros(ridge.shape), -np.ones(ridge.shape))
+
+        def state(a, cold):
+            p = np.stack([1 - a * ridge] + [a * ridge * f for f in (cold, 1 - cold, 0.0, 0.0)])
+            return {'g': g, 'p': p.astype(np.float32), 'n': (nx_, ny_), 'south': False}
+        t0 = datetime(2026, 10, 22, 12, tzinfo=timezone.utc)
+        hs = {t0: state(0.7, 0.7), t0 + timedelta(hours=1): state(0.24, 0.45), t0 + timedelta(hours=2): state(0.7, 0.7)}
+        mid = t0 + timedelta(hours=1)
+        alone = fronts.ml_lines(g, hs[mid]['p'], nx_, ny_)
+        self.assertFalse([k for k, _ in alone if k == 'c'])
+        packed = {t: fronts.pack_states([s]) for t, s in hs.items()}
+        out = fronts.day_fronts([(t, {'f': [], 'p': [['L', 1, 2, 990]]}) for t in sorted(hs)], lambda t: fronts.unpack_states(packed[t]))
+        f = fronts.decode(out[mid])['fronts']
+        self.assertTrue(f)
+        self.assertEqual({k for k, _ in f}, {'c'})
+        self.assertGreater(sum((fronts.km_between(*np.array(p[:-1]).T, *np.array(p[1:]).T).sum() for _, p in f)), 2500)
+        self.assertEqual(out[mid]['p'], [['L', 1, 2, 990]])
+        own = {'f': [['w', 1, 2, 3, 4]], 'p': []}
+        self.assertEqual(fronts.day_fronts([(t0, own)], lambda t: None)[t0], own)
 
     def test_joined_across_a_gap(self):
         import fronts
@@ -914,6 +945,33 @@ class Fronts(unittest.TestCase):
             self.assertNotIn('fronts', present)
             self.assertIn('wstar', present)
 
+    def test_the_day_written_from_the_hours_together(self):
+        import json
+        import tempfile
+        from datetime import datetime, timedelta, timezone
+        import build
+        import fronts
+        lats, lons = (np.arange(55.0, 25.0, -0.25), np.arange(-115.0, -75.0, 0.25))
+        g = fronts.Grid(lats, lons)
+        ridge = np.exp(-((lats - 40.0) / 0.6) ** 2)[:, None] * np.ones(len(lons))
+        st = {'g': g, 'p': np.stack([1 - 0.7 * ridge, 0.7 * ridge, 0 * ridge, 0 * ridge, 0 * ridge]).astype(np.float32), 'n': (np.zeros(ridge.shape), -np.ones(ridge.shape)), 'south': False}
+        with tempfile.TemporaryDirectory() as d:
+            hours, rdir = (os.path.join(d, '_hours'), os.path.join(d, 'run'))
+            os.makedirs(hours)
+            t0 = datetime(2026, 10, 22, 12, tzinfo=timezone.utc)
+            times = [t0 + timedelta(hours=h) for h in range(3)]
+            enc = np.frombuffer(b'{"f":[],"p":[["H",1,2,1030]]}', np.uint8)
+            for t in times:
+                np.savez(os.path.join(hours, f'{t:%Y%m%d%H}.npz'), wstar=np.zeros((4, 4), np.uint8), elevation=np.zeros((4, 4), np.uint8), fronts=enc, frontp=fronts.pack_states([st]))
+            self.assertTrue(build.write_fronts(rdir, hours, times))
+            with open(os.path.join(rdir, build.day_key(t0), 'fronts.json')) as fh:
+                day = json.load(fh)
+            self.assertEqual(sorted(day), [f'{t:%Y%m%d%H}' for t in times])
+            for v in day.values():
+                self.assertEqual({f[0] for f in v['f']}, {'c'})
+                self.assertEqual(v['p'], [['H', 1, 2, 1030]])
+            self.assertNotIn('frontp', build.write_tiles(rdir, hours, times, 4, t0)[1])
+
     def test_a_failing_part_costs_the_hour_nothing(self):
         import build
 
@@ -922,8 +980,9 @@ class Fronts(unittest.TestCase):
             lons = np.arange(-120, -69.99, 0.25)
         broken = {'t': [np.zeros(3)], 'td': [np.zeros(3)], 'u': [np.zeros(3)], 'v': [np.zeros(3)]}
         self.assertIsNone(build.hour_fronts([({}, broken, (850,))], [Rg()]))
-        out = build.hour_fronts([({}, {}, (1000, 850))], [Rg()])
+        out, states = build.hour_fronts([({}, {}, (1000, 850))], [Rg()])
         self.assertEqual(bytes(out), b'{"f":[],"p":[]}')
+        self.assertIsNone(states)
 
 class ReuseHours(unittest.TestCase):
 

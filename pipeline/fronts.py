@@ -382,11 +382,13 @@ def detect(lats, lons, t_c, td_c, u, v, ps=None, mslp=None, p_hpa=LEVEL, u10=Non
     return {'fronts': fronts, 'centres': cs}
 
 def merge(results):
-    out = {'fronts': [], 'centres': []}
+    out = {'fronts': [], 'centres': [], 'states': []}
     for r in results:
         if r:
             out['fronts'] += r['fronts']
             out['centres'] += r['centres']
+            if r.get('state') is not None:
+                out['states'].append(r['state'])
     return out
 
 def encode(res):
@@ -419,9 +421,17 @@ ML_P0 = 0.25
 ML_LINE_P = 0.25
 ML_SMOOTH_KM = 25.0
 ML_MIN_KM = 200.0
+ML_JOIN_KM = 350.0
 ML_PART_KM = 200.0
 ML_LAT = (20.0, 72.0)
 ML_TYPE_W = (1.0, 1.5, 1.0, 1.0)
+BLEND_H = 2
+TYPE_H = 6
+PREV_H = 3
+KEEP_KM = 120.0
+KEEP_P0 = 0.2
+KEEP_LINE_P = 0.22
+TYPE_HOLD = 1.3
 _CNN = {}
 FEATURES = ['G8', 'T8', 'Gs', 'Ts', 'Gt', 'Tt', 'Gd', 'G8b', 'T8b', 'Gsb', 'Tsb', 'vo10', 'dv10', 'vo8', 'dv8', 'lap', 'pnn', 'shear', 'alat', 'zs', 'under', 'x10', 'x8', 'adv10', 'adv8', 'spd10', 'G8c', 'T8c', 'Gsc', 'vo10b', 'dv10b', 'dp']
 
@@ -531,7 +541,29 @@ def probabilities(W, X):
     e = np.exp(lg - lg.max(0, keepdims=True))
     return e / e.sum(0, keepdims=True)
 
-def ml_lines(g, prob, nx_, ny_):
+def _prev_maps(g, prev):
+    mask = np.zeros((len(g.lats), len(g.lons)), bool)
+    tmap = np.zeros(mask.shape, np.int8)
+    for kind, pts in prev:
+        p = np.asarray(pts, np.float64)
+        if len(p) < 2:
+            continue
+        seg = km_between(p[:-1, 0], p[:-1, 1], p[1:, 0], p[1:, 1])
+        n = np.maximum(1, (seg // 10).astype(int))
+        lon = np.concatenate([np.linspace(a, b, k, endpoint=False) for a, b, k in zip(p[:-1, 0], p[1:, 0], n)] + [p[-1:, 0]])
+        lat = np.concatenate([np.linspace(a, b, k, endpoint=False) for a, b, k in zip(p[:-1, 1], p[1:, 1], n)] + [p[-1:, 1]])
+        fy, fx = g.cell(lon, lat)
+        iy, ix = (np.rint(fy).astype(int), np.rint(fx).astype(int))
+        ok = (iy >= 0) & (iy < mask.shape[0]) & (ix >= 0) & (ix < mask.shape[1])
+        mask[iy[ok], ix[ok]] = True
+        tmap[iy[ok], ix[ok]] = 'cwso'.index(kind)
+    if not mask.any():
+        return (None, None)
+    dist, (ny_i, nx_i) = ndimage.distance_transform_edt(~mask, sampling=(g.dy / 1000, float(np.median(g.dx)) / 1000), return_indices=True)
+    return (dist <= KEEP_KM, tmap[ny_i, nx_i])
+
+def ml_lines(g, prob, nx_, ny_, prev=None):
+    near, ptype = _prev_maps(g, prev) if prev else (None, None)
     lat_ok = (np.abs(g.lats) >= ML_LAT[0]) & (np.abs(g.lats) <= ML_LAT[1])
     pa = smooth(np.where(lat_ok[:, None], 1 - prob[0], 0.0), *g.sigma(ML_SMOOTH_KM))
     px, py = g.grad(pa)
@@ -545,16 +577,17 @@ def ml_lines(g, prob, nx_, ny_):
     nrm = np.hypot(ex, ey) + 1e-30
     sgn = np.where(np.nan_to_num(ex * nx_ + ey * ny_) < 0, -1.0, 1.0) / nrm
     across = (px * ex + py * ey) * sgn
-    keep = (pa > ML_P0) & (lam < 0)
+    keep = (pa > (ML_P0 if near is None else np.where(near, KEEP_P0, ML_P0))) & (lam < 0)
     cls = [smooth(prob[i], *g.sigma(50.0)) * ML_TYPE_W[i - 1] for i in range(1, 5)]
     raw = [np.array(g.lonlat(np.array([p[0] for p in ln]), np.array([p[1] for p in ln]))).T for ln in zero_lines(across, keep)]
     out = []
-    for ll in join_lines(raw):
+    for ll in join_lines(raw, km=ML_JOIN_KM):
         lon, lat = (ll[:, 0], ll[:, 1])
         if km_between(lon[:-1], lat[:-1], lon[1:], lat[1:]).sum() < ML_MIN_KM:
             continue
         fy, fx = g.cell(lon, lat)
-        if float(np.nanmean(sample(pa, fy, fx))) < ML_LINE_P:
+        cont = near is not None and float(np.mean(sample(near.astype(np.float64), fy, fx) > 0.5)) >= 0.5
+        if float(np.nanmean(sample(pa, fy, fx))) < (KEEP_LINE_P if cont else ML_LINE_P):
             continue
         if len(lon) >= 5:
             lon = np.r_[lon[0], np.convolve(lon, np.ones(3) / 3, 'valid'), lon[-1]]
@@ -562,7 +595,17 @@ def ml_lines(g, prob, nx_, ny_):
         fy, fx = g.cell(lon, lat)
         seg = km_between(lon[:-1], lat[:-1], lon[1:], lat[1:])
         pc = np.stack([sample(c, fy, fx) for c in cls])
-        types = np.array(list('cwso'))[np.nan_to_num((pc[:, :-1] + pc[:, 1:]) / 2, nan=-1.0).argmax(0)]
+        pm = np.nan_to_num((pc[:, :-1] + pc[:, 1:]) / 2, nan=-1.0)
+        ti = pm.argmax(0)
+        if near is not None:
+            my, mx = ((fy[:-1] + fy[1:]) / 2, (fx[:-1] + fx[1:]) / 2)
+            iy = np.clip(np.rint(my).astype(int), 0, near.shape[0] - 1)
+            ix = np.clip(np.rint(mx).astype(int), 0, near.shape[1] - 1)
+            was = ptype[iy, ix].astype(int)
+            k = np.arange(len(ti))
+            hold = near[iy, ix] & (pm[ti, k] < TYPE_HOLD * pm[was, k])
+            ti = np.where(hold, was, ti)
+        types = np.array(list('cwso'))[ti]
         seg_types = _runs(types, seg, ML_PART_KM)
         n_x, n_y = (sample(nx_, fy, fx), sample(ny_, fy, fx))
         i = 0
@@ -601,10 +644,78 @@ def detect_ml(lats, lons, t850, td850, u850, v850, ps, mslp, t2, td2, u10, v10, 
         fields[3], fields[9] = (-fields[3], -fields[9])
         lats = -lats[::-1]
     X, g, (nx_, ny_) = features(lats, lons, *fields)
-    lines = ml_lines(g, probabilities(W, X), nx_, ny_)
-    if south:
-        lines = [(kind, [(x, -y) for x, y in pts[::-1]]) for kind, pts in lines]
-    return {'fronts': lines, 'centres': cs}
+    prob = probabilities(W, X)
+    lines = _unmirror(ml_lines(g, prob, nx_, ny_), south)
+    return {'fronts': lines, 'centres': cs, 'state': {'g': g, 'p': prob, 'n': (nx_, ny_), 'south': south}}
+
+def _unmirror(lines, south):
+    return [(kind, [(x, -y) for x, y in pts[::-1]]) for kind, pts in lines] if south else lines
+
+def pack_states(states):
+    import io
+    arrs = {}
+    for k, st in enumerate(states):
+        g = st['g']
+        arrs[f'g{k}'] = np.array([g.lats[0], g.lats[1] - g.lats[0], len(g.lats), g.lons[0], g.lons[1] - g.lons[0], len(g.lons), float(st['south'])])
+        arrs[f'p{k}'] = np.rint(np.clip(st['p'], 0, 1) * 250).astype(np.uint8)
+        arrs[f'n{k}'] = np.rint(np.nan_to_num(np.stack(st['n'])) * 127).astype(np.int8)
+    buf = io.BytesIO()
+    np.savez_compressed(buf, **arrs)
+    return np.frombuffer(buf.getvalue(), np.uint8)
+
+def unpack_states(b):
+    import io
+    out = []
+    with np.load(io.BytesIO(np.asarray(b, np.uint8).tobytes())) as z:
+        for k in range(len(z.files) // 3):
+            lat0, dlat, ny, lon0, dlon, nx, south = z[f'g{k}']
+            g = Grid(lat0 + dlat * np.arange(int(ny)), lon0 + dlon * np.arange(int(nx)))
+            n = z[f'n{k}'].astype(np.float64) / 127
+            out.append({'g': g, 'p': z[f'p{k}'].astype(np.float32) / 250, 'n': (n[0], n[1]), 'south': bool(south), 'key': (round(float(lat0), 4), round(float(dlat), 4), int(ny), round(float(lon0), 4), round(float(dlon), 4), int(nx))})
+    return out
+
+def day_fronts(hours, load):
+    cache, prev, out = ({}, {}, {})
+
+    def states(t):
+        if t not in cache:
+            cache[t] = load(t)
+        return cache[t]
+    span = max(BLEND_H, TYPE_H)
+    times = [t for t, _ in hours]
+    for i, (t, enc) in enumerate(hours):
+        for old in [x for x in cache if abs((x - t).total_seconds()) > span * 3600]:
+            del cache[old]
+        mine = states(t)
+        if not mine:
+            out[t] = enc
+            continue
+        near_h = [(u, (u - t).total_seconds() / 3600) for u in times[max(0, i - 3 * span):i + 3 * span + 1]]
+        lines = []
+        for st in mine:
+            acc, wsum = (np.zeros_like(st['p'][:1]), 0.0)
+            typ, tsum = (np.zeros_like(st['p'][1:]), 0.0)
+            for u, dh in near_h:
+                if abs(dh) > span:
+                    continue
+                other = next((o for o in states(u) or [] if o['key'] == st['key']), None)
+                if other is None:
+                    continue
+                if abs(dh) <= BLEND_H:
+                    w = BLEND_H + 1 - abs(dh)
+                    acc += w * other['p'][:1]
+                    wsum += w
+                if abs(dh) <= TYPE_H:
+                    typ += other['p'][1:]
+                    tsum += 1
+            p = np.concatenate([acc / wsum, typ / tsum])
+            before = prev.get(st['key'])
+            pv = before[1] if before and 0 < (t - before[0]).total_seconds() <= PREV_H * 3600 else None
+            ln = ml_lines(st['g'], p, *st['n'], prev=pv)
+            prev[st['key']] = (t, ln)
+            lines += _unmirror(ln, st['south'])
+        out[t] = {'f': encode({'fronts': lines, 'centres': []})['f'], 'p': enc.get('p', [])}
+    return out
 
 def from_part(s, lv, levels, lats, lons):
     levels = list(levels)
