@@ -413,10 +413,210 @@ def decode(enc):
             pts.append((x * COORD, y * COORD))
         fronts.append((kind, pts))
     return {'fronts': fronts, 'centres': [(k, x * COORD, y * COORD, h) for k, x, y, h in enc.get('p', [])]}
+CNN_FILE = 'fronts_cnn.json'
+ML_STEP = 0.25
+ML_P0 = 0.25
+ML_LINE_P = 0.25
+ML_SMOOTH_KM = 25.0
+ML_MIN_KM = 200.0
+ML_PART_KM = 200.0
+ML_LAT = (20.0, 72.0)
+ML_TYPE_W = (1.0, 1.5, 1.0, 1.0)
+_CNN = {}
+FEATURES = ['G8', 'T8', 'Gs', 'Ts', 'Gt', 'Tt', 'Gd', 'G8b', 'T8b', 'Gsb', 'Tsb', 'vo10', 'dv10', 'vo8', 'dv8', 'lap', 'pnn', 'shear', 'alat', 'zs', 'under', 'x10', 'x8', 'adv10', 'adv8', 'spd10', 'G8c', 'T8c', 'Gsc', 'vo10b', 'dv10b', 'dp']
+
+def _weights():
+    if 'w' not in _CNN:
+        import json
+        import os
+        try:
+            with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), CNN_FILE)) as f:
+                d = json.load(f)
+            if d.get('names') != FEATURES:
+                raise ValueError('features differ')
+            _CNN['w'] = {k: np.asarray(v, np.float32) if k[0] in 'Cc' or k in ('mu', 'sd') else v for k, v in d.items()}
+        except (OSError, ValueError):
+            _CNN['w'] = None
+    return _CNN['w']
+
+def _zone(g, a, km):
+    th = smooth(a, *g.sigma(km))
+    gx, gy = g.grad(th)
+    G = np.hypot(gx, gy)
+    with np.errstate(invalid='ignore', divide='ignore'):
+        nx, ny = (gx / G, gy / G)
+    Gx, Gy = g.grad(G)
+    return (G * 100000.0, -(Gx * nx + Gy * ny) * 10000000000.0, nx, ny, gx, gy)
+
+def _kin(g, u, v, km):
+    us, vs = (smooth(u, *g.sigma(km)), smooth(v, *g.sigma(km)))
+    ux, uy = g.grad(us)
+    vx, vy = g.grad(vs)
+    return ((vx - uy) * 100000.0, (ux + vy) * 100000.0, us, vs)
+
+def _quarter(lats, lons, arrays):
+    step = abs(lats[1] - lats[0])
+    k = max(1, int(round(ML_STEP / step)))
+    lat = lats[:len(lats) // k * k:k] + (lats[1] - lats[0]) * (k - 1) / 2
+    lon = lons[:len(lons) // k * k:k] + (lons[1] - lons[0]) * (k - 1) / 2
+    out = [block_mean(np.asarray(a, np.float64), k) for a in arrays]
+    if abs(abs(lat[1] - lat[0]) - ML_STEP) < 1e-06:
+        return (lat, lon, out)
+    nlat = lat[0] + np.sign(lat[1] - lat[0]) * ML_STEP * np.arange(int(abs(lat[-1] - lat[0]) / ML_STEP) + 1)
+    nlon = lon[0] + ML_STEP * np.arange(int((lon[-1] - lon[0]) / ML_STEP) + 1)
+    fy = (nlat - lat[0]) / (lat[1] - lat[0])
+    fx = (nlon - lon[0]) / (lon[1] - lon[0])
+    yy, xx = np.meshgrid(fy, fx, indexing='ij')
+    return (nlat, nlon, [ndimage.map_coordinates(a, [yy, xx], order=1, mode='nearest') for a in out])
+
+def features(lats, lons, t850, td850, u850, v850, ps, mslp, t2, td2, u10, v10, zs):
+    under = ~(np.asarray(ps) > LEVEL + UNDERGROUND_HPA)
+    tw8 = np.where(under, np.nan, theta_w(t850, td850, LEVEL))
+    tws = theta_w(t2, td2, ps)
+    ths = (np.asarray(t2, np.float64) + 273.15) * (1000.0 / np.asarray(ps, np.float64)) ** 0.2854
+    u8, v8 = (np.where(under, np.nan, u850), np.where(under, np.nan, v850))
+    lat, lon, (tw8, u8, v8, tws, ths, td2, mslp, u10, v10, zs, under) = _quarter(np.asarray(lats, np.float64), np.asarray(lons, np.float64), (tw8, u8, v8, tws, ths, td2, mslp, u10, v10, zs, under.astype(np.float64)))
+    g = Grid(lat, lon)
+    under = under > 0.5
+    G8, T8, n8x, n8y, e8x, e8y = _zone(g, tw8, 90)
+    Gs, Ts, nsx, nsy, esx, esy = _zone(g, tws, 90)
+    Gt, Tt = _zone(g, ths, 90)[:2]
+    Gd = _zone(g, td2, 90)[0]
+    G8b, T8b = _zone(g, tw8, 180)[:2]
+    Gsb, Tsb = _zone(g, tws, 180)[:2]
+    vo10, dv10, u10s, v10s = _kin(g, u10, v10, 100)
+    vo8, dv8, u8s, v8s = _kin(g, u8, v8, 100)
+    pm = smooth(mslp, *g.sigma(100))
+    px, py = g.grad(pm)
+    pxx, pyy = (g.grad(px)[0], g.grad(py)[1])
+    with np.errstate(invalid='ignore'):
+        Px, Py = g.grad(px * nsx + py * nsy)
+        pnn = (Px * nsx + Py * nsy) * 10000000000.0
+        ax, ay = g.grad(-u10s * nsy + v10s * nsx)
+        shear = (ax * nsx + ay * nsy) * 100000.0
+        x10, x8 = (u10s * nsx + v10s * nsy, u8s * n8x + v8s * n8y)
+        adv10, adv8 = (-(u10s * esx + v10s * esy) * 10800, -(u8s * e8x + v8s * e8y) * 10800)
+    G8c, T8c = _zone(g, tw8, 300)[:2]
+    Gsc = _zone(g, tws, 300)[0]
+    vo10b, dv10b = _kin(g, u10s, v10s, 200)[:2]
+    alat = np.repeat(np.clip(np.abs(g.lats), 20.0, 56.0)[:, None], len(g.lons), 1)
+    F = [G8, T8, Gs, Ts, Gt, Tt, Gd, G8b, T8b, Gsb, Tsb, vo10, dv10, vo8, dv8, (pxx + pyy) * 10000000000.0, pnn, shear, alat, zs / 1000.0, under, x10, x8, adv10, adv8, np.hypot(u10s, v10s), G8c, T8c, Gsc, vo10b, dv10b, np.hypot(px, py) * 100000.0]
+    X = np.stack([np.nan_to_num(np.asarray(a, np.float64), nan=0.0, posinf=0.0, neginf=0.0) for a in F]).astype(np.float32)
+    return (X, g, (nsx, nsy))
+
+def _conv(h, W, d):
+    k = W.shape[0]
+    c, ny, nx = h.shape
+    if k == 1:
+        return (W[0, 0].T @ h.reshape(c, -1)).reshape(-1, ny, nx)
+    r = d * (k // 2)
+    wp = nx + 2 * r
+    hp = np.pad(h, ((0, 0), (r, r), (r, r))).reshape(c, -1)
+    n = ny * wp - 2 * r
+    out = np.zeros((W.shape[3], ny * wp), np.float32)
+    for i in range(k):
+        for j in range(k):
+            off = i * d * wp + j * d
+            out[:, :n] += W[i, j].T @ hp[:, off:off + n]
+    return out.reshape(-1, ny, wp)[:, :, :nx]
+
+def probabilities(W, X):
+    h = (X - W['mu'][:, None, None]) / W['sd'][:, None, None]
+    dils = [int(d) for d in W['dils']]
+    n = len(dils) + 1
+    h = np.maximum(_conv(h, W['C0'], 1) + W['c0'][:, None, None], 0)
+    for i, d in enumerate(dils, 1):
+        h = h + np.maximum(_conv(h, W[f'C{i}'], d) + W[f'c{i}'][:, None, None], 0)
+    lg = _conv(h, W[f'C{n}'], 1) + W[f'c{n}'][:, None, None]
+    e = np.exp(lg - lg.max(0, keepdims=True))
+    return e / e.sum(0, keepdims=True)
+
+def ml_lines(g, prob, nx_, ny_):
+    lat_ok = (np.abs(g.lats) >= ML_LAT[0]) & (np.abs(g.lats) <= ML_LAT[1])
+    pa = smooth(np.where(lat_ok[:, None], 1 - prob[0], 0.0), *g.sigma(ML_SMOOTH_KM))
+    px, py = g.grad(pa)
+    pxx, pxy = g.grad(px)
+    pyx, pyy = g.grad(py)
+    pxy = (pxy + pyx) / 2
+    lam = (pxx + pyy) / 2 - np.sqrt(((pxx - pyy) / 2) ** 2 + pxy ** 2)
+    ex, ey = (pxy, lam - pxx)
+    flat = np.abs(ex) + np.abs(ey) < 1e-30
+    ex, ey = (np.where(flat, lam - pyy, ex), np.where(flat, pxy, ey))
+    nrm = np.hypot(ex, ey) + 1e-30
+    sgn = np.where(np.nan_to_num(ex * nx_ + ey * ny_) < 0, -1.0, 1.0) / nrm
+    across = (px * ex + py * ey) * sgn
+    keep = (pa > ML_P0) & (lam < 0)
+    cls = [smooth(prob[i], *g.sigma(50.0)) * ML_TYPE_W[i - 1] for i in range(1, 5)]
+    raw = [np.array(g.lonlat(np.array([p[0] for p in ln]), np.array([p[1] for p in ln]))).T for ln in zero_lines(across, keep)]
+    out = []
+    for ll in join_lines(raw):
+        lon, lat = (ll[:, 0], ll[:, 1])
+        if km_between(lon[:-1], lat[:-1], lon[1:], lat[1:]).sum() < ML_MIN_KM:
+            continue
+        fy, fx = g.cell(lon, lat)
+        if float(np.nanmean(sample(pa, fy, fx))) < ML_LINE_P:
+            continue
+        if len(lon) >= 5:
+            lon = np.r_[lon[0], np.convolve(lon, np.ones(3) / 3, 'valid'), lon[-1]]
+            lat = np.r_[lat[0], np.convolve(lat, np.ones(3) / 3, 'valid'), lat[-1]]
+        fy, fx = g.cell(lon, lat)
+        seg = km_between(lon[:-1], lat[:-1], lon[1:], lat[1:])
+        pc = np.stack([sample(c, fy, fx) for c in cls])
+        types = np.array(list('cwso'))[np.nan_to_num((pc[:, :-1] + pc[:, 1:]) / 2, nan=-1.0).argmax(0)]
+        seg_types = _runs(types, seg, ML_PART_KM)
+        n_x, n_y = (sample(nx_, fy, fx), sample(ny_, fy, fx))
+        i = 0
+        while i < len(seg_types):
+            j = i
+            while j + 1 < len(seg_types) and seg_types[j + 1] == seg_types[i]:
+                j += 1
+            plon, plat = (lon[i:j + 2], lat[i:j + 2])
+            dxs = np.diff(plon) * np.cos(np.radians(plat[:-1]))
+            left = np.nansum(-np.diff(plat) * n_x[i:j + 1] + dxs * n_y[i:j + 1])
+            c = math.cos(math.radians(float(plat.mean())))
+            k = simplify(np.c_[plon * c * 111.2, plat * 111.2], SIMPLIFY_KM)
+            plon, plat = (plon[k], plat[k])
+            if left < 0:
+                plon, plat = (plon[::-1], plat[::-1])
+            out.append((str(seg_types[i]), list(zip(plon.tolist(), plat.tolist()))))
+            i = j + 1
+    return out
+
+def detect_ml(lats, lons, t850, td850, u850, v850, ps, mslp, t2, td2, u10, v10, zs):
+    W = _weights()
+    if W is None:
+        return None
+    lats, lons = (np.asarray(lats, np.float64), np.asarray(lons, np.float64))
+    if abs(lats[-1] - lats[0]) < MIN_SPAN_DEG or abs(lons[-1] - lons[0]) < MIN_SPAN_DEG:
+        return {'fronts': [], 'centres': []}
+    step = abs(lats[1] - lats[0])
+    k = max(1, int(round(STEP / step)))
+    pm = block_mean(np.asarray(mslp, np.float64), k)
+    g0 = Grid(lats[:pm.shape[0] * k:k] + (lats[1] - lats[0]) * (k - 1) / 2, lons[:pm.shape[1] * k:k] + (lons[1] - lons[0]) * (k - 1) / 2)
+    cs = centres(g0, pm)
+    south = float(np.mean(lats)) < 0
+    fields = [t850, td850, u850, v850, ps, mslp, t2, td2, u10, v10, zs]
+    if south:
+        fields = [np.asarray(a)[::-1] for a in fields]
+        fields[3], fields[9] = (-fields[3], -fields[9])
+        lats = -lats[::-1]
+    X, g, (nx_, ny_) = features(lats, lons, *fields)
+    lines = ml_lines(g, probabilities(W, X), nx_, ny_)
+    if south:
+        lines = [(kind, [(x, -y) for x, y in pts[::-1]]) for kind, pts in lines]
+    return {'fronts': lines, 'centres': cs}
 
 def from_part(s, lv, levels, lats, lons):
     levels = list(levels)
     if LEVEL not in levels or lv.get('t') is None or lv.get('td') is None or (lv.get('u') is None):
         return None
     i = levels.index(LEVEL)
+    need = ('ps', 'mslp', 't2', 'td2', 'u10', 'v10', 'zs')
+    if all((s.get(k) is not None for k in need)):
+        try:
+            res = detect_ml(lats, lons, lv['t'][i], lv['td'][i], lv['u'][i], lv['v'][i], *(s[k] for k in need))
+            if res is not None:
+                return res
+        except Exception:
+            pass
     return detect(lats, lons, lv['t'][i], lv['td'][i], lv['u'][i], lv['v'][i], ps=s.get('ps'), mslp=s.get('mslp'), u10=s.get('u10'), v10=s.get('v10'))

@@ -827,6 +827,59 @@ class Fronts(unittest.TestCase):
             self.assertLess(np.abs(np.array(a)[[0, -1]] - np.array(b)[[0, -1]]).max(), fronts.COORD)
         self.assertLess(len(json.dumps(enc, separators=(',', ':'))), 2000)
 
+    def test_network_weights_inputs_and_layers(self):
+        import fronts
+        W = fronts._weights()
+        self.assertIsNotNone(W)
+        lats, lons, t, td, u, v, ps, mslp = self.field((0.0, -8.0))
+        X, g, (nx, ny) = fronts.features(lats, lons, t, td, u, v, ps, mslp, t + 2, td + 2, u, v, np.zeros(t.shape))
+        self.assertEqual(X.shape, (len(fronts.FEATURES), len(lats), len(lons)))
+        self.assertTrue(np.isfinite(X).all())
+        self.assertLess(float(np.nanmean(ny[(g.lats > 38) & (g.lats < 42)])), -0.9)
+        P = fronts.probabilities(W, X)
+        self.assertEqual(P.shape, (5,) + X.shape[1:])
+        self.assertTrue(np.allclose(P.sum(0), 1, atol=1e-05))
+        la, lo = (np.arange(55, 24.99, -0.1), np.arange(-120, -69.99, 0.1))
+        X2, g2, _ = fronts.features(la, lo, *(np.zeros((len(la), len(lo))) + c for c in (5, 0, 0, 0, 1000, 1012, 7, 2, 0, 0, 0)))
+        self.assertAlmostEqual(abs(g2.lats[1] - g2.lats[0]), 0.25)
+        self.assertAlmostEqual(g2.lons[1] - g2.lons[0], 0.25)
+        rng = np.random.default_rng(0)
+        h, Wc = (rng.normal(size=(2, 9, 11)).astype(np.float32), rng.normal(size=(3, 3, 2, 1)).astype(np.float32))
+        hp = np.pad(h, ((0, 0), (2, 2), (2, 2)))
+        want = sum((Wc[i, j, c, 0] * hp[c, 4 + 2 * (i - 1), 5 + 2 * (j - 1)] for i in range(3) for j in range(3) for c in range(2)))
+        self.assertAlmostEqual(float(fronts._conv(h, Wc, 2)[0, 2, 3]), float(want), places=4)
+
+    def test_network_fronts_both_hemispheres_and_fallback(self):
+        import fronts
+        lats, lons, t, td, u, v, ps, mslp = self.field((0.0, -8.0))
+        zs = np.zeros(t.shape)
+        u10 = np.zeros(t.shape)
+        v10 = np.repeat((3.0 - 11.0 * (np.tanh((lats - 40.0) / 0.5) + 1) / 2)[:, None], len(lons), 1)
+        res = fronts.detect_ml(lats, lons, t, td, u, v, ps, mslp, t + 2, td + 2, u10, v10, zs)
+        self.assertTrue(res['fronts'])
+        longest = np.array(max(res['fronts'], key=lambda f: len(f[1]))[1])
+        self.assertLess(float(np.median(np.abs(longest[:, 1] - 40))), 1.5, longest[:, 1])
+        self.assertGreater(float(np.ptp(longest[:, 0])), 15)
+        self.assertLess(longest[-1, 0], longest[0, 0])
+        self.assertEqual([c[0] for c in res['centres']], ['L'])
+        flip = lambda a: a[::-1]
+        sres = fronts.detect_ml(-lats[::-1], lons, flip(t), flip(td), u, -flip(v), flip(ps), flip(mslp), flip(t) + 2, flip(td) + 2, u10, -flip(v10), zs)
+        self.assertEqual(sorted((k for k, _ in sres['fronts'])), sorted((k for k, _ in res['fronts'])))
+        s_long = np.array(max(sres['fronts'], key=lambda f: len(f[1]))[1])
+        self.assertLess(float(np.median(np.abs(s_long[:, 1] + 40))), 1.5, s_long[:, 1])
+        self.assertGreater(s_long[-1, 0], s_long[0, 0])
+        eq = fronts.detect_ml(lats - 40, lons, t, td, u, v, ps, mslp, t + 2, td + 2, u10, v10, zs)
+        self.assertFalse([p for _, pts in eq['fronts'] for p in pts if abs(p[1]) < fronts.ML_LAT[0] - 0.5])
+        s = {'ps': ps, 'mslp': mslp, 't2': t + 2, 'td2': td + 2, 'u10': u10, 'v10': v10, 'zs': zs}
+        lv = {'t': t[None], 'td': td[None], 'u': u[None], 'v': v[None]}
+        keep_file, keep = (fronts.CNN_FILE, dict(fronts._CNN))
+        try:
+            fronts.CNN_FILE, fronts._CNN = ('no-such-file.json', {})
+            self.assertEqual(fronts.from_part(s, lv, [850], lats, lons), fronts.detect(lats, lons, t, td, u, v, ps=ps, mslp=mslp, u10=u10, v10=v10))
+        finally:
+            fronts.CNN_FILE, fronts._CNN = (keep_file, keep)
+        self.assertEqual(fronts.from_part(s, lv, [850], lats, lons), res)
+
     def test_joined_across_a_gap(self):
         import fronts
         a = np.array([[-100.0, 40.0], [-98.0, 40.0], [-96.0, 40.0]])
