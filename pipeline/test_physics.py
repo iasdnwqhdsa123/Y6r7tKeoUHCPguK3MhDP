@@ -1184,6 +1184,28 @@ class RidgeFields(unittest.TestCase):
         for f in ('nlow', 'wlow'):
             self.assertNotIn(f, build.FREE_FIELDS)
 
+class WaveExposure(unittest.TestCase):
+
+    def test_ridge_across_the_wind(self):
+        import math
+        try:
+            import wave_exposure as we
+        except ImportError:
+            self.skipTest('no wave_exposure.py here')
+        m = 1000.0
+        x = np.arange(400)
+        a = 9000 / (2 * math.pi) / m
+        slab = np.tile(500 / (1 + ((x - 200) / a) ** 2), (60, 1)).astype(np.float32)
+        E = we.exposure(slab, m)
+        j = we.LAMS.index(9000.0)
+        east, west, north = (E[j * we.DIRS + d][30] for d in (2, 6, 0))
+        self.assertAlmostEqual(int(np.argmax(east)) - 200, 4, delta=1)
+        self.assertAlmostEqual(int(np.argmax(west)) - 200, -4, delta=1)
+        self.assertLess(float(east[:195].max()), 0.002)
+        self.assertLess(float(north.max()), 0.002)
+        self.assertTrue(1.1 < 15 * float(east.max()) < 1.7, east.max())
+        self.assertLess(float(east.max()), we.SCALE)
+
 class LeeWaveFields(unittest.TestCase):
 
     def test_published_over_flat_ground(self):
@@ -1214,6 +1236,11 @@ class LeeWaveFields(unittest.TestCase):
         s.update(ps=one(1013.25), sw=one(0), shf=one(0), hpbl=one(200))
         neutral = build.analyse(dict(s), lv, levels, 0.25, one(40))
         self.assertTrue(np.isnan(neutral['wtrap']).all() and np.isnan(neutral['wlam']).all())
+        sp = np.hypot(out['u_wl'], out['v_wl'])
+        self.assertTrue((sp > 10).all() and (sp < 30).all(), sp)
+        self.assertTrue(np.isnan(neutral['u_wl']).all() and np.isnan(neutral['v_wl']).all())
+        self.assertEqual(build.ENC['u_wl'], (-60, 60, None))
+        self.assertIn('u_wl', build.NOW_FIELDS)
         self.assertEqual(build.ENC['wtrap'], (0, 100, None))
         self.assertEqual(build.ENC['wlam'], (0, 60000, None))
         for f in ('wtrap', 'wlam'):
