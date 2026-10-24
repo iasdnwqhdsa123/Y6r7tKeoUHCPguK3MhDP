@@ -28,7 +28,7 @@ concurrency:
 env:
   DATA_PATH_SECRET: ${{ secrets.DATA_PATH_SECRET }}
   DATA_ALIAS: live
-  ALIAS_ONLY: "false"
+  ALIAS_ONLY: "true"
 
 permissions:
   contents: read
