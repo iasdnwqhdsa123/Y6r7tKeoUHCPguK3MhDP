@@ -212,7 +212,14 @@ jobs:
             --jq '[.artifacts[] | select(.expired | not)] | sort_by(.created_at) | last | select(. != null) | "\(.workflow_run.id) \(.created_at) \(.size_in_bytes)"')"
           if [ -n "$r" ]; then read -r run at size <<<"$r"; echo "run_part=$run" >> "$GITHUB_OUTPUT"; echo "store-run-$M: run $run, $at, $((size / 1048576)) MB"; fi
       - name: Fetch ${{ matrix.model }}'s published run
+        id: fetchrun
         if: steps.store.outputs.run_part != '' && !contains(format(' {0} ', needs.check.outputs.models), format(' {0} ', matrix.model))
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: .github/scripts/fetch-artifact.sh "store-run-$M" "${{ steps.store.outputs.run_part }}" /tmp/store
+      - name: Fetch ${{ matrix.model }}'s published run (one connection)
+        if: steps.fetchrun.outcome == 'failure'
         continue-on-error: true
         uses: actions/download-artifact@v8
         with:
@@ -221,7 +228,14 @@ jobs:
           run-id: ${{ steps.store.outputs.run_part }}
           github-token: ${{ github.token }}
       - name: Fetch ${{ matrix.model }}'s store
+        id: fetchstore
         if: steps.store.outputs.run != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: .github/scripts/fetch-artifact.sh "store-$M" "${{ steps.store.outputs.run }}" /tmp/store
+      - name: Fetch ${{ matrix.model }}'s store (one connection)
+        if: steps.fetchstore.outcome == 'failure'
         continue-on-error: true
         uses: actions/download-artifact@v8
         with:
@@ -316,7 +330,14 @@ jobs:
           run="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['runId'])" "dist-data/$M/latest.json" 2>/dev/null || true)"
           if [ -n "$run" ] && [ ! -d "dist-data/$M/$run" ]; then echo "fetch=true" >> "$GITHUB_OUTPUT"; echo "$M: run $run not on hand, fetching it"; fi
       - name: Fetch ${{ matrix.model }}'s published run (not built)
+        id: fetchlate
         if: steps.onhand.outputs.fetch == 'true' && steps.store.outputs.run_part != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: .github/scripts/fetch-artifact.sh "store-run-$M" "${{ steps.store.outputs.run_part }}" /tmp/store
+      - name: Fetch ${{ matrix.model }}'s published run (not built, one connection)
+        if: steps.fetchlate.outcome == 'failure'
         continue-on-error: true
         uses: actions/download-artifact@v8
         with:
@@ -526,13 +547,16 @@ jobs:
           done
 
   publish:
-    needs: [check, model, mapdata]
+    needs: [check, mapdata]
     if: ${{ !cancelled() && needs.check.outputs.any == 'true' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 200
     permissions:
       contents: read
       actions: write # deleting this run's hand-off artifacts
+    env:
+      ACTIVE: ${{ needs.check.outputs.active }}
+      ENS_NEW: ${{ contains(format(' {0} ', needs.check.outputs.models), ' ens ') && contains(needs.check.outputs.active, '"ens"') }}
     steps:
       - uses: actions/checkout@v7
 
@@ -559,7 +583,27 @@ jobs:
             echo "OPEN_DIR=/$O" >> "$GITHUB_ENV"
           fi
 
+      - name: Wait for the models
+        id: wait
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "$ENS_NEW" = true ]; then
+            .github/scripts/publish-data.sh wait ens || true
+            st="$(gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}/jobs?per_page=100" --jq '.jobs[] | select(.name == "model (ens)") | .status')"
+            if [ "$st" != completed ]; then echo "ens_later=true" >> "$GITHUB_OUTPUT"; echo "the ensemble's new run goes out in a second deploy"; fi
+          else
+            .github/scripts/publish-data.sh wait || true
+          fi
+
       - name: Fetch the models
+        id: fetch
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: .github/scripts/publish-data.sh hand /tmp/hand
+      - name: Fetch the models (one connection)
+        if: steps.fetch.outcome == 'failure'
         uses: actions/download-artifact@v8
         with:
           pattern: model-*
@@ -574,23 +618,43 @@ jobs:
         continue-on-error: true # none: no map data on hand (the deploy then waits, below)
 
       - name: Unpack the models
+        run: .github/scripts/publish-data.sh unpack /tmp/hand
+
+      - name: The ensemble's run before
+        id: ensold
+        if: steps.wait.outputs.ens_later == 'true'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          mkdir -p dist-data
-          for f in /tmp/hand/*.tar.enc /tmp/hand/*.tar; do
-            [ -f "$f" ] || continue
+          for n in store-ens store-run-ens; do
+            run="$(gh api "repos/${{ github.repository }}/actions/artifacts?name=$n&per_page=20" \
+              --jq '[.artifacts[] | select((.expired | not) and .workflow_run.id != ${{ github.run_id }})] | sort_by(.created_at) | last | .workflow_run.id // empty')"
+            [ -n "$run" ] || { echo "no $n on hand"; exit 1; }
+            .github/scripts/fetch-artifact.sh "$n" "$run" /tmp/ensold
+          done
+          for f in /tmp/ensold/*; do
             case "$f" in
               *.enc) openssl enc -d -aes-256-ctr -pbkdf2 -pass env:DATA_PATH_SECRET -in "$f" | tar -C dist-data -xf - ;;
               *) tar -C dist-data -xf "$f" ;;
             esac
-            echo "$(basename "$f"): unpacked"
           done
-          rm -rf /tmp/hand
-          if [ -d dist-data/free ]; then find dist-data/free -mindepth 4 -maxdepth 4 -type d -path '*/h/*' -printf '::add-mask::%f\n'; fi
+          rm -rf /tmp/ensold
+          [ -f dist-data/ens/latest.json ] || { echo "no ens/latest.json in its store"; exit 1; }
+          echo "ens: $(python3 -c "import json; print(json.load(open('dist-data/ens/latest.json'))['runId'])") for now"
+      - name: Wait for the ensemble (its run before not on hand)
+        if: steps.ensold.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          rm -rf dist-data/ens
+          .github/scripts/publish-data.sh wait || true
+          .github/scripts/publish-data.sh hand /tmp/hand model-ens || true
+          .github/scripts/publish-data.sh unpack /tmp/hand
 
       - name: Anything new?
         id: changed
         env:
-          ACTIVE: ${{ needs.check.outputs.active }}
           REQUIRED: ${{ needs.check.outputs.required }}
         run: |
           for m in $(jq -r '.[]' <<<"$ACTIVE"); do
@@ -602,27 +666,13 @@ jobs:
           for f in free/hrrr/latest.json free/gfs/latest.json airspace/meta.json airspace/aviation/meta.json; do
             if [ ! -f "dist-data/$f" ]; then echo "::warning::no $f: no deploy this time"; exit 0; fi
           done
+          echo "whole=true" >> "$GITHUB_OUTPUT"
           if ls dist-data/.changed-* > /dev/null 2>&1; then echo "changed: $(cd dist-data && ls .changed-* | sed 's/^.changed-//' | tr '\n' ' ')"; echo "yes=true" >> "$GITHUB_OUTPUT"; rm -f dist-data/.changed-*
           else echo "Nothing new"; fi
 
       - name: Assemble site
         if: steps.changed.outputs.yes == 'true'
-        run: |
-          P="${DATA_PATH_SECRET:+/$DATA_PATH_SECRET}"
-          mkdir -p "site$P"
-          OPEN_EX=(); if [ -n "$DATA_PATH_SECRET" ]; then OPEN_EX=(--exclude '/free/' --exclude '/airspace/'); fi
-          rsync -a --delete --link-dest="$PWD/dist-data/" --exclude '_hours/' --exclude '_quarters/' --exclude '*.building/' --exclude '.changed*' --exclude '.model-*' --exclude '.mapdata' "${OPEN_EX[@]}" dist-data/ "site$P/"
-          sed "s#^/#$P/#" pipeline/data-site/_headers > site/_headers
-          if [ -n "$DATA_PATH_SECRET" ]; then
-            O="$OPEN_DIR"
-            for d in free airspace; do
-              if [ -d "dist-data/$d" ]; then mkdir -p "site$O/$d"; rsync -a --link-dest="$PWD/dist-data/$d/" --exclude '*.building/' "dist-data/$d/" "site$O/$d/"; fi
-            done
-            printf '%s/free/*/20*\n  Cache-Control: public, max-age=31536000, immutable\n%s/airspace/*\n  Cache-Control: public, max-age=3600\n%s/*\n  X-Robots-Tag: noindex, nofollow\n' "$O" "$O" "$O" >> site/_headers
-          fi
-          printf "User-agent: *\nDisallow: /\n" > site/robots.txt
-          printf '[build]\n  publish = "."\n' > site/netlify.toml
-          du -sh site; find site -type f | wc -l
+        run: .github/scripts/publish-data.sh assemble
 
       - name: Netlify CLI
         uses: actions/cache@v6
@@ -635,20 +685,41 @@ jobs:
         env:
           NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
           NETLIFY_SITE_ID: ${{ secrets.NETLIFY_DATA_SITE_ID }}
-        working-directory: site
+        run: .github/scripts/publish-data.sh deploy
+
+      - name: The ensemble's new run
+        id: ensnew
+        if: steps.ensold.outcome == 'success' && steps.changed.outputs.whole == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          CLI="$(../.github/scripts/netlify-cli.sh)"
-          if [ "$ALIAS_ONLY" != true ]; then
-            "$CLI" deploy --prod --dir . --functions /tmp/no-functions --message "forecast ${{ github.run_id }}"
-          fi
-          "$CLI" deploy --alias "$DATA_ALIAS" --dir . --functions /tmp/no-functions --message "forecast ${{ github.run_id }} ($DATA_ALIAS)" ||
-            { [ "$ALIAS_ONLY" != true ] && echo "::warning::the $DATA_ALIAS draft failed (production deployed)"; } || exit 1
+          .github/scripts/publish-data.sh wait || true
+          .github/scripts/publish-data.sh hand /tmp/ensnew model-ens || true
+          f="$(ls /tmp/ensnew/ens.tar* 2> /dev/null | head -1 || true)"
+          [ -n "$f" ] || { echo "::warning::the ensemble's job handed nothing on: its run before stays"; exit 0; }
+          mkdir -p /tmp/enscheck
+          case "$f" in
+            *.enc) openssl enc -d -aes-256-ctr -pbkdf2 -pass env:DATA_PATH_SECRET -in "$f" | tar -C /tmp/enscheck -xf - ;;
+            *) tar -C /tmp/enscheck -xf "$f" ;;
+          esac
+          if [ ! -f /tmp/enscheck/.changed-ens ] || [ ! -f /tmp/enscheck/ens/latest.json ]; then echo "the ensemble has nothing new"; exit 0; fi
+          rm -rf dist-data/ens
+          mv /tmp/enscheck/ens dist-data/ens
+          rm -rf /tmp/enscheck /tmp/ensnew
+          echo "ens: $(python3 -c "import json; print(json.load(open('dist-data/ens/latest.json'))['runId'])")"
+          echo "yes=true" >> "$GITHUB_OUTPUT"
+      - name: Deploy the ensemble's new run
+        if: steps.ensnew.outputs.yes == 'true'
+        env:
+          NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
+          NETLIFY_SITE_ID: ${{ secrets.NETLIFY_DATA_SITE_ID }}
+        run: |
+          .github/scripts/publish-data.sh assemble
+          .github/scripts/publish-data.sh deploy "(ensemble)"
 
       - name: Check the alias
-        if: steps.changed.outputs.yes == 'true'
+        if: steps.changed.outputs.yes == 'true' || steps.ensnew.outputs.yes == 'true'
         continue-on-error: true
-        env:
-          ACTIVE: ${{ needs.check.outputs.active }}
         run: |
           P="${DATA_PATH_SECRET:+/$DATA_PATH_SECRET}"
           get() { rm -f /tmp/body; curl -sS -o /tmp/body -w '%{http_code}' --max-time 30 -H "Cache-Control: no-cache" "$1" 2> /dev/null || true; }
