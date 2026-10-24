@@ -477,7 +477,7 @@ KEEP_P0 = 0.2
 KEEP_LINE_P = 0.22
 TYPE_HOLD = 1.3
 _CNN = {}
-ALAT = (20.0, 56.0)
+ALAT = (20.0, 72.0)
 FEATURES = ['G8', 'T8', 'Gs', 'Ts', 'Gt', 'Tt', 'Gd', 'G8b', 'T8b', 'Gsb', 'Tsb', 'vo10', 'dv10', 'vo8', 'dv8', 'lap', 'pnn', 'shear', 'alat', 'zs', 'under', 'x10', 'x8', 'adv10', 'adv8', 'spd10', 'G8c', 'T8c', 'Gsc', 'vo10b', 'dv10b', 'dp']
 
 def _weights():
