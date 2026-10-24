@@ -540,25 +540,57 @@ class WindowedFields(unittest.TestCase):
         self.assertEqual(ec.max_fhour, 360)
         self.assertTrue(ec.fstep(144) and ec.fstep(150) and (not ec.fstep(147)) and ec.fstep(360))
 
-    def test_waits_for_a_run_landing_late(self):
-        from datetime import datetime, timezone
+    def test_slots_wait_for_their_runs(self):
+        from datetime import datetime, timedelta, timezone
+        import check
+        at = lambda d, h, m=0: datetime(2026, 10, d, h, m, tzinfo=timezone.utc)
+        slot = check.slot_at(at(26, 2, 1))
+        self.assertEqual(slot, ('02:00', at(26, 2)))
+        self.assertEqual(check.expected_run(slot[1], 18), at(25, 18))
+        self.assertEqual(check.expected_run(slot[1], 0), at(26, 0))
+        self.assertEqual(check.slot_at(at(26, 1, 52))[0], '02:00')
+        self.assertEqual(check.slot_at(at(26, 3, 10), '02:30'), ('02:30', at(26, 2, 30)))
+        self.assertEqual(check.slot_at(at(26, 0, 30))[0], '23:20')
+        now = at(26, 2, 1)
+        self.assertEqual(check.plan('hrrr', now, slot, at(26, 0), '2025102518'), (True, None))
+        self.assertEqual(check.plan('hrrr', now, slot, at(26, 0), '2026102600'), (False, None))
+        self.assertEqual(check.plan('ecmwf', now, slot, at(25, 12), '2026102512'), (True, (at(25, 18), at(26, 3))))
+        self.assertEqual(check.plan('ecmwf', at(26, 3, 5), slot, at(25, 12), '2026102512'), (False, None))
+        self.assertEqual(check.plan('ecmwf', at(26, 3, 5), slot, at(25, 12), '2025102506'), (True, None))
+        self.assertEqual(check.plan('gfs', now, slot, at(25, 18), '2026102512'), (True, None))
+        self.assertEqual(check.plan('gfs', at(25, 23, 30), check.slot_at(at(25, 23, 30)), at(25, 18), '2026102512')[0], True)
+        self.assertEqual(check.plan('gfs', at(26, 0, 0), ('01:15', at(26, 1, 15)), at(25, 18), '2026102512')[0], False)
+        self.assertEqual(check.plan('ens', at(26, 8, 31), check.slot_at(at(26, 8, 31)), at(26, 0), '2026102512'), (False, None))
+        self.assertEqual(check.plan('ens', at(26, 9, 41), check.slot_at(at(26, 9, 41)), at(26, 0), '2026102512'), (True, None))
+        self.assertEqual(check.plan('icon', now, slot, at(25, 18), '2026102518', out_missing=True), (True, None))
+        for name, models in check.SLOTS.items():
+            t = check.slot_at(at(26, int(name[:2]), int(name[3:])), name)[1]
+            for m, h in models.items():
+                run = check.expected_run(t, h)
+                typical, latest = check.lands(m, h)
+                self.assertEqual(run.hour, h)
+                self.assertIn(m, check.SOURCES)
+                self.assertIn(h, check.SOURCES[m].runs, (name, m))
+                self.assertTrue(timedelta(minutes=-30) <= t - (run + typical) <= timedelta(minutes=120 if m == 'ens' else 70), (name, m))
+                self.assertGreater(latest, typical)
+        for m, step in (('hrrr', 1), ('icond2', 3)):
+            self.assertEqual(sorted((h for s in check.SLOTS.values() for k, h in s.items() if k == m)), list(range(0, 24, step)), m)
+        for m in ('gfs', 'icon', 'ecmwf'):
+            self.assertEqual(sorted((h for s in check.SLOTS.values() for k, h in s.items() if k == m)), [0, 6, 12, 18], m)
+
+    def test_waits_in_the_job_until_the_run_lands(self):
+        from datetime import datetime, timedelta, timezone
         from unittest import mock
         import check
         from sources import SOURCES
-        hrrr = SOURCES['hrrr']
-        at = lambda h, m=0: datetime(2026, 9, 30, h, m, tzinfo=timezone.utc)
-        with mock.patch.object(check, 'latest_complete_run', lambda *a, **k: (at(0), [])):
-            self.assertEqual(check.late_run(hrrr, at(8, 10)), (at(0), at(6)))
-            self.assertEqual(check.late_run(hrrr, at(7, 0))[1], None)
-            self.assertEqual(check.late_run(hrrr, at(11, 0))[1], None)
-        with mock.patch.object(check, 'latest_complete_run', lambda *a, **k: (at(6), [])):
-            self.assertEqual(check.late_run(hrrr, at(8, 10))[1], None)
-        ec = SOURCES['ecmwf']
-        day2 = lambda h, m=0: datetime(2026, 10, 1, h, m, tzinfo=timezone.utc)
-        with mock.patch.object(check, 'latest_complete_run', lambda *a, **k: (at(12), [])):
-            self.assertEqual(check.late_run(ec, day2(2, 10))[1], at(18))
-        with mock.patch.object(check, 'latest_complete_run', lambda *a, **k: (at(18), [])):
-            self.assertEqual(check.late_run(ec, day2(8, 10))[1], None)
+        run = datetime(2026, 10, 26, 0, tzinfo=timezone.utc)
+        seen = iter([run - timedelta(hours=6), run])
+        with mock.patch.object(check, 'complete_run', lambda src: next(seen)), mock.patch.object(check.time, 'sleep') as sl:
+            self.assertTrue(check.wait_for(SOURCES['hrrr'], run, datetime.now(timezone.utc) + timedelta(minutes=30)))
+            sl.assert_called_once()
+        with mock.patch.object(check, 'complete_run', lambda src: run - timedelta(hours=6)), mock.patch.object(check.time, 'sleep') as sl:
+            self.assertFalse(check.wait_for(SOURCES['hrrr'], run, datetime.now(timezone.utc)))
+            sl.assert_not_called()
 
     def test_map_data_rides_a_deploying_job_weekly(self):
         from datetime import timedelta as td
@@ -601,7 +633,7 @@ class WindowedFields(unittest.TestCase):
         fresh = {'updated': now.isoformat()}
 
         def outputs(pub, *flags):
-            with tempfile.NamedTemporaryFile('r', suffix='.txt') as f, mock.patch.dict(os.environ, {'GITHUB_OUTPUT': f.name}), mock.patch.object(sys, 'argv', ['check.py', '--data-url', 'https://d', *flags]), mock.patch.object(check, 'newest_run', lambda src, wait=True: run), mock.patch.object(check, 'late_run', lambda src, now=None: (run, None)), mock.patch.object(check, 'published', lambda url: pub(url)), redirect_stdout(io.StringIO()):
+            with tempfile.NamedTemporaryFile('r', suffix='.txt') as f, mock.patch.dict(os.environ, {'GITHUB_OUTPUT': f.name}), mock.patch.object(sys, 'argv', ['check.py', '--data-url', 'https://d', *flags]), mock.patch.object(check, 'complete_run', lambda src: run), mock.patch.object(check, 'published', lambda url: pub(url)), redirect_stdout(io.StringIO()):
                 check.main()
                 return dict((line.strip().split('=', 1) for line in f if '=' in line))
 
@@ -1094,12 +1126,12 @@ class PruneStore(unittest.TestCase):
             self.assertEqual(build.prune_store(d, 60, now), 2)
             self.assertEqual(sorted(os.listdir(d)), ['2026101100.npz', '2026101100.run', '2026101308.npz', '2026101308.run', '2026101320.npz', '2026101320.run', 'VERSION'])
 
-    def test_hrrr_store_kept_only_to_the_next_run_after_the_free_window(self):
+    def test_hrrr_store_keeps_the_long_runs_hours_after_the_free_window(self):
         import tempfile
         from unittest import mock
         from datetime import datetime, timedelta, timezone
         import build
-        self.assertEqual(build.STORE_AFTER_FREE_H, {'hrrr': 12})
+        self.assertEqual(build.STORE_AFTER_FREE_H, {})
         now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
         with tempfile.TemporaryDirectory() as out:
             d = os.path.join(out, 'hrrr', '_hours')
@@ -1110,7 +1142,7 @@ class PruneStore(unittest.TestCase):
             with mock.patch.object(build, 'write_free') as wf, mock.patch('sys.argv', ['build.py', '--model', 'hrrr', '--out', out, '--free-only']):
                 self.assertEqual(build.main(), 0)
             wf.assert_called_once()
-            self.assertEqual(sorted((f[:10] for f in os.listdir(d))), stamps[:3])
+            self.assertEqual(sorted((f[:10] for f in os.listdir(d))), stamps)
 
     def test_lanes_download_ahead_and_keep_order(self):
         import build

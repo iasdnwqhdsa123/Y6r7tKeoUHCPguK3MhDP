@@ -28,8 +28,11 @@ def main():
     except Exception as e:
         print(f"couldn't check recent runs ({e}): building")
     out = os.environ.get('GITHUB_OUTPUT')
-    if out and skip:
+    if out:
         with open(out, 'a') as f:
-            f.write('skip=true\n')
+            if cron:
+                f.write(f'slot={last_slot(cron, datetime.now(timezone.utc)):%H:%M}\n')
+            if skip:
+                f.write('skip=true\n')
 if __name__ == '__main__':
     main()

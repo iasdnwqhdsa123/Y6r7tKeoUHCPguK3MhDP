@@ -2022,7 +2022,7 @@ def _publish_open(out, fbase, model, full, times, fields, cutoff, workers, point
     open(os.path.join(out, '.changed'), 'w').close()
     return manifest
 STORE_AHEAD_H = {'gfs': 60, 'icon': 60, 'ecmwf': 48, 'ens': 0}
-STORE_AFTER_FREE_H = {'hrrr': 12}
+STORE_AFTER_FREE_H: dict[str, int] = {}
 
 def prune_store(hours_dir, ahead_h, now=None):
     cut = (now or datetime.now(timezone.utc)) + timedelta(hours=ahead_h)

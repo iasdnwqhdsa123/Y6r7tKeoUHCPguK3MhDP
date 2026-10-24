@@ -1,46 +1,86 @@
 #!/usr/bin/env bash
 set -euo pipefail
 R="${GITHUB_REPOSITORY:?}" RUN="${GITHUB_RUN_ID:?}" ATTEMPT="${GITHUB_RUN_ATTEMPT:-1}"
+P="${DATA_PATH_SECRET:+/$DATA_PATH_SECRET}"
+newest() {
+  local n
+  for n in "$@"; do
+    gh api "repos/$R/actions/artifacts?name=out-$n&per_page=20" \
+      --jq "[.artifacts[] | select(.expired | not)] | sort_by(.created_at) | last | select(. != null) | \"$n \\(.id) \\(.workflow_run.id)\"" || true
+  done
+}
+take() { # name id run
+  local n="$1" t=/tmp/out-take f
+  rm -rf "$t"
+  .github/scripts/fetch-artifact.sh "out-$n" "$3" "$t" || return 1
+  f="$(ls "$t"/*.tar* 2> /dev/null | head -1 || true)"
+  [ -n "$f" ] || { echo "out-$n: no archive in it"; rm -rf "$t"; return 1; }
+  if [ "$n" = mapdata ]; then rm -rf dist-data/airspace; else rm -rf "dist-data/$n" "dist-data/free/$n" "dist-data/free/now/$n"; fi
+  mkdir -p dist-data
+  case "$f" in
+    *.enc) openssl enc -d -aes-256-ctr -pbkdf2 -pass env:DATA_PATH_SECRET -in "$f" | tar -C dist-data -xf - ;;
+    *) tar -C dist-data -xf "$f" ;;
+  esac
+  rm -rf "$t" dist-data/.changed*
+  echo "$2" > "/tmp/outs/$n"
+}
+through() {
+  local left
+  left="$(gh api --paginate "repos/$R/actions/runs/$RUN/attempts/$ATTEMPT/jobs?per_page=100" \
+    --jq '.jobs[] | select(.name != "publish" and .name != "cleanup" and .status != "completed") | .name' 2> /dev/null)" || return 1
+  [ -z "$left" ]
+}
 case "$1" in
-wait)
-  skip="${2:-}"
-  want=$(jq -r '.[]' <<<"$ACTIVE" | grep -vx -- "$skip" || true)
-  for i in $(seq 1 300); do # every 30 s: ~150 min (a model job's limit is 120)
-    jobs="$(gh api --paginate "repos/$R/actions/runs/$RUN/attempts/$ATTEMPT/jobs?per_page=100" \
-      --jq '.jobs[] | select(.name | startswith("model (")) | "\(.name) \(.status) \(.conclusion)"' 2> /dev/null || true)"
-    left=""
-    for m in $want; do
-      st="$(grep -F "model ($m) " <<<"$jobs" | awk '{print $3}' | head -1)"
-      [ "$st" = completed ] || left="$left $m"
+sync)
+  mkdir -p /tmp/outs dist-data
+  names="$(jq -r '.[]' <<<"$ACTIVE") mapdata"
+  done_at=""
+  for i in $(seq 1 600); do # every 30 s, to the job's limit
+    end=false
+    if through; then end=true; fi
+    live="$(curl -fsS --max-time 20 -H "Cache-Control: no-cache" "$DATA_URL$P/_outs.json" 2> /dev/null || echo '{}')"
+    want="$(newest $names)"
+    have_all=true
+    for n in $names; do
+      if ! grep -q "^$n " <<<"$want"; then
+        if [ "$end" = true ] && [ "$n" != mapdata ] && ! jq -e --arg n "$n" 'index($n) != null' <<<"$REQUIRED" > /dev/null; then
+          echo "::warning::$n has no output on hand: deploying without it"
+        else have_all=false; fi
+      fi
     done
-    if [ -z "$left" ]; then echo "model jobs done: $(grep -F completed <<<"$jobs" | awk '{print $2 $4}' | tr '\n' ' ')"; exit 0; fi
-    [ $((i % 10)) -ne 1 ] || echo "waiting for:$left"
+    new=""
+    while read -r n id run; do
+      [ -n "$n" ] || continue
+      [ "$(jq -r --arg n "$n" '.[$n] // ""' <<<"$live" 2> /dev/null)" = "$id" ] || new="$new $n"
+    done <<<"$want"
+    if [ "$have_all" = true ] && [ -n "$new" ]; then
+      echo "::group::deploy:$new (newer than the data site's)"
+      ok=true
+      while read -r n id run; do
+        [ -n "$n" ] || continue
+        [ "$(cat "/tmp/outs/$n" 2> /dev/null)" = "$id" ] && continue
+        take "$n" "$id" "$run" || { echo "::warning::out-$n of run $run couldn't be fetched"; ok=false; }
+      done <<<"$want"
+      if [ "$ok" = true ]; then
+        jq -Rn '[inputs | split(" ") | {(.[0]): (.[1] | tonumber)}] | add' <<<"$want" > dist-data/_outs.json
+        { "$0" assemble && "$0" deploy "$(xargs <<<"$new")"; } || { echo "::warning::the deploy failed"; ok=false; }
+      fi
+      echo "::endgroup::"
+      if [ "$ok" = true ]; then sleep 15; else sleep 60; fi
+      continue
+    fi
+    if [ "$end" = true ]; then
+      if [ "$have_all" = true ]; then echo "this run's jobs are through and the data site has the newest of each"
+      else echo "::warning::this run's jobs are through, but not every model's output is on hand: no deploy"; fi
+      exit 0
+    fi
+    [ $((i % 10)) -ne 1 ] || echo "waiting: $(gh api "repos/$R/actions/runs/$RUN/attempts/$ATTEMPT/jobs?per_page=100" --jq '[.jobs[] | select(.name != "publish" and .name != "cleanup" and .status != "completed") | .name] | join(", ")' 2> /dev/null || true)"
     sleep 30
   done
-  echo "::warning::still waiting for:$left (going on without them)"
+  echo "::warning::still not through at the job's limit"
   exit 1
   ;;
-hand)
-  dest="$2" only="${3:-}"
-  names="$(gh api "repos/$R/actions/runs/$RUN/artifacts?per_page=100" --jq '.artifacts[] | select(.name | startswith("model-")) | .name')"
-  [ -z "$only" ] || names="$(grep -x -- "$only" <<<"$names" || true)"
-  for n in $names; do .github/scripts/fetch-artifact.sh "$n" "$RUN" "$dest"; done
-  ;;
-unpack)
-  mkdir -p dist-data
-  for f in "$2"/*.tar.enc "$2"/*.tar; do
-    [ -f "$f" ] || continue
-    case "$f" in
-      *.enc) openssl enc -d -aes-256-ctr -pbkdf2 -pass env:DATA_PATH_SECRET -in "$f" | tar -C dist-data -xf - ;;
-      *) tar -C dist-data -xf "$f" ;;
-    esac
-    echo "$(basename "$f"): unpacked"
-  done
-  rm -rf "$2"
-  if [ -d dist-data/free ]; then find dist-data/free -mindepth 4 -maxdepth 4 -type d -path '*/h/*' -printf '::add-mask::%f\n'; fi
-  ;;
 assemble)
-  P="${DATA_PATH_SECRET:+/$DATA_PATH_SECRET}"
   rm -rf site
   mkdir -p "site$P"
   OPEN_EX=(); if [ -n "${DATA_PATH_SECRET:-}" ]; then OPEN_EX=(--exclude '/free/' --exclude '/airspace/'); fi
@@ -67,5 +107,5 @@ deploy)
   "$CLI" deploy --alias "$DATA_ALIAS" --dir . --functions /tmp/no-functions --message "$msg ($DATA_ALIAS)" ||
     { [ "${ALIAS_ONLY:-}" != true ] && echo "::warning::the $DATA_ALIAS draft failed (production deployed)"; } || exit 1
   ;;
-*) echo "usage: publish-data.sh wait|hand|unpack|assemble|deploy" >&2; exit 2 ;;
+*) echo "usage: publish-data.sh sync|assemble|deploy" >&2; exit 2 ;;
 esac
