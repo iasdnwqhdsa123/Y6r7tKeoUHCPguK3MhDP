@@ -314,9 +314,10 @@ jobs:
           build=false
           if [[ " $MODELS " == *" $M "* ]]; then build=true; fi
           run="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['runId'])" "dist-data/$M/latest.json" 2>/dev/null || true)"
-          if [ "$build" != true ] && { [ -z "$run" ] || [ ! -d "dist-data/$M/$run" ]; }; then
-            rm -f "dist-data/$M/latest.json" # (else build.py finds that run built already)
-            build=true; echo "$M: published run not on hand, building it"
+          if [ -z "$run" ] || [ ! -d "dist-data/$M/$run" ]; then
+            if [ "$build" != true ]; then echo "$M: published run not on hand, building it"; fi
+            if [ -n "$run" ]; then mv "dist-data/$M/latest.json" "dist-data/$M/latest.json.before"; fi
+            build=true
           fi
           echo "build=$build" >> "$GITHUB_OUTPUT"
           echo "free=$(cd pipeline && python -c "import build; print('true' if '$M' in build.FREE_MODELS else 'false')")" >> "$GITHUB_OUTPUT"
@@ -362,6 +363,9 @@ jobs:
       - name: ${{ matrix.model }}'s published run on hand?
         id: onhand
         run: |
+          if [ -f "dist-data/$M/latest.json.before" ]; then
+            if [ ! -f "dist-data/$M/latest.json" ]; then mv "dist-data/$M/latest.json.before" "dist-data/$M/latest.json"; else rm -f "dist-data/$M/latest.json.before"; fi
+          fi
           run="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['runId'])" "dist-data/$M/latest.json" 2>/dev/null || true)"
           if [ -n "$run" ] && [ ! -d "dist-data/$M/$run" ]; then echo "fetch=true" >> "$GITHUB_OUTPUT"; echo "$M: run $run not on hand, fetching it"; fi
       - name: Fetch ${{ matrix.model }}'s published run (not built)
