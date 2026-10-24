@@ -1347,8 +1347,9 @@ def _process_hour(job, raw=None):
     try:
         if isinstance(raw, Exception):
             raise raw
+        step = src is None or bool(src.fstep(fh))
         wide = []
-        parts = load_hour(src, run, fh, holder, region, valid, raw=raw, fronts_out=wide)
+        parts = load_hour(src, run, fh, holder, region, valid, raw=raw, fronts_out=wide if step else None)
     except Exception as e:
         log(f'  f{fh:03d} skipped: {e}')
         return None
@@ -1365,7 +1366,9 @@ def _process_hour(job, raw=None):
     if _CTX.pop('pick_physics', False):
         pick_physics(q, lambda: analyse_parts(parts, part_coords(holder['parts']), region[4], valid, windows, lat2d.shape), fh, keep)
     q.update(sky.cloud_overview(q, ENC, region[4] <= sky.FINE_STEP))
-    if wide:
+    if not step:
+        fr = None
+    elif wide:
         cover = fronts_cover(holder['boxes_ll'] if 'boxes_ll' in holder else KEEP.get(src.id, ()), FRONTS_BOXES[src.id])
         rest = [i for i, c in enumerate(cover) if not c] if holder.get('windows') is not None else []
         fr = hour_fronts([(s, lv, lev) for s, lv, lev, _ in wide] + [parts[i] for i in rest], [r for *_, r in wide] + [holder['parts'][i] for i in rest], fh)
@@ -1396,6 +1399,7 @@ def hour_fronts(parts, regrids, fh=0):
         log(f'  f{fh:03d} fronts skipped: {e!r}')
         return None
 NOT_TILES = {'elevation', 'snd', 'fronts', 'frontp'}
+STEP_FRONTS_H = 2
 
 def write_fronts(rdir, hours_dir, times, day_of=None, around=None):
     folders: dict[str, dict] = {}
@@ -1417,6 +1421,11 @@ def write_fronts(rdir, hours_dir, times, day_of=None, around=None):
         log(f'  fronts over the hours skipped: {e!r}')
         steady = dict(own)
     want = set(times)
+    have = sorted(steady)
+    for t in sorted(want - set(steady)):
+        near = min(have, key=lambda u: (abs((u - t).total_seconds()), u > t), default=None)
+        if near is not None and abs((near - t).total_seconds()) <= STEP_FRONTS_H * 3600:
+            steady[t] = steady[near]
     for t, enc in steady.items():
         if t not in want:
             continue

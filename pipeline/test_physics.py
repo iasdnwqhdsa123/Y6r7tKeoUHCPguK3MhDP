@@ -833,6 +833,25 @@ class Fronts(unittest.TestCase):
             self.assertLess(np.abs(np.array(a)[[0, -1]] - np.array(b)[[0, -1]]).max(), fronts.COORD)
         self.assertLess(len(json.dumps(enc, separators=(',', ':'))), 2000)
 
+    def test_fronts_hours_between_steps_take_the_nearest_steps(self):
+        import json, tempfile
+        from unittest import mock
+        from datetime import datetime, timedelta, timezone
+        import build, fronts
+        t0 = datetime(2026, 10, 24, 12, tzinfo=timezone.utc)
+        enc = lambda x: {'f': [['c', x, 400, 10, 10, 10, 10]], 'p': []}
+        with tempfile.TemporaryDirectory() as d:
+            hours = [t0 + timedelta(hours=h) for h in range(4)]
+            for h, t in enumerate(hours):
+                extra = {'fronts': np.frombuffer(json.dumps(enc(-900 - h)).encode(), np.uint8)} if h in (0, 3) else {}
+                np.savez(os.path.join(d, f'{t:%Y%m%d%H}.npz'), x=np.zeros(1), **extra)
+            with mock.patch.object(fronts, 'day_fronts', lambda own, states: dict(own)):
+                self.assertTrue(build.write_fronts(d, d, hours, day_of=lambda t: 'day'))
+            got = json.load(open(os.path.join(d, 'day', 'fronts.json')))
+        self.assertEqual(sorted(got), [f'{t:%Y%m%d%H}' for t in hours])
+        self.assertEqual(got['2026102413'], enc(-900))
+        self.assertEqual(got['2026102414'], enc(-903))
+
     def test_fronts_drawn_once(self):
         import fronts
         lon = np.linspace(-100, -80, 41)
