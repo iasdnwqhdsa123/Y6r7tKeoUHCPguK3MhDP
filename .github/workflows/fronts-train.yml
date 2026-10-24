@@ -6,6 +6,8 @@ on:
       - pipeline/fronts_train.py
 permissions:
   contents: read
+env:
+  FRONTS_SOURCE: ecmwf
 concurrency:
   group: fronts-train
   cancel-in-progress: true
@@ -47,9 +49,9 @@ jobs:
           pattern: cases-*
           path: cases
           merge-multiple: true
-      - run: cd pipeline && python fronts_train.py train ../cases ../fronts_cnn_new.json
+      - run: cd pipeline && python fronts_train.py train ../cases ../fronts_cnn_${{ env.FRONTS_SOURCE }}.json
       - uses: actions/upload-artifact@v7
         with:
           name: weights
-          path: fronts_cnn_new.json
+          path: fronts_cnn_${{ env.FRONTS_SOURCE }}.json
           retention-days: 1

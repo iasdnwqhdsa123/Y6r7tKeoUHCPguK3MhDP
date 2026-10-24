@@ -38,6 +38,48 @@ def get(url, rng=None, tries=6):
             if k == tries - 1:
                 raise
             time.sleep(2 * (k + 1))
+SOURCE = os.environ.get('FRONTS_SOURCE', 'gfs')
+ECMWF = 'https://ecmwf-forecasts.s3.eu-central-1.amazonaws.com/{c:%Y%m%d}/{c:%H}z/ifs/0p25/oper/{c:%Y%m%d%H}0000-{fh}h-oper-fc.{ext}'
+ECMWF_WANT = {('msl', None): 'mslp', ('sp', None): 'ps', ('2t', None): 't2', ('2d', None): 'td2', ('10u', None): 'u10', ('10v', None): 'v10', ('t', '850'): 't850', ('r', '850'): 'rh850', ('u', '850'): 'u850', ('v', '850'): 'v850'}
+ECMWF_GROUND = datetime(2026, 10, 23, tzinfo=timezone.utc)
+_GROUND = {}
+
+def fields(t):
+    return ecmwf_fields(t) if SOURCE == 'ecmwf' else gfs_fields(t)
+
+def _grib(url, r):
+    import eccodes
+    h = eccodes.codes_new_from_message(get(url, r))
+    try:
+        ni, nj = (eccodes.codes_get(h, 'Ni'), eccodes.codes_get(h, 'Nj'))
+        return (eccodes.codes_get_values(h).reshape(nj, ni), eccodes.codes_get_array(h, 'distinctLatitudes'), eccodes.codes_get_array(h, 'distinctLongitudes'))
+    finally:
+        eccodes.codes_release(h)
+
+def _ecmwf_ranges(c, fh, want):
+    rows = [json.loads(ln) for ln in get(ECMWF.format(c=c, fh=fh, ext='index'), tries=10).decode().splitlines() if ln.strip()]
+    out = {}
+    for d in rows:
+        key = (d['param'], str(d['levelist']) if d.get('levtype') == 'pl' else None)
+        if key in want and want[key] not in out:
+            out[want[key]] = (d['_offset'], d['_offset'] + d['_length'] - 1)
+    return out
+
+def ecmwf_fields(t):
+    c = t.replace(hour=t.hour // 6 * 6)
+    fh = int((t - c).total_seconds() // 3600)
+    rngs = _ecmwf_ranges(c, fh, ECMWF_WANT)
+    if len(rngs) != len(ECMWF_WANT):
+        raise RuntimeError(f'{t}: missing {set(ECMWF_WANT.values()) - set(rngs)}')
+    url = ECMWF.format(c=c, fh=fh, ext='grib2')
+    out, lat, lon = ({}, None, None)
+    for name, r in rngs.items():
+        out[name], lat, lon = _grib(url, r)
+    if 'zs' not in _GROUND:
+        g = _ecmwf_ranges(ECMWF_GROUND, 0, {('z', None): 'zs'})['zs']
+        _GROUND['zs'] = _grib(ECMWF.format(c=ECMWF_GROUND, fh=0, ext='grib2'), g)[0] / physics.G
+    out['zs'] = _GROUND['zs']
+    return _crop(out, lat, lon)
 
 def gfs_fields(t):
     import eccodes
@@ -63,6 +105,9 @@ def gfs_fields(t):
         finally:
             eccodes.codes_release(h)
         out[name] = v
+    return _crop(out, lat, lon)
+
+def _crop(out, lat, lon):
     lon = np.where(lon > 180, lon - 360, lon)
     order = np.argsort(lon)
     w, s, e, n = BOX
@@ -123,7 +168,7 @@ def prep(shard, shards, out):
         if os.path.exists(p):
             return 0
         try:
-            f, lat, lon = gfs_fields(t)
+            f, lat, lon = fields(t)
         except Exception as e:
             print(f'{t}: {e}', flush=True)
             return 0
