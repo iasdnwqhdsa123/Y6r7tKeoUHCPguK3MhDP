@@ -456,9 +456,9 @@ DUP_KM = 250.0
 DUP_TURN = 35.0
 DUP_RATIO = 1.3
 DUP_MIN_KM = 200.0
-CROSS_KM = 600.0
 CROSS_TURN = 45.0
-CROSS_NEAR_KM = 75.0
+CROSS_NEAR_KM = 50.0
+LINE_SMOOTH_KM = 150.0
 HAIRPIN = 150.0
 HAIRPIN_KM = 150.0
 HIGH_M = 1500.0
@@ -656,7 +656,9 @@ def ml_lines(g, prob, nx_, ny_, prev=None, zs=None):
     if DUP_KM > 0:
         cands = _undouble(cands)
     for _, lon, lat, _pm in cands:
-        if len(lon) >= 5:
+        if LINE_SMOOTH_KM > 0:
+            lon, lat = _smooth_line(lon, lat, LINE_SMOOTH_KM)
+        elif len(lon) >= 5:
             lon = np.r_[lon[0], np.convolve(lon, np.ones(3) / 3, 'valid'), lon[-1]]
             lat = np.r_[lat[0], np.convolve(lat, np.ones(3) / 3, 'valid'), lat[-1]]
         fy, fx = g.cell(lon, lat)
@@ -706,42 +708,69 @@ def _dense(lon, lat, km=25.0):
 
 def _undouble(cands):
     kept, keptP, keptH, keptM = ([], [], [], [])
+
+    def runs(P, cut, end, min_km):
+        Q = np.r_[P, [end]]
+        out, i = ([], 0)
+        while i < len(P):
+            if cut[i]:
+                i += 1
+                continue
+            j = i
+            while j + 1 < len(P) and (not cut[j + 1]):
+                j += 1
+            q = Q[i:j + 2]
+            if len(q) >= 2 and km_between(q[:-1, 0], q[:-1, 1], q[1:, 0], q[1:, 1]).sum() >= min_km:
+                out.append((q[:, 0], q[:, 1]))
+            i = j + 1
+        return out
     for c in sorted(cands, key=lambda c: -c[0]):
         P, H = _dense(c[1], c[2])
-        dup = np.zeros(len(P), bool)
+        pieces = [(c[1], c[2])]
         if keptP and len(P):
             KP, KH, KM = (np.concatenate(keptP), np.concatenate(keptH), np.concatenate(keptM))
             d = km_between(P[:, None, 0], P[:, None, 1], KP[None, :, 0], KP[None, :, 1])
             dd = np.abs((KH[None, :] - H[:, None] + np.pi / 2) % np.pi - np.pi / 2)
             dup = ((d < DUP_KM) & (dd < math.radians(DUP_TURN)) & (c[3] < DUP_RATIO * KM[None, :])).any(1)
-        pieces = [(c[1], c[2])] if not dup.any() else []
-        if dup.any():
-            Q = np.r_[P, [[c[1][-1], c[2][-1]]]]
-            i = 0
-            while i < len(P):
-                if dup[i]:
-                    i += 1
-                    continue
-                j = i
-                while j + 1 < len(P) and (not dup[j + 1]):
-                    j += 1
-                q = Q[i:j + 2]
-                if len(q) >= 2 and km_between(q[:-1, 0], q[:-1, 1], q[1:, 0], q[1:, 1]).sum() >= DUP_MIN_KM:
-                    pieces.append((q[:, 0], q[:, 1]))
-                i = j + 1
+            if dup.any():
+                pieces = runs(P, dup, [c[1][-1], c[2][-1]], DUP_MIN_KM)
+            out = []
+            for lon, lat in pieces:
+                Pp, cross = _crossing(lon, lat, KP, KH)
+                out += [(lon, lat)] if not cross.any() else runs(Pp, cross, [lon[-1], lat[-1]], ML_MIN_KM)
+            pieces = out
         for lon, lat in pieces:
             PP, HH = _dense(lon, lat)
-            if CROSS_KM > 0 and keptP and len(PP) and (km_between(lon[:-1], lat[:-1], lon[1:], lat[1:]).sum() < CROSS_KM):
-                KP, KH = (np.concatenate(keptP), np.concatenate(keptH))
-                d = km_between(PP[:, None, 0], PP[:, None, 1], KP[None, :, 0], KP[None, :, 1])
-                dd = np.abs((KH[None, :] - HH[:, None] + np.pi / 2) % np.pi - np.pi / 2)
-                if ((d < CROSS_NEAR_KM) & (dd >= math.radians(CROSS_TURN))).any():
-                    continue
             kept.append((c[0], lon, lat, c[3]))
             keptP.append(PP)
             keptH.append(HH)
             keptM.append(np.full(len(HH), c[3]))
     return kept
+
+def _crossing(lon, lat, KP, KH):
+    P, H = _dense(lon, lat)
+    if not len(P):
+        return (P, np.zeros(0, bool))
+    d = km_between(P[:, None, 0], P[:, None, 1], KP[None, :, 0], KP[None, :, 1])
+    dd = np.abs((KH[None, :] - H[:, None] + np.pi / 2) % np.pi - np.pi / 2)
+    return (P, ((d < CROSS_NEAR_KM) & (dd >= math.radians(CROSS_TURN))).any(1))
+
+def _smooth_line(lon, lat, km, step=20.0):
+    d = np.r_[0, np.cumsum(km_between(lon[:-1], lat[:-1], lon[1:], lat[1:]))]
+    if d[-1] < 2 * step:
+        return (lon, lat)
+    t = np.linspace(0, d[-1], max(3, int(d[-1] // step) + 1))
+    x, y = (np.interp(t, d, lon), np.interp(t, d, lat))
+    sig = min(km, d[-1] / 4) / (t[1] - t[0])
+    n = int(math.ceil(3 * sig))
+
+    def pad(a):
+        m = min(n, len(a) - 1)
+        head, tail = (2 * a[0] - a[1:m + 1][::-1], 2 * a[-1] - a[-m - 1:-1][::-1])
+        return np.r_[np.full(n - m, head[0]), head, a, tail, np.full(n - m, tail[-1])]
+    xs = ndimage.gaussian_filter1d(pad(x), sig, mode='nearest')[n:n + len(x)]
+    ys = ndimage.gaussian_filter1d(pad(y), sig, mode='nearest')[n:n + len(y)]
+    return (xs, ys)
 
 def _hairpins(ll):
     if len(ll) < 4:

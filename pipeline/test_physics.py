@@ -838,9 +838,11 @@ class Fronts(unittest.TestCase):
         self.assertLess(spans[0][1], -94)
         self.assertGreater(spans[1][0], -86)
         cross = (0.4 * 900, np.full(21, -90.0), np.linspace(36, 44, 21), 0.4)
-        self.assertEqual(len(fronts._undouble([strong, cross])), 2)
+        self.assertEqual(len(fronts._undouble([strong, cross])), 3)
         stub = (0.3 * 300, np.full(9, -90.0), np.linspace(39, 42, 9), 0.3)
         self.assertEqual(len(fronts._undouble([strong, stub])), 1)
+        long_ = (0.3 * 900, np.full(31, -90.0), np.linspace(34, 46, 31), 0.3)
+        self.assertEqual(len(fronts._undouble([strong, long_])), 3)
         a = np.c_[np.linspace(-100, -95, 6), np.full(6, 40.0)]
         b = np.c_[np.linspace(-94.9, -90, 6), np.full(6, 40.0)]
         c = np.c_[np.linspace(-89.9, -85, 6), np.full(6, 40.0)]
