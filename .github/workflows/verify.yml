@@ -1,0 +1,153 @@
+name: Verify
+on:
+  push:
+    branches: [main]
+    paths:
+      - pipeline/verify.py
+  workflow_run:
+    workflows: [Forecast data]
+    types: [completed]
+  schedule:
+    - cron: "35 */2 * * *"
+permissions:
+  contents: read
+  actions: write
+concurrency:
+  group: verify
+  cancel-in-progress: false
+env:
+  DATA_PATH_SECRET: ${{ secrets.DATA_PATH_SECRET }}
+jobs:
+  gate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      go: ${{ steps.when.outputs.go }}
+      deadline: ${{ steps.when.outputs.deadline }}
+    steps:
+      - name: Between forecast runs?
+        id: when
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          now=$(date -u +%s); next=""; prev=0
+          for d in -1 0 1; do
+            for h in 02 08 14 20; do
+              t=$(date -u -d "$(date -u -d "$d day" +%F) $h:10" +%s)
+              if [ "$t" -gt "$now" ] && { [ -z "$next" ] || [ "$t" -lt "$next" ]; }; then next=$t; fi
+              if [ "$t" -le "$now" ] && [ "$t" -gt "$prev" ]; then prev=$t; fi
+            done
+          done
+          since=$(((now - prev) / 60))
+          deadline=$((next - 1200)); left=$(((deadline - now) / 60))
+          busy=0
+          for s in in_progress queued waiting pending; do
+            n=$(gh api "repos/${{ github.repository }}/actions/runs?status=$s&per_page=100" --jq '[.workflow_runs[] | select(.name | startswith("Forecast data"))] | length')
+            busy=$((busy + n))
+          done
+          echo "deadline $(date -u -d @$deadline +%H:%M)Z, $left min left, $since min since a forecast run was due, forecast runs going: $busy"
+          echo "deadline=$(date -u -d @$deadline +%Y-%m-%dT%H:%MZ)" >> "$GITHUB_OUTPUT"
+          if [ "$busy" -eq 0 ] && [ "$left" -ge 30 ] && [ "$since" -ge 20 ]; then echo "go=true" >> "$GITHUB_OUTPUT"; else echo "go=false" >> "$GITHUB_OUTPUT"; fi
+  obs:
+    needs: gate
+    if: needs.gate.outputs.go == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 340
+    env:
+      KEY: obs
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pipeline/requirements.txt
+      - run: pip install -r pipeline/requirements.txt
+      - name: Restore
+        run: bash .github/scripts/verify-state.sh restore "$KEY" state
+      - name: Reports
+        continue-on-error: true
+        run: cd pipeline && python verify.py obs --state ../state --deadline "${{ needs.gate.outputs.deadline }}"
+      - name: Pack
+        if: always()
+        run: bash .github/scripts/verify-state.sh pack "$KEY" state
+      - id: up
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: verify-${{ env.KEY }}
+          path: /tmp/verify-out
+          retention-days: 3
+          compression-level: 0
+      - if: always() && steps.up.outputs.artifact-id != ''
+        run: bash .github/scripts/verify-state.sh drop "$KEY" "${{ steps.up.outputs.artifact-id }}"
+  sample:
+    needs: gate
+    if: needs.gate.outputs.go == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 340
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { model: hrrr, key: hrrr, part: "" }
+          - { model: gfs, key: gfs, part: "" }
+          - { model: ecmwf, key: ecmwf-0, part: "0/2" }
+          - { model: ecmwf, key: ecmwf-1, part: "1/2" }
+          - { model: icon, key: icon, part: "" }
+          - { model: icond2, key: icond2, part: "" }
+    env:
+      KEY: ${{ matrix.key }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pipeline/requirements.txt
+      - run: pip install -r pipeline/requirements.txt
+      - name: Restore
+        run: bash .github/scripts/verify-state.sh restore "$KEY" state
+      - name: Rebuild and sample ${{ matrix.model }}'s runs
+        continue-on-error: true
+        run: cd pipeline && python verify.py sample --model "${{ matrix.model }}" --state ../state --deadline "${{ needs.gate.outputs.deadline }}" ${{ matrix.part && format('--part {0}', matrix.part) || '' }}
+      - name: Pack
+        if: always()
+        run: bash .github/scripts/verify-state.sh pack "$KEY" state
+      - id: up
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: verify-${{ env.KEY }}
+          path: /tmp/verify-out
+          retention-days: 3
+          compression-level: 0
+      - if: always() && steps.up.outputs.artifact-id != ''
+        run: bash .github/scripts/verify-state.sh drop "$KEY" "${{ steps.up.outputs.artifact-id }}"
+  score:
+    needs: [gate, obs, sample]
+    if: always() && needs.gate.outputs.go == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pipeline/requirements.txt
+      - run: pip install -r pipeline/requirements.txt
+      - name: Restore
+        run: |
+          for k in obs hrrr gfs ecmwf-0 ecmwf-1 icon icond2; do bash .github/scripts/verify-state.sh restore "$k" "s/$k"; done
+      - name: Score
+        run: cd pipeline && python verify.py score --samples ../s/hrrr ../s/gfs ../s/ecmwf-0 ../s/ecmwf-1 ../s/icon ../s/icond2 --obs ../s/obs --out ../scores.json
+      - uses: actions/upload-artifact@v7
+        with:
+          name: scores
+          path: scores.json
+          retention-days: 3
