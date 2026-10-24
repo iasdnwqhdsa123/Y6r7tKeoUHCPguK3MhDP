@@ -456,11 +456,12 @@ DUP_KM = 250.0
 DUP_TURN = 35.0
 DUP_RATIO = 1.3
 DUP_MIN_KM = 200.0
-CROSS_TURN = 45.0
+CROSS_TURN = 0.0
 CROSS_NEAR_KM = 50.0
 LINE_SMOOTH_KM = 150.0
 HAIRPIN = 150.0
 HAIRPIN_KM = 150.0
+HIGH_HAIRPIN = 100.0
 HIGH_M = 1500.0
 HIGH_LINE_P = 0.35
 HIGH_MIN_KM = 300.0
@@ -634,7 +635,13 @@ def ml_lines(g, prob, nx_, ny_, prev=None, zs=None):
     cands = []
     joined = join_lines(raw, km=ML_JOIN_KM)
     if HAIRPIN > 0:
-        joined = [q for ll in joined for q in _hairpins(ll)]
+
+        def high(ll):
+            if zs is None:
+                return None
+            fy, fx = g.cell(ll[:, 0], ll[:, 1])
+            return np.nan_to_num(sample(zs, fy, fx)) > HIGH_M
+        joined = [q for ll in joined for q in _hairpins(ll, high(ll))]
     for ll in joined:
         lon, lat = (ll[:, 0], ll[:, 1])
         L = km_between(lon[:-1], lat[:-1], lon[1:], lat[1:]).sum()
@@ -773,7 +780,7 @@ def _smooth_line(lon, lat, km, step=20.0):
     ys = ndimage.gaussian_filter1d(pad(y), sig, mode='nearest')[n:n + len(y)]
     return (xs, ys)
 
-def _hairpins(ll):
+def _hairpins(ll, high=None):
     if len(ll) < 4:
         return [ll]
     lon, lat = (ll[:, 0], ll[:, 1])
@@ -786,7 +793,7 @@ def _hairpins(ll):
         if j >= len(h) or k < 0 or i - last < 3:
             continue
         turn = abs((h[min(j, len(h) - 1)] - h[max(k, 0)] + np.pi) % (2 * np.pi) - np.pi)
-        if turn > np.radians(HAIRPIN):
+        if turn > np.radians(HIGH_HAIRPIN if high is not None and high[i] else HAIRPIN):
             cuts.append(i)
             last = i
     out, a = ([], 0)
