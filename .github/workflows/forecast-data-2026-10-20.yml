@@ -98,7 +98,7 @@ jobs:
     needs: check
     if: needs.check.outputs.any == 'true' && contains(format(' {0} ', needs.check.outputs.models), ' ecmwf ') && !inputs.recompute
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 90 # up to 30 waiting for the run (check.py --wait-for)
     strategy:
       fail-fast: false
       matrix:
@@ -114,7 +114,11 @@ jobs:
           cache: pip
           cache-dependency-path: pipeline/requirements.txt
       - run: pip install -r pipeline/requirements.txt
+      - name: Wait for the run
+        id: wait
+        run: cd pipeline && python3 check.py --wait-for "$M"
       - name: Hours, share ${{ matrix.shard }}
+        if: steps.wait.outputs.landed == 'true'
         run: cd pipeline && python build.py --model "$M" --out ../dist-data --shard ${{ matrix.shard }}/3 ${{ inputs.force && '--force' || '' }}
       - name: Pack them
         id: pack
@@ -271,6 +275,10 @@ jobs:
         with:
           path: /tmp/netlify-cli
           key: netlify-cli-17.38.1
+
+      - name: Wait for ${{ matrix.model }}'s run
+        if: steps.what.outputs.build == 'true' && contains(format(' {0} ', needs.check.outputs.models), format(' {0} ', matrix.model)) && matrix.model == 'ecmwf'
+        run: cd pipeline && python3 check.py --wait-for "$M"
 
       - name: Build ${{ matrix.model }}
         id: build

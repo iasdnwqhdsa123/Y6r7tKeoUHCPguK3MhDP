@@ -12,17 +12,19 @@ AIRSPACE_MAX_AGE = timedelta(days=7)
 WAIT_MAX = timedelta(minutes=30)
 WAIT_STEP = timedelta(minutes=2)
 DUE = {'hrrr': timedelta(hours=1, minutes=45), 'gfs': timedelta(hours=5), 'icon': timedelta(hours=4, minutes=45), 'icond2': timedelta(hours=1, minutes=45), 'ecmwf': timedelta(hours=9, minutes=45), 'ens': timedelta(hours=8)}
+DUE_RUN = {('ecmwf', 6): timedelta(hours=8), ('ecmwf', 18): timedelta(hours=8)}
 LATE_FOR = timedelta(hours=2)
+WAIT_IN_JOB = ('ecmwf',)
 
 def late_run(src, now=None):
     now = now or datetime.now(timezone.utc)
     run, _ = latest_complete_run(src, needed_times(src))
-    due = DUE.get(src.id)
     landing = None
-    if due is not None:
+    if src.id in DUE:
         for cand in candidate_runs(src, now):
             if run is not None and cand <= run:
                 break
+            due = DUE_RUN.get((src.id, cand.hour), DUE[src.id])
             if due <= now - cand <= due + LATE_FOR:
                 landing = cand
                 break
@@ -55,12 +57,25 @@ def map_data_due(ages: list, todo: list[str]) -> bool:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--data-url', required=True)
+    ap.add_argument('--data-url')
+    ap.add_argument('--wait-for', choices=WAIT_IN_JOB, help="in that model's job: wait for its landing run (writes landed=true|false)")
     ap.add_argument('--open-url', help='where the open data (free, airspace) is published, if not under --data-url')
     ap.add_argument('--force', action='store_true')
     ap.add_argument('--no-wait', action='store_true', help="don't wait for a run that's landing late")
     ap.add_argument('--missing-only', action='store_true', help="only build what isn't published at all")
     args = ap.parse_args()
+    out = os.environ.get('GITHUB_OUTPUT')
+    if args.wait_for:
+        src = SOURCES[args.wait_for]
+        run = newest_run(src)
+        landed = late_run(src)[1] is None
+        print(f'{src.id}: newest complete {run:%Y%m%d%H}' if run else f'{src.id}: no complete run', '' if landed else f'(waited {WAIT_MAX.seconds // 60} min, still landing)')
+        if out:
+            with open(out, 'a') as f:
+                f.write(f'landed={('true' if landed else 'false')}\n')
+        return
+    if not args.data_url:
+        ap.error('--data-url is required')
     base = args.data_url.rstrip('/')
     open_base = (args.open_url or base).rstrip('/')
     todo = []
@@ -68,10 +83,14 @@ def main():
         if mid in PAUSED:
             continue
         cur = published(f'{base}/{mid}/latest.json')
-        run = newest_run(src, wait=not args.no_wait)
+        landing = None
+        if mid in WAIT_IN_JOB and (not args.no_wait):
+            run, landing = late_run(src)
+        else:
+            run = newest_run(src, wait=not args.no_wait)
         have = cur.get('runId') if cur and cur.get('complete') else None
-        want = f'{run:%Y%m%d%H}' if run else None
-        print(f'{mid}: published {have or '-'}, newest complete {want or '-'}')
+        want = f'{landing or run:%Y%m%d%H}' if landing or run else None
+        print(f'{mid}: published {have or '-'}, newest complete {(f'{run:%Y%m%d%H}' if run else '-')}' + (f', {want} landing (its jobs wait for it)' if landing else ''))
         if want and (args.force or want != have) and (not args.missing_only or have is None):
             todo.append(mid)
     free_due = False
@@ -95,7 +114,6 @@ def main():
     airspace = args.force or (any((a is None for a in ages)) if args.missing_only else map_data_due(ages, todo))
     aviation = airspace
     print(f'map data: {('refresh' if airspace else 'keep')}')
-    out = os.environ.get('GITHUB_OUTPUT')
     if out:
         with open(out, 'a') as f:
             f.write(f'models={' '.join(todo)}\n')

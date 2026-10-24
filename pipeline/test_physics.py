@@ -553,6 +553,12 @@ class WindowedFields(unittest.TestCase):
             self.assertEqual(check.late_run(hrrr, at(11, 0))[1], None)
         with mock.patch.object(check, 'latest_complete_run', lambda *a, **k: (at(6), [])):
             self.assertEqual(check.late_run(hrrr, at(8, 10))[1], None)
+        ec = SOURCES['ecmwf']
+        day2 = lambda h, m=0: datetime(2026, 10, 1, h, m, tzinfo=timezone.utc)
+        with mock.patch.object(check, 'latest_complete_run', lambda *a, **k: (at(12), [])):
+            self.assertEqual(check.late_run(ec, day2(2, 10))[1], at(18))
+        with mock.patch.object(check, 'latest_complete_run', lambda *a, **k: (at(18), [])):
+            self.assertEqual(check.late_run(ec, day2(8, 10))[1], None)
 
     def test_map_data_rides_a_deploying_job_weekly(self):
         from datetime import timedelta as td
@@ -595,7 +601,7 @@ class WindowedFields(unittest.TestCase):
         fresh = {'updated': now.isoformat()}
 
         def outputs(pub, *flags):
-            with tempfile.NamedTemporaryFile('r', suffix='.txt') as f, mock.patch.dict(os.environ, {'GITHUB_OUTPUT': f.name}), mock.patch.object(sys, 'argv', ['check.py', '--data-url', 'https://d', *flags]), mock.patch.object(check, 'newest_run', lambda src, wait=True: run), mock.patch.object(check, 'published', lambda url: pub(url)), redirect_stdout(io.StringIO()):
+            with tempfile.NamedTemporaryFile('r', suffix='.txt') as f, mock.patch.dict(os.environ, {'GITHUB_OUTPUT': f.name}), mock.patch.object(sys, 'argv', ['check.py', '--data-url', 'https://d', *flags]), mock.patch.object(check, 'newest_run', lambda src, wait=True: run), mock.patch.object(check, 'late_run', lambda src, now=None: (run, None)), mock.patch.object(check, 'published', lambda url: pub(url)), redirect_stdout(io.StringIO()):
                 check.main()
                 return dict((line.strip().split('=', 1) for line in f if '=' in line))
 
