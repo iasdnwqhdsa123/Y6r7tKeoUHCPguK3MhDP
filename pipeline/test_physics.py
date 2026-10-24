@@ -839,6 +839,14 @@ class Fronts(unittest.TestCase):
         self.assertGreater(spans[1][0], -86)
         cross = (0.4 * 900, np.full(21, -90.0), np.linspace(36, 44, 21), 0.4)
         self.assertEqual(len(fronts._undouble([strong, cross])), 2)
+        stub = (0.3 * 300, np.full(9, -90.0), np.linspace(39, 42, 9), 0.3)
+        self.assertEqual(len(fronts._undouble([strong, stub])), 1)
+        a = np.c_[np.linspace(-100, -95, 6), np.full(6, 40.0)]
+        b = np.c_[np.linspace(-94.9, -90, 6), np.full(6, 40.0)]
+        c = np.c_[np.linspace(-89.9, -85, 6), np.full(6, 40.0)]
+        j, = fronts.join_lines([c, a, b], km=50)
+        self.assertEqual(len(j), 18)
+        self.assertAlmostEqual(abs(j[0, 0] - j[-1, 0]), 15.0, places=6)
         go = np.c_[np.linspace(-100, -90, 21), np.full(21, 40.0)]
         back = np.c_[np.linspace(-90, -100, 21), np.full(21, 41.0)]
         pin = np.r_[go, [[-89.5, 40.5]], back]

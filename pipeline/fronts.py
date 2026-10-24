@@ -226,6 +226,8 @@ def join_lines(lines, km=None, max_turn=None):
     km = JOIN_KM if km is None else km
     max_turn = JOIN_TURN if max_turn is None else max_turn
     lines = [ln for ln in lines if len(ln) >= 2]
+    if len(lines) < 2:
+        return lines
 
     def heading(ln, end):
         a, b = (ln[-min(4, len(ln))], ln[-1]) if end else (ln[min(3, len(ln) - 1)], ln[0])
@@ -234,26 +236,40 @@ def join_lines(lines, km=None, max_turn=None):
         n = math.hypot(*v)
         return v / n if n > 0 else v
     cos_max = math.cos(math.radians(max_turn))
-    while len(lines) > 1:
-        ends = np.array([p for ln in lines for p in (ln[0], ln[-1])])
-        d = km_between(ends[:, None, 0], ends[:, None, 1], ends[None, :, 0], ends[None, :, 1])
-        own = np.arange(len(ends)) // 2
-        d[own[:, None] == own[None, :]] = np.inf
-        ii, jj = np.nonzero(np.triu(d <= km))
-        joined = False
-        for k in np.argsort(d[ii, jj], kind='stable'):
-            i, j = (int(ii[k]), int(jj[k]))
-            a, ea, b, eb = (lines[i // 2], i % 2, lines[j // 2], j % 2)
-            if float(np.dot(heading(a, ea), -heading(b, eb))) < cos_max:
-                continue
-            a = a if ea else a[::-1]
-            b = b if not eb else b[::-1]
-            lines = [ln for n, ln in enumerate(lines) if n not in (i // 2, j // 2)] + [np.vstack([a, b])]
-            joined = True
-            break
-        if not joined:
-            break
-    return lines
+    ends = np.array([p for ln in lines for p in (ln[0], ln[-1])])
+    d = km_between(ends[:, None, 0], ends[:, None, 1], ends[None, :, 0], ends[None, :, 1])
+    own = np.arange(len(ends)) // 2
+    d[own[:, None] == own[None, :]] = np.inf
+    ii, jj = np.nonzero(np.triu(d <= km))
+    order = np.argsort(d[ii, jj], kind='stable')
+    pi, pj = (ii[order].tolist(), jj[order].tolist())
+    at = {}
+    for k, (i, j) in enumerate(zip(pi, pj)):
+        at.setdefault(i, []).append(k)
+        at.setdefault(j, []).append(k)
+    geom = {n: ln for n, ln in enumerate(lines)}
+    first, last = ({n: 2 * n for n in geom}, {n: 2 * n + 1 for n in geom})
+    chain = {e: e // 2 for e in range(len(ends))}
+    used, k, nxt = (set(), 0, len(lines))
+    while k < len(pi):
+        i, j = (pi[k], pj[k])
+        ci, cj = (chain[i], chain[j])
+        if i in used or j in used or ci == cj:
+            k += 1
+            continue
+        if float(np.dot(heading(geom[ci], last[ci] == i), -heading(geom[cj], last[cj] == j))) < cos_max:
+            k += 1
+            continue
+        a, oa = (geom[ci], first[ci]) if last[ci] == i else (geom[ci][::-1], last[ci])
+        b, ob = (geom[cj], last[cj]) if first[cj] == j else (geom[cj][::-1], first[cj])
+        geom[nxt], first[nxt], last[nxt] = (np.vstack([a, b]), oa, ob)
+        chain[oa] = chain[ob] = nxt
+        for c in (ci, cj):
+            del geom[c], first[c], last[c]
+        used.update((i, j))
+        nxt += 1
+        k = min([x for e in (oa, ob) for x in at.get(e, ()) if x < k] + [k + 1])
+    return list(geom.values())
 
 def centres(grid, mslp):
     if mslp is None or not np.isfinite(mslp).any():
@@ -440,6 +456,9 @@ DUP_KM = 250.0
 DUP_TURN = 35.0
 DUP_RATIO = 1.3
 DUP_MIN_KM = 200.0
+CROSS_KM = 600.0
+CROSS_TURN = 45.0
+CROSS_NEAR_KM = 75.0
 HAIRPIN = 150.0
 HAIRPIN_KM = 150.0
 HIGH_M = 1500.0
@@ -692,10 +711,9 @@ def _undouble(cands):
         dup = np.zeros(len(P), bool)
         if keptP and len(P):
             KP, KH, KM = (np.concatenate(keptP), np.concatenate(keptH), np.concatenate(keptM))
-            for n, (p, h) in enumerate(zip(P, H)):
-                d = km_between(p[0], p[1], KP[:, 0], KP[:, 1])
-                dd = np.abs((KH - h + np.pi / 2) % np.pi - np.pi / 2)
-                dup[n] = ((d < DUP_KM) & (dd < math.radians(DUP_TURN)) & (c[3] < DUP_RATIO * KM)).any()
+            d = km_between(P[:, None, 0], P[:, None, 1], KP[None, :, 0], KP[None, :, 1])
+            dd = np.abs((KH[None, :] - H[:, None] + np.pi / 2) % np.pi - np.pi / 2)
+            dup = ((d < DUP_KM) & (dd < math.radians(DUP_TURN)) & (c[3] < DUP_RATIO * KM[None, :])).any(1)
         pieces = [(c[1], c[2])] if not dup.any() else []
         if dup.any():
             Q = np.r_[P, [[c[1][-1], c[2][-1]]]]
@@ -712,8 +730,14 @@ def _undouble(cands):
                     pieces.append((q[:, 0], q[:, 1]))
                 i = j + 1
         for lon, lat in pieces:
-            kept.append((c[0], lon, lat, c[3]))
             PP, HH = _dense(lon, lat)
+            if CROSS_KM > 0 and keptP and len(PP) and (km_between(lon[:-1], lat[:-1], lon[1:], lat[1:]).sum() < CROSS_KM):
+                KP, KH = (np.concatenate(keptP), np.concatenate(keptH))
+                d = km_between(PP[:, None, 0], PP[:, None, 1], KP[None, :, 0], KP[None, :, 1])
+                dd = np.abs((KH[None, :] - HH[:, None] + np.pi / 2) % np.pi - np.pi / 2)
+                if ((d < CROSS_NEAR_KM) & (dd >= math.radians(CROSS_TURN))).any():
+                    continue
+            kept.append((c[0], lon, lat, c[3]))
             keptP.append(PP)
             keptH.append(HH)
             keptM.append(np.full(len(HH), c[3]))
