@@ -477,6 +477,7 @@ KEEP_P0 = 0.2
 KEEP_LINE_P = 0.22
 TYPE_HOLD = 1.3
 _CNN = {}
+ALAT = (20.0, 56.0)
 FEATURES = ['G8', 'T8', 'Gs', 'Ts', 'Gt', 'Tt', 'Gd', 'G8b', 'T8b', 'Gsb', 'Tsb', 'vo10', 'dv10', 'vo8', 'dv8', 'lap', 'pnn', 'shear', 'alat', 'zs', 'under', 'x10', 'x8', 'adv10', 'adv8', 'spd10', 'G8c', 'T8c', 'Gsc', 'vo10b', 'dv10b', 'dp']
 
 def _weights():
@@ -553,7 +554,7 @@ def features(lats, lons, t850, td850, u850, v850, ps, mslp, t2, td2, u10, v10, z
     G8c, T8c = _zone(g, tw8, 300)[:2]
     Gsc = _zone(g, tws, 300)[0]
     vo10b, dv10b = _kin(g, u10s, v10s, 200)[:2]
-    alat = np.repeat(np.clip(np.abs(g.lats), 20.0, 56.0)[:, None], len(g.lons), 1)
+    alat = np.repeat(np.clip(np.abs(g.lats), *ALAT)[:, None], len(g.lons), 1)
     F = [G8, T8, Gs, Ts, Gt, Tt, Gd, G8b, T8b, Gsb, Tsb, vo10, dv10, vo8, dv8, (pxx + pyy) * 10000000000.0, pnn, shear, alat, zs / 1000.0, under, x10, x8, adv10, adv8, np.hypot(u10s, v10s), G8c, T8c, Gsc, vo10b, dv10b, np.hypot(px, py) * 100000.0]
     X = np.stack([np.nan_to_num(np.asarray(a, np.float64), nan=0.0, posinf=0.0, neginf=0.0) for a in F]).astype(np.float32)
     return (X, g, (nsx, nsy))

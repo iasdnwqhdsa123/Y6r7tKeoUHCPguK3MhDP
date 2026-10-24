@@ -1,0 +1,55 @@
+name: Fronts training
+on:
+  push:
+    branches: [main]
+    paths:
+      - pipeline/fronts_train.py
+permissions:
+  contents: read
+concurrency:
+  group: fronts-train
+  cancel-in-progress: true
+jobs:
+  prep:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: pip install -r pipeline/requirements.txt
+      - run: cd pipeline && python fronts_train.py prep ${{ matrix.shard }} 4 ../cases
+      - uses: actions/upload-artifact@v7
+        with:
+          name: cases-${{ matrix.shard }}
+          path: cases
+          retention-days: 1
+          compression-level: 0
+  train:
+    needs: prep
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    env:
+      EPOCHS: "10"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: pip install -r pipeline/requirements.txt jax optax
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: cases-*
+          path: cases
+          merge-multiple: true
+      - run: cd pipeline && python fronts_train.py train ../cases ../fronts_cnn_new.json
+      - uses: actions/upload-artifact@v7
+        with:
+          name: weights
+          path: fronts_cnn_new.json
+          retention-days: 1
