@@ -310,13 +310,14 @@ jobs:
         id: what
         env:
           MODELS: ${{ needs.check.outputs.models }}
+          OUT_RUN: ${{ steps.store.outputs.out_run }}
         run: |
           build=false
           if [[ " $MODELS " == *" $M "* ]]; then build=true; fi
           run="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['runId'])" "dist-data/$M/latest.json" 2>/dev/null || true)"
           if [ -z "$run" ] || [ ! -d "dist-data/$M/$run" ]; then
             if [ "$build" != true ]; then echo "$M: published run not on hand, building it"; fi
-            if [ -n "$run" ]; then mv "dist-data/$M/latest.json" "dist-data/$M/latest.json.before"; fi
+            if [ -n "$run" ] && [ -z "$OUT_RUN" ]; then mv "dist-data/$M/latest.json" "dist-data/$M/latest.json.before"; fi
             build=true
           fi
           echo "build=$build" >> "$GITHUB_OUTPUT"
