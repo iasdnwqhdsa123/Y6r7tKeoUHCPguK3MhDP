@@ -40,11 +40,8 @@ jobs:
           done
           since=$(((now - prev) / 60))
           deadline=$((next - 1200)); left=$(((deadline - now) / 60))
-          busy=0
-          for s in in_progress queued waiting pending; do
-            n=$(gh api "repos/${{ github.repository }}/actions/runs?status=$s&per_page=100" --jq '[.workflow_runs[] | select(.name | startswith("Forecast data"))] | length')
-            busy=$((busy + n))
-          done
+          busy=$(gh api "repos/${{ github.repository }}/actions/runs?per_page=40" \
+            --jq '[.workflow_runs[] | select((.name | startswith("Forecast data")) and .status != "completed")] | length')
           echo "deadline $(date -u -d @$deadline +%H:%M)Z, $left min left, $since min since a forecast run was due, forecast runs going: $busy"
           echo "deadline=$(date -u -d @$deadline +%Y-%m-%dT%H:%MZ)" >> "$GITHUB_OUTPUT"
           if [ "$busy" -eq 0 ] && [ "$left" -ge 30 ] && [ "$since" -ge 20 ]; then echo "go=true" >> "$GITHUB_OUTPUT"; else echo "go=false" >> "$GITHUB_OUTPUT"; fi
