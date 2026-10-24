@@ -21,6 +21,7 @@ VALID_H = (0, 9, 12, 15, 18, 21)
 LEAD_MAX = {'hrrr': 48, 'icond2': 48, 'icon': 180, 'gfs': 240, 'ecmwf': 240}
 BACK_DAYS = {'hrrr': 30, 'gfs': 30, 'ecmwf': 30, 'icon': 7, 'icond2': 7}
 RUN_HOURS = (0, 12)
+FIRST_RUN = {'ecmwf': datetime(2026, 10, 20, 12, tzinfo=timezone.utc)}
 READY_H = {'hrrr': 3, 'icond2': 4, 'icon': 6, 'gfs': 6, 'ecmwf': 10}
 HOUR_S = {'hrrr': 90, 'icond2': 60, 'icon': 60, 'gfs': 45, 'ecmwf': 150}
 WORKERS = {'hrrr': 2, 'ecmwf': 3}
@@ -62,9 +63,9 @@ def runs_to_do(model, done, now):
     out = []
     t = now.replace(minute=0, second=0, microsecond=0)
     last = t - timedelta(hours=READY_H[model])
-    first = t - timedelta(days=BACK_DAYS[model])
+    first = max(t - timedelta(days=BACK_DAYS[model]), FIRST_RUN.get(model, datetime.min.replace(tzinfo=UTC)))
     r = last.replace(hour=0)
-    while r >= first:
+    while r >= first - timedelta(days=1):
         for h in sorted(RUN_HOURS, reverse=True):
             run = r.replace(hour=h)
             if first <= run <= last and f'{run:%Y%m%d%H}' not in done:
