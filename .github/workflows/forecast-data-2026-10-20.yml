@@ -27,6 +27,8 @@ concurrency:
 
 env:
   DATA_PATH_SECRET: ${{ secrets.DATA_PATH_SECRET }}
+  DATA_ALIAS: live
+  ALIAS_ONLY: "false"
 
 permissions:
   contents: read
@@ -70,7 +72,9 @@ jobs:
           done < <(jq -r '.name, .default_domain, .custom_domain, .url, .ssl_url, .account_slug, .account_name, .account_id, (.domain_aliases // [])[] | select(. != null)' <<<"$s")
           d="$(jq -r '.default_domain // empty' <<<"$s")"
           if [ -z "$d" ]; then echo "::error::the data site has no address"; exit 1; fi
-          echo "DATA_URL=https://$d" >> "$GITHUB_ENV"
+          echo "PROD_URL=https://$d" >> "$GITHUB_ENV"
+          echo "ALIAS_URL=https://$DATA_ALIAS--$d" >> "$GITHUB_ENV"
+          if [ "$ALIAS_ONLY" = true ]; then echo "DATA_URL=https://$DATA_ALIAS--$d" >> "$GITHUB_ENV"; else echo "DATA_URL=https://$d" >> "$GITHUB_ENV"; fi
           if [ -n "$DATA_PATH_SECRET" ]; then
             if ! [[ "$DATA_PATH_SECRET" =~ ^[A-Za-z0-9_-]{16,}$ ]]; then echo "DATA_PATH_SECRET must be 16+ letters, digits, - or _"; exit 1; fi
             O="o$(printf '%s:open' "$DATA_PATH_SECRET" | sha256sum | cut -c1-32)"
@@ -171,7 +175,9 @@ jobs:
           done < <(jq -r '.name, .default_domain, .custom_domain, .url, .ssl_url, .account_slug, .account_name, .account_id, (.domain_aliases // [])[] | select(. != null)' <<<"$s")
           d="$(jq -r '.default_domain // empty' <<<"$s")"
           if [ -z "$d" ]; then echo "::error::the data site has no address"; exit 1; fi
-          echo "DATA_URL=https://$d" >> "$GITHUB_ENV"
+          echo "PROD_URL=https://$d" >> "$GITHUB_ENV"
+          echo "ALIAS_URL=https://$DATA_ALIAS--$d" >> "$GITHUB_ENV"
+          if [ "$ALIAS_ONLY" = true ]; then echo "DATA_URL=https://$DATA_ALIAS--$d" >> "$GITHUB_ENV"; else echo "DATA_URL=https://$d" >> "$GITHUB_ENV"; fi
           if [ -n "$DATA_PATH_SECRET" ]; then
             if ! [[ "$DATA_PATH_SECRET" =~ ^[A-Za-z0-9_-]{16,}$ ]]; then echo "DATA_PATH_SECRET must be 16+ letters, digits, - or _"; exit 1; fi
             O="o$(printf '%s:open' "$DATA_PATH_SECRET" | sha256sum | cut -c1-32)"
@@ -543,7 +549,9 @@ jobs:
           done < <(jq -r '.name, .default_domain, .custom_domain, .url, .ssl_url, .account_slug, .account_name, .account_id, (.domain_aliases // [])[] | select(. != null)' <<<"$s")
           d="$(jq -r '.default_domain // empty' <<<"$s")"
           if [ -z "$d" ]; then echo "::error::the data site has no address"; exit 1; fi
-          echo "DATA_URL=https://$d" >> "$GITHUB_ENV"
+          echo "PROD_URL=https://$d" >> "$GITHUB_ENV"
+          echo "ALIAS_URL=https://$DATA_ALIAS--$d" >> "$GITHUB_ENV"
+          if [ "$ALIAS_ONLY" = true ]; then echo "DATA_URL=https://$DATA_ALIAS--$d" >> "$GITHUB_ENV"; else echo "DATA_URL=https://$d" >> "$GITHUB_ENV"; fi
           if [ -n "$DATA_PATH_SECRET" ]; then
             if ! [[ "$DATA_PATH_SECRET" =~ ^[A-Za-z0-9_-]{16,}$ ]]; then echo "DATA_PATH_SECRET must be 16+ letters, digits, - or _"; exit 1; fi
             O="o$(printf '%s:open' "$DATA_PATH_SECRET" | sha256sum | cut -c1-32)"
@@ -630,7 +638,37 @@ jobs:
         working-directory: site
         run: |
           CLI="$(../.github/scripts/netlify-cli.sh)"
-          "$CLI" deploy --prod --dir . --functions /tmp/no-functions --message "forecast ${{ github.run_id }}"
+          if [ "$ALIAS_ONLY" != true ]; then
+            "$CLI" deploy --prod --dir . --functions /tmp/no-functions --message "forecast ${{ github.run_id }}"
+          fi
+          "$CLI" deploy --alias "$DATA_ALIAS" --dir . --functions /tmp/no-functions --message "forecast ${{ github.run_id }} ($DATA_ALIAS)" ||
+            { [ "$ALIAS_ONLY" != true ] && echo "::warning::the $DATA_ALIAS draft failed (production deployed)"; } || exit 1
+
+      - name: Check the alias
+        if: steps.changed.outputs.yes == 'true'
+        continue-on-error: true
+        env:
+          ACTIVE: ${{ needs.check.outputs.active }}
+        run: |
+          P="${DATA_PATH_SECRET:+/$DATA_PATH_SECRET}"
+          get() { rm -f /tmp/body; curl -sS -o /tmp/body -w '%{http_code}' --max-time 30 -H "Cache-Control: no-cache" "$1" 2> /dev/null || true; }
+          run() { python3 -c "import json; d=json.load(open('/tmp/body')); print(d.get('runId') or d.get('freeUntil') or d.get('updated') or '?')" 2> /dev/null || echo '-'; }
+          bad=0
+          for f in $(jq -r '.[] | "\(.)/latest.json"' <<<"$ACTIVE") ; do
+            a="$(get "$ALIAS_URL$P/$f")"; ar="$(run)"; p="$(get "$PROD_URL$P/$f")"; pr="$(run)"
+            echo "$f: alias $a $ar, production $p $pr"
+            [ "$a" = 200 ] && { [ "$ALIAS_ONLY" = true ] || [ "$ar" = "$pr" ]; } || bad=1
+          done
+          for f in free/hrrr/latest.json free/gfs/latest.json airspace/meta.json; do
+            a="$(get "$ALIAS_URL$OPEN_DIR/$f")"; ar="$(run)"; p="$(get "$PROD_URL$OPEN_DIR/$f")"; pr="$(run)"
+            echo "$f (open): alias $a $ar, production $p $pr"
+            [ "$a" = 200 ] && { [ "$ALIAS_ONLY" = true ] || [ "$ar" = "$pr" ]; } || bad=1
+          done
+          h="$(curl -sSI --max-time 30 "$ALIAS_URL$P/hrrr/latest.json" | tr -d '\r' | grep -i '^cache-control' || true)"
+          echo "alias hrrr/latest.json headers: ${h:-none}"
+          a="$(get "$ALIAS_URL/")"; echo "alias root: $a (no public index: 404 expected)"
+          if [ "$bad" = 0 ]; then echo "the $DATA_ALIAS draft serves the same as production"
+          else echo "::warning::the $DATA_ALIAS draft differs from production (above)"; fi
 
       - name: Drop the hand-off files
         if: always()
