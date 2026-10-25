@@ -1,0 +1,34 @@
+name: Stop runs
+on:
+  push:
+    branches: [main]
+permissions:
+  actions: write
+jobs:
+  stop:
+    if: contains(github.event.head_commit.message, 'runs stopped')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Cancel the forecast runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          R="${{ github.repository }}"
+          runs() {
+            for st in in_progress queued waiting pending requested; do
+              gh api "repos/$R/actions/runs?status=$st&per_page=100" \
+                --jq '.workflow_runs[] | select(.name | startswith("Forecast data")) | "\(.id) #\(.run_number) \(.status)"' || true
+            done | sort -u
+          }
+          for pass in 1 2 3; do
+            list="$(runs)"
+            [ -n "$list" ] || { echo "no forecast runs left"; exit 0; }
+            echo "pass $pass:"; echo "$list"
+            while read -r id rest; do
+              if [ "$pass" = 1 ]; then gh api -X POST "repos/$R/actions/runs/$id/cancel" > /dev/null && echo "$rest: cancelled" || echo "$rest: cancel refused"
+              else gh api -X POST "repos/$R/actions/runs/$id/force-cancel" > /dev/null && echo "$rest: force-cancelled" || echo "$rest: force-cancel refused"; fi
+            done <<<"$list"
+            sleep 60
+          done
+          echo "left:"; runs
