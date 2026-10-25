@@ -3,7 +3,6 @@ import json
 import math
 import os
 import shutil
-import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
@@ -66,15 +65,55 @@ def wanted(rows):
             sel[p, lev, int(r['number'])] = {'offset': r['_offset'], 'end': r['_offset'] + r['_length'] - 1}
     return sel
 RANGE_TIMEOUT = 15
+RANGE_GAP = 64 * 1024
+
+def step_rows(run, fh, m):
+    text = grib.http_get(SRC.idx_url(run, fh, m), tries=3, timeout=RANGE_TIMEOUT).decode()
+    rows = [json.loads(line) for line in text.splitlines() if line.strip()]
+    return ([SRC.url(run, fh, k) for k in (m, *(k for k in range(len(SRC.MIRRORS)) if k != m))], wanted(rows))
 
 def fetch_step(run, fh):
 
     def one(m):
-        text = grib.http_get(SRC.idx_url(run, fh, m), tries=3, timeout=RANGE_TIMEOUT).decode()
-        rows = [json.loads(line) for line in text.splitlines() if line.strip()]
-        urls = [SRC.url(run, fh, k) for k in (m, *(k for k in range(len(SRC.MIRRORS)) if k != m))]
-        return grib.fetch_messages(urls, wanted(rows), workers=RANGE_WORKERS, gap=0, tries=6, timeout=RANGE_TIMEOUT)
+        urls, sel = step_rows(run, fh, m)
+        return grib.fetch_messages(urls, sel, workers=RANGE_WORKERS, gap=RANGE_GAP, tries=6, timeout=RANGE_TIMEOUT)
     return _mirrors(one)
+AHEAD = 3
+
+class Downloads:
+
+    def __init__(self, run, fhs):
+        self.run, self.fhs, self.next = (run, list(fhs), 0)
+        self.pool = ThreadPoolExecutor(RANGE_WORKERS)
+        self.index = ThreadPoolExecutor(1)
+        self.jobs = {}
+
+    def _put(self):
+        while self.next < len(self.fhs) and len(self.jobs) < AHEAD + 1:
+            fh = self.fhs[self.next]
+            self.next += 1
+            self.jobs[fh] = self.index.submit(self._submit, fh)
+
+    def _submit(self, fh):
+        urls, sel = step_rows(self.run, fh, 0)
+        return grib.submit_messages(self.pool, urls, sel, RANGE_GAP, tries=6, timeout=RANGE_TIMEOUT)
+
+    def take(self, fh):
+        self._put()
+        job = self.jobs.pop(fh)
+        self._put()
+        try:
+            out = {}
+            for f in job.result():
+                out.update(f.result())
+            return out
+        except Exception as e:
+            B.log(f'ens: +{fh} h: {e}; fetched again')
+            return fetch_step(self.run, fh)
+
+    def close(self):
+        self.index.shutdown(wait=False, cancel_futures=True)
+        self.pool.shutdown(wait=False, cancel_futures=True)
 
 def fetch_static(run):
 
@@ -276,42 +315,26 @@ def build(out, run=None, last=LAST_FH, region=REGION, keep=KEEP_ID, workers=1, f
     zs = cells.take(static['z']) / G
     land = cells.take(static['lsm'])
     B.log(f'ens: {len(cells.flat)} cells')
-    pending = {}
-    lock = threading.Lock()
-
-    def get(fh):
-        with lock:
-            th = pending.pop(fh, None)
-        if th is not None:
-            th.join()
-            return th.result
-        return fetch_step(run, fh)
-
-    def ahead(fh):
-        th = threading.Thread(target=lambda: setattr(th, 'result', fetch_step(run, fh)), daemon=True)
-        th.result = None
-        with lock:
-            pending[fh] = th
-        th.start()
+    downloads = Downloads(run, fhs)
     prev, stats, prev_fh = ({}, {}, None)
     days = Days(run, run + timedelta(hours=fhs[-1]), cells.lon)
-    for i, fh in enumerate(fhs):
-        t1 = time.time()
-        raw = get(fh)
-        if i + 1 < len(fhs):
-            ahead(fhs[i + 1])
-        if raw is None:
-            raise RuntimeError(f'ens: step {fh} failed to download')
-        f = decode_step(cells, raw)
-        del raw
-        hours = 0 if prev_fh is None else fh - prev_fh
-        window(f, prev, hours)
-        valid = run + timedelta(hours=fh)
-        st, score, storm = step_stats(f, cells, zs, land, valid, hours)
-        days.add(valid, cells.lon, score, storm)
-        stats[valid] = {k: q(k, v) for k, v in st.items()}
-        prev_fh = fh
-        B.log(f'ens: +{fh} h in {time.time() - t1:.0f} s')
+    try:
+        for fh in fhs:
+            t1 = time.time()
+            raw = downloads.take(fh)
+            waited = time.time() - t1
+            f = decode_step(cells, raw)
+            del raw
+            hours = 0 if prev_fh is None else fh - prev_fh
+            window(f, prev, hours)
+            valid = run + timedelta(hours=fh)
+            st, score, storm = step_stats(f, cells, zs, land, valid, hours)
+            days.add(valid, cells.lon, score, storm)
+            stats[valid] = {k: q(k, v) for k, v in st.items()}
+            prev_fh = fh
+            B.log(f'ens: +{fh} h in {time.time() - t1:.0f} s ({waited:.0f} s waiting for its download)')
+    finally:
+        downloads.close()
     times = sorted(stats)
     for valid in times:
         d = {k: q(k, v) for k, v in days.fields(valid, cells.lon).items()}

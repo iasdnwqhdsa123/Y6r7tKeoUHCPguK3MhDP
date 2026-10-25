@@ -130,8 +130,14 @@ def latlons(msg: bytes):
         eccodes.codes_release(gid)
 
 def fetch_messages(url, idx_rows: dict, workers: int=8, gap: int=64 * 1024, tries: int=6, timeout: float=90) -> dict:
+    result = {}
+    with ThreadPoolExecutor(workers) as ex:
+        for f in submit_messages(ex, url, idx_rows, gap, tries, timeout):
+            result.update(f.result())
+    return result
+
+def submit_messages(pool, url, idx_rows: dict, gap: int=64 * 1024, tries: int=6, timeout: float=90) -> list:
     by_offset = {r['offset']: k for k, r in idx_rows.items()}
-    groups = _merge_ranges(list(idx_rows.values()), gap)
 
     def get(group):
         a, b, rows = group
@@ -142,8 +148,4 @@ def fetch_messages(url, idx_rows: dict, workers: int=8, gap: int=64 * 1024, trie
             end = None if r['end'] is None else r['end'] - a + 1
             out[by_offset[r['offset']]] = blob[start:end]
         return out
-    result = {}
-    with ThreadPoolExecutor(workers) as ex:
-        for part in ex.map(get, groups):
-            result.update(part)
-    return result
+    return [pool.submit(get, g) for g in _merge_ranges(list(idx_rows.values()), gap)]
