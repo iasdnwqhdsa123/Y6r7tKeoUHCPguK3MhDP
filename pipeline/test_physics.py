@@ -1421,6 +1421,10 @@ class WaveExposure(unittest.TestCase):
         self.assertLess(float(north.max()), 0.002)
         self.assertTrue(1.1 < 15 * float(east.max()) < 1.7, east.max())
         self.assertLess(float(east.max()), we.SCALE)
+        strong = E[(len(we.LAMS) + j) * we.DIRS + 2][30]
+        self.assertAlmostEqual(float(strong.max()), float(east.max()), delta=0.05 * float(east.max()))
+        self.assertGreater(float(strong[245:265].max()), 0.4 * float(east.max()))
+        self.assertLess(float(east[245:265].max()), 0.1 * float(east.max()))
 
 class LeeWaveFields(unittest.TestCase):
 
