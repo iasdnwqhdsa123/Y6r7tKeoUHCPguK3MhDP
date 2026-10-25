@@ -3211,5 +3211,37 @@ class OwnSoundings(unittest.TestCase):
             self.assertEqual(int(img[1 * W + 2, 3 * W + 3]), 130)
             days, present, _ = build.write_tiles(os.path.join(d, 't'), hours, times, 27, times[0])
             self.assertNotIn('snd', present)
+
+class VerifyReports(unittest.TestCase):
+
+    def test_metar_precision_layers_and_trend(self):
+        import verify as V
+        k = {n: i for i, n in enumerate(V.OBS)}
+        us = V.parse_metar({'metar': 'KDSM 211254Z 18004KT 10SM SCT090 BKN120 12/08 A3023 RMK AO2 SLP235 T01220083', 'sknt': '4', 'drct': '180', 'vsby': '10', 'mslp': '1023.5', 'wxcodes': ''}, 290)
+        self.assertAlmostEqual(us[k['t2']], 12.2)
+        self.assertEqual(us[k['t_half']], 0.05)
+        self.assertEqual(us[k['cu']], 1.0)
+        self.assertAlmostEqual(us[k['cubase']], 9000 * V.FT)
+        self.assertEqual(us[k['auto']], 1.0)
+        eu = V.parse_metar({'metar': 'LFPG 211300Z 25016KT 9999 -SHRA SCT033CB BKN046 11/08 Q1009 TEMPO 2000 -TSRA OVC005', 'sknt': '16', 'drct': '250', 'vsby': '6.21', 'alti': '29.80', 'wxcodes': '-SHRA'}, 119)
+        self.assertEqual(eu[k['t_half']], 0.5)
+        self.assertEqual(eu[k['precip']], 1.0)
+        self.assertEqual(eu[k['storm']], 1.0)
+        self.assertAlmostEqual(eu[k['ceil']], 4600 * V.FT)
+        self.assertEqual(eu[k['vis']], 10000.0)
+        self.assertEqual((eu[k['low_lo']], eu[k['low_hi']]), V.OKTAS['BKN'])
+        calm = V.parse_metar({'metar': 'KAVP 211254Z 00000KT 10SM CLR 08/02 A3031', 'sknt': '0', 'vsby': '10'}, 290)
+        self.assertGreater(calm[k['ws_half']], 0.7)
+        self.assertEqual(calm[k['ceil']], math.inf)
+
+    def test_error_past_precision_and_qc(self):
+        import verify as V
+        np.testing.assert_allclose(V.beyond(np.array([0.3, -0.8, 2.0]), np.array([0.5, 0.5, 0.05])), [0.0, -0.3, 1.95])
+        arr = np.full((1, 24, len(V.OBS)), np.nan, np.float32)
+        t = V.OBS.index('t2')
+        arr[0, :, t] = 10.0
+        arr[0, 5, t] = 30.0
+        self.assertEqual(V.qc(arr), 1)
+        self.assertTrue(np.isnan(arr[0, 5, t]))
 from test_aviation_world import *
 from test_airspace_world import *
