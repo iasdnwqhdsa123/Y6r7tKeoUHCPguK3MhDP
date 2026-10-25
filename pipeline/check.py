@@ -8,6 +8,7 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 from airspace import VERSION as AIRSPACE_VERSION
 from aviation import VERSION as AVIATION_VERSION
+from chart_tiles import VERSION as CHART_TILES_VERSION, cycle_of
 from sources import OPEN_AHEAD_H, OPEN_SLACK_H, PAUSED, REQUIRED, SOURCES, latest_complete_run, needed_times
 AIRSPACE_MAX_AGE = timedelta(days=7)
 SLOTS = {'01:15': {'hrrr': 23}, '02:00': {'hrrr': 0, 'icond2': 0, 'ecmwf': 18}, '02:30': {'hrrr': 1}, '03:30': {'hrrr': 2}, '03:55': {'icon': 0, 'icond2': 3, 'hrrr': 3}, '05:30': {'gfs': 0, 'hrrr': 4}, '06:30': {'hrrr': 5}, '08:00': {'hrrr': 6, 'icond2': 6}, '08:30': {'hrrr': 7}, '09:40': {'ecmwf': 0, 'icon': 6, 'ens': 0, 'hrrr': 8}, '10:30': {'hrrr': 9}, '11:30': {'gfs': 6, 'icond2': 9, 'hrrr': 10}, '12:30': {'hrrr': 11}, '14:00': {'hrrr': 12, 'icond2': 12, 'ecmwf': 6}, '14:30': {'hrrr': 13}, '15:40': {'icon': 12, 'hrrr': 14}, '16:30': {'icond2': 15, 'hrrr': 15}, '17:30': {'gfs': 12, 'hrrr': 16}, '18:30': {'hrrr': 17}, '20:00': {'hrrr': 18, 'icond2': 18}, '20:30': {'hrrr': 19}, '21:40': {'icon': 18, 'ecmwf': 12, 'ens': 12, 'hrrr': 20}, '22:30': {'icond2': 21, 'hrrr': 21}, '23:20': {'gfs': 18, 'hrrr': 22}}
@@ -155,8 +156,11 @@ def main():
         print(f'{name}: updated {updated or '-'}{('' if age is not None else ' (missing or new version)')}')
         ages.append(age)
     airspace = args.force or (any((a is None for a in ages)) if args.missing_only else map_data_due(ages, todo))
-    mapdata = airspace or (outs is not None and 'mapdata' not in outs)
-    print(f'map data: {('refresh' if airspace else 'its output not on hand' if mapdata else 'keep')}')
+    cm = published(f'{open_base}/airspace/aviation/charts-low.json')
+    charts = not (cm and cm.get('cycle') == cycle_of(now) and (cm.get('version') == CHART_TILES_VERSION))
+    print(f'chart overviews: cycle {(cm or {}).get('cycle', '-')}{(f' → {cycle_of(now)}' if charts else '')}')
+    mapdata = airspace or charts or (outs is not None and 'mapdata' not in outs)
+    print(f'map data: {('refresh' if airspace else 'chart overviews' if charts else 'its output not on hand' if mapdata else 'keep')}')
     matrix = todo + [m for m in free if m not in todo]
     if out:
         with open(out, 'a') as f:

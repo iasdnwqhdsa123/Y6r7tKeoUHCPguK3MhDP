@@ -536,6 +536,11 @@ jobs:
         timeout-minutes: 20
         run: cd pipeline && python aviation.py --out ../dist-data
 
+      - name: Chart overviews
+        continue-on-error: true
+        timeout-minutes: 20
+        run: cd pipeline && python chart_tiles.py --out ../dist-data
+
       - name: Hand it on
         id: hand
         run: |

@@ -642,6 +642,8 @@ class WindowedFields(unittest.TestCase):
             def pub(url):
                 if '/free/' in url:
                     return {'freeUntil': (now + timedelta(hours=29 if stale else 31)).isoformat()} if free else None
+                if 'charts-low' in url:
+                    return {'cycle': check.cycle_of(now), 'version': check.CHART_TILES_VERSION} if maps else None
                 if 'airspace' in url:
                     return dict(fresh, version=check.AVIATION_VERSION if 'aviation' in url else check.AIRSPACE_VERSION) if maps else None
                 m = url.split('/')[-2]
