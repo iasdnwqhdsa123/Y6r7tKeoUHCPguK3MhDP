@@ -142,10 +142,17 @@ def submit_messages(pool, url, idx_rows: dict, gap: int=64 * 1024, tries: int=6,
     def get(group):
         a, b, rows = group
         blob = http_get(url, (a, b), tries, timeout)
+        if b is not None and len(blob) != b - a + 1:
+            raise OSError(f'range {a}-{b}: {len(blob)} bytes, not {b - a + 1}')
         out = {}
         for r in rows:
             start = r['offset'] - a
             end = None if r['end'] is None else r['end'] - a + 1
             out[by_offset[r['offset']]] = blob[start:end]
         return out
-    return [pool.submit(get, g) for g in _merge_ranges(list(idx_rows.values()), gap)]
+    futs = []
+    for g in _merge_ranges(list(idx_rows.values()), gap):
+        f = pool.submit(get, g)
+        f.again = lambda g=g: get(g)
+        futs.append(f)
+    return futs

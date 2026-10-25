@@ -78,7 +78,9 @@ def fetch_step(run, fh):
         urls, sel = step_rows(run, fh, m)
         return grib.fetch_messages(urls, sel, workers=RANGE_WORKERS, gap=RANGE_GAP, tries=6, timeout=RANGE_TIMEOUT)
     return _mirrors(one)
-AHEAD = 3
+AHEAD = 2
+RANGE_AGAIN = (5, 15, 30, 60, 120)
+STEP_AGAIN = (30, 120, 300)
 
 class Downloads:
 
@@ -86,6 +88,7 @@ class Downloads:
         self.run, self.fhs, self.next = (run, list(fhs), 0)
         self.pool = ThreadPoolExecutor(RANGE_WORKERS)
         self.index = ThreadPoolExecutor(1)
+        self.retry = ThreadPoolExecutor(16)
         self.jobs = {}
 
     def _put(self):
@@ -98,20 +101,53 @@ class Downloads:
         urls, sel = step_rows(self.run, fh, 0)
         return grib.submit_messages(self.pool, urls, sel, RANGE_GAP, tries=6, timeout=RANGE_TIMEOUT)
 
+    @staticmethod
+    def _again(what, waits, call):
+        err = None
+        for w in waits:
+            B.log(f'ens: {what}; again in {w} s')
+            time.sleep(w)
+            try:
+                return call()
+            except Exception as e:
+                err = e
+                what = f'{what.split(':')[0]}: {e}'
+        raise err
+
     def take(self, fh):
         self._put()
         job = self.jobs.pop(fh)
         self._put()
         try:
-            out = {}
-            for f in job.result():
-                out.update(f.result())
-            return out
+            futs = job.result()
         except Exception as e:
-            B.log(f'ens: +{fh} h: {e}; fetched again')
-            return fetch_step(self.run, fh)
+            return self._again(f'+{fh} h: {e}', STEP_AGAIN, lambda: fetch_step(self.run, fh))
+        out, failed, err = ({}, [], None)
+        for f in futs:
+            try:
+                out.update(f.result())
+            except Exception as e:
+                failed.append(f)
+                err = e
+        for w in RANGE_AGAIN:
+            if not failed:
+                return out
+            B.log(f'ens: +{fh} h: {len(failed)} of {len(futs)} requests failed ({err}); again in {w} s')
+            time.sleep(w)
+            again = [(f, self.retry.submit(f.again)) for f in failed]
+            failed = []
+            for f, g in again:
+                try:
+                    out.update(g.result())
+                except Exception as e:
+                    failed.append(f)
+                    err = e
+        if not failed:
+            return out
+        return self._again(f'+{fh} h: {err}', STEP_AGAIN, lambda: fetch_step(self.run, fh))
 
     def close(self):
+        self.retry.shutdown(wait=False, cancel_futures=True)
         self.index.shutdown(wait=False, cancel_futures=True)
         self.pool.shutdown(wait=False, cancel_futures=True)
 
