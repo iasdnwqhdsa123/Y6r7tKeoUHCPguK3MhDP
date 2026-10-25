@@ -58,7 +58,13 @@ sync)
   for i in $(seq 1 600); do # every 30 s, to the job's limit
     end=false
     if through; then end=true; fi
-    live="$(curl -fsS --max-time 20 -H "Cache-Control: no-cache" "$DATA_URL$P/_outs.json" 2> /dev/null || echo '{}')"
+    r="$(curl -sS --max-time 20 -H "Cache-Control: no-cache" -w '\n%{http_code}' "$DATA_URL$P/_outs.json" 2> /dev/null || true)"
+    code="${r##*$'\n'}" live="${r%$'\n'*}"
+    if [ "$code" = 404 ]; then live='{}'
+    elif [ "$code" != 200 ] || ! jq -e 'type == "object"' <<<"$live" > /dev/null 2>&1; then
+      if [ "$end" != true ]; then echo "the data site's _outs.json not read (HTTP ${code:-none}): again in 30 s"; sleep 30; continue; fi
+      live='{}'
+    fi
     want="$(newest $names)"
     have_all=true
     for n in $names; do
