@@ -30,6 +30,10 @@ on:
         type: string
         default: ""
 
+concurrency:
+  group: ${{ github.event_name == 'push' && (contains(github.event.head_commit.message, 'no run') || contains(github.event.head_commit.message, 'runs stopped')) && format('forecast-skip-{0}', github.run_id) || 'forecast-data' }}
+  cancel-in-progress: false
+
 env:
   DATA_PATH_SECRET: ${{ secrets.DATA_PATH_SECRET }}
   DATA_ALIAS: live
@@ -41,6 +45,7 @@ permissions:
 jobs:
 
   check:
+    if: ${{ !(github.event_name == 'push' && (contains(github.event.head_commit.message, 'no run') || contains(github.event.head_commit.message, 'runs stopped'))) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10 # (a run landing late is waited for in its model's job)
     permissions:
@@ -110,7 +115,7 @@ jobs:
           SLOT: ${{ inputs.slot || steps.late.outputs.slot }}
           OUTS: ${{ steps.outs.outputs.outs }}
           LISTED: ${{ steps.outs.outputs.listed }}
-        run: cd pipeline && python3 check.py --data-url "$DATA_URL${DATA_PATH_SECRET:+/$DATA_PATH_SECRET}" --open-url "$DATA_URL$OPEN_DIR" --slot "$SLOT" ${LISTED:+--outs "$OUTS"} ${{ inputs.force && '--force' || '' }} ${{ github.event_name == 'push' && '--missing-only' || '' }}
+        run: cd pipeline && python3 check.py --data-url "$DATA_URL${DATA_PATH_SECRET:+/$DATA_PATH_SECRET}" --open-url "$DATA_URL$OPEN_DIR" --slot "$SLOT" ${LISTED:+--outs "$OUTS"} ${{ inputs.force && '--force' || '' }} ${{ github.event_name == 'push' && (contains(github.event.head_commit.message, 'all models') && '--all-models' || '--missing-only') || '' }}
 
       - name: Keep the schedule on
         if: always()

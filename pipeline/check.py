@@ -98,6 +98,7 @@ def main():
     ap.add_argument('--run', help='with --wait-for: YYYYMMDDHH')
     ap.add_argument('--until', help='with --wait-for: ISO time')
     ap.add_argument('--missing-only', action='store_true', help="only build what isn't published (or on hand) at all")
+    ap.add_argument('--all-models', action='store_true', help='build every model with a newer run (or no output on hand)')
     args = ap.parse_args()
     out = os.environ.get('GITHUB_OUTPUT')
     if args.wait_for:
@@ -127,6 +128,8 @@ def main():
         missing = outs is not None and mid not in outs
         if args.missing_only:
             build, wait = (have is None or missing, None)
+        elif args.all_models:
+            build, wait = (have is None or missing or args.force or (newest is not None and f'{newest:%Y%m%d%H}' > have), None)
         else:
             build, wait = plan(mid, now, slot, newest, have, missing, args.force)
         print(f'{mid}: published {have or '-'}, newest complete {(f'{newest:%Y%m%d%H}' if newest else '-')}' + (', its output not on hand' if missing else '') + (f' → waits for {wait[0]:%Y%m%d%H} until {wait[1]:%H:%M}' if wait else ' → build' if build else ''))

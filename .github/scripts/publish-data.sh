@@ -24,6 +24,26 @@ take() { # name id run
   rm -rf "$t" dist-data/.changed*
   echo "$2" > "/tmp/outs/$n"
 }
+fallback() { # name; true if its run from before is in dist-data
+  local n="$1" run a f t=/tmp/out-old
+  run="$(gh api "repos/$R/actions/artifacts?name=store-run-$n&per_page=20" \
+    --jq '[.artifacts[] | select(.expired | not)] | sort_by(.created_at) | last | .workflow_run.id // empty' 2> /dev/null || true)"
+  [ -n "$run" ] || return 1
+  for a in "store-$n" "store-run-$n"; do
+    rm -rf "$t"
+    .github/scripts/fetch-artifact.sh "$a" "$run" "$t" || { [ "$a" = "store-$n" ] && continue; return 1; }
+    for f in "$t"/*.tar*; do
+      [ -e "$f" ] || continue
+      case "$f" in
+        *.enc) openssl enc -d -aes-256-ctr -pbkdf2 -pass env:DATA_PATH_SECRET -in "$f" | tar -C dist-data -xf - ;;
+        *) tar -C dist-data -xf "$f" ;;
+      esac
+    done
+  done
+  rm -rf "$t" dist-data/.changed*
+  [ -f "dist-data/$n/latest.json" ] || return 1
+  echo "$n: no output yet, its run from before ($(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['runId'])" "dist-data/$n/latest.json" 2> /dev/null)) kept"
+}
 through() {
   local left
   left="$(gh api --paginate "repos/$R/actions/runs/$RUN/attempts/$ATTEMPT/jobs?per_page=100" \
@@ -43,8 +63,11 @@ sync)
     have_all=true
     for n in $names; do
       if ! grep -q "^$n " <<<"$want"; then
-        if [ "$end" = true ] && [ "$n" != mapdata ] && ! jq -e --arg n "$n" 'index($n) != null' <<<"$REQUIRED" > /dev/null; then
-          echo "::warning::$n has no output on hand: deploying without it"
+        if [ "$n" != mapdata ] && ! jq -e --arg n "$n" 'index($n) != null' <<<"$REQUIRED" > /dev/null; then
+          if [ ! -f "/tmp/old-$n" ]; then
+            touch "/tmp/old-$n"
+            fallback "$n" || echo "::warning::$n has no output on hand and no run from before: deploying without it"
+          fi
         else have_all=false; fi
       fi
     done
