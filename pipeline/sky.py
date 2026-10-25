@@ -41,15 +41,25 @@ FINE_STEP = 0.09
 CLASS_MEAN = 5
 SMOOTHED = ('wstar', 'cudepth', 'cloud', 'cloudlow', 'cloudmid', 'cloudhigh', 'sun')
 
+def window_sum(a, k):
+    r = k // 2
+    p = np.pad(a, r)
+    ny, nx = a.shape
+    return sum((p[dy:dy + ny, dx:dx + nx] for dy in range(k) for dx in range(k)))
+
 def area_mean(a, k=CLASS_MEAN):
     ok = np.isfinite(a)
-    r = k // 2
-    p, c = (np.pad(np.where(ok, a, 0.0), r), np.pad(ok.astype(np.float64), r))
-    ny, nx = a.shape
-    s = sum((p[dy:dy + ny, dx:dx + nx] for dy in range(k) for dx in range(k)))
-    n = sum((c[dy:dy + ny, dx:dx + nx] for dy in range(k) for dx in range(k)))
+    s, n = (window_sum(np.where(ok, a, 0.0), k), window_sum(ok.astype(np.float64), k))
     with np.errstate(invalid='ignore', divide='ignore'):
         return np.where(ok, s / n, np.nan)
+CU_SHARE = 0.25
+
+def cu_area_depth(d, k=CLASS_MEAN):
+    ok = np.isfinite(d)
+    cu = ok & (d > 0)
+    n, n_cu, s_cu = (window_sum(x, k) for x in (ok.astype(np.float64), cu.astype(np.float64), np.where(cu, d, 0.0)))
+    with np.errstate(invalid='ignore', divide='ignore'):
+        return np.where(ok, np.where(n_cu >= CU_SHARE * n, s_cu / n_cu, 0.0), np.nan)
 
 def js_round(x):
     return np.floor(x + 0.5)
@@ -192,7 +202,7 @@ def cloud_overview(q, enc, fine, smooth=True):
             v[n] = area_median(v[n])
     cls, score, wet, over, cover, wkm = classify(v)
     if fine and smooth:
-        cls, score, wet, _, _, _ = classify({**v, **{n: area_mean(v[n]) for n in SMOOTHED}})
+        cls, score, wet, _, _, _ = classify({**v, **{n: cu_area_depth(v[n]) if n == 'cudepth' else area_mean(v[n]) for n in SMOOTHED}})
     cuclass, cusky = encode(cls, score, wet, over)
     out = {'cuclass': cuclass, 'cusky': cusky, 'cucover': _codes(cover, *enc['cucover'][:2]), 'cuwide': _codes(wkm, *enc['cuwide'][:2])}
     if 'cueff' in enc:

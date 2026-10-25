@@ -355,6 +355,7 @@ def thermal_width(zi, blapse, tilt, blue=False):
     return np.where(zi > 200, d0 * stab * shear * np.where(blue, BLUE_WIDTH, 1.0), np.nan)
 STORM_DBZ = 50.0
 GLACIATE_T = -20.0
+WET_CAPE = (100.0, 300.0)
 
 def storm_says(s, rain, refc):
     if s.get('cprate') is not None:
@@ -548,8 +549,8 @@ def analyse(s, lv, levels, grid_step, lat2d, lon2d=None, valid=None):
     rain = np.nan_to_num(s.get('prate', np.zeros_like(zs)), nan=0)
     refc = s.get('refc')
     refc = None if refc is None else np.nan_to_num(refc, nan=0)
-    wet_unstable = (rain > 0.5) & (cape > 300)
     says = storm_says(s, rain, refc)
+    wet_unstable = (rain > 0.5) & (cape > np.where(says, WET_CAPE[0], WET_CAPE[1]))
     convecting = wet_unstable & says
     if refc is not None:
         convecting |= refc >= STORM_DBZ - 10

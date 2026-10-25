@@ -722,7 +722,18 @@ class CloudOverviewSmoothed(unittest.TestCase):
         own = sky.cloud_overview(q, enc, True, smooth=False)
         smooth = sky.cloud_overview(q, enc, True)
         self.assertEqual(round(cls(own)[4, 4]), 3)
-        self.assertLess(round(cls(smooth)[4, 4]), 3)
+        self.assertEqual(round(cls(smooth)[4, 4]), 1)
+        self.assertEqual(round(cls(smooth)[4, 6]), 1)
+
+    def test_cumulus_where_enough_cells_have_it(self):
+        import sky
+        d = np.zeros((5, 5))
+        d[0, :] = 1000.0
+        self.assertEqual(sky.cu_area_depth(d)[2, 2], 0.0)
+        d[1, :] = 600.0
+        self.assertAlmostEqual(sky.cu_area_depth(d)[2, 2], 800.0)
+        d[2, 2] = np.nan
+        self.assertTrue(np.isnan(sky.cu_area_depth(d)[2, 2]))
 if __name__ == '__main__':
     unittest.main()
 
@@ -3249,5 +3260,38 @@ class VerifyReports(unittest.TestCase):
         arr[0, 5, t] = 30.0
         self.assertEqual(V.qc(arr), 1)
         self.assertTrue(np.isnan(arr[0, 5, t]))
+
+    def test_score_pressure_low_stations_and_bias_by_sun(self):
+        import argparse
+        import json
+        import tempfile
+        from datetime import datetime, timedelta, timezone
+        from unittest import mock
+        import verify as V
+        st = [[f'K{i}', 40.0, -100.0 + i, 100.0 if i < 3 else 1600.0] for i in range(6)]
+        fields = ('t2', 'mslp', 'elevation')
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(V, 'load_stations', lambda: st):
+            (os.makedirs(os.path.join(d, 's')), os.makedirs(os.path.join(d, 'o')))
+            stamps = [f'{datetime(2026, 10, 20, tzinfo=timezone.utc) + timedelta(hours=h):%Y%m%d%H}' for h in range(1, 49)]
+            codes = np.zeros((48, 6, 3), np.uint8)
+            codes[:, :, 2] = [int(s[3] / 10) for s in st]
+            enc = {'t2': [10, 11, None], 'mslp': [1015, 1016, None], 'elevation': [0, 2540, None]}
+            np.savez(os.path.join(d, 's', 'r.npz'), stamps=np.array(stamps), idx=np.arange(6), codes=codes, fields=np.array(fields), enc=json.dumps(enc), model='m', run='2026102000')
+            for day in ('20261020', '20261021', '20261022'):
+                o = np.full((6, 24, len(V.OBS)), np.nan, np.float32)
+                o[:, :, V.OBS.index('t2')], o[:, :, V.OBS.index('t_half')] = (9.0, 0.05)
+                o[:, :, V.OBS.index('mslp')] = np.array([1013.0] * 3 + [1005.0] * 3)[:, None]
+                o[:, :, V.OBS.index('p_half')] = 0.05
+                np.savez(os.path.join(d, 'o', f'{day}.npz'), obs=o, fields=np.array(V.OBS))
+            out = os.path.join(d, 'scores.json')
+            V.cmd_score(argparse.Namespace(samples=[os.path.join(d, 's')], obs=os.path.join(d, 'o'), out=out))
+            with open(out) as f:
+                sc = json.load(f)
+        p = [r['mslp'] for r in sc['scores'] if 'mslp' in r]
+        self.assertTrue(p and all((abs(x['bias'] - 2.0) < 0.01 for x in p)), p)
+        sun = {(s['part'], s['measure']): s['models']['m'] for s in sc['by_sun']}
+        self.assertAlmostEqual(sun['night', 't2']['bias'], 1.0, places=2)
+        self.assertAlmostEqual(sun['afternoon', 't2']['bias'], 1.0, places=2)
+        self.assertEqual(sun['night', 't2']['n'], 6 * 12)
 from test_aviation_world import *
 from test_airspace_world import *

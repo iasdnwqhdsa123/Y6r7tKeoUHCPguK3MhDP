@@ -26,7 +26,8 @@ FIRST_RUN = {'ecmwf': datetime(2026, 10, 20, 12, tzinfo=timezone.utc)}
 READY_H = {'hrrr': 3, 'icond2': 4, 'icon': 6, 'gfs': 6, 'ecmwf': 10}
 HOUR_S = {'hrrr': 90, 'icond2': 60, 'icon': 60, 'gfs': 45, 'ecmwf': 150}
 WORKERS = {'hrrr': 2, 'ecmwf': 3}
-FIELDS = ('t2', 'td2', 'u_sfc', 'v_sfc', 'gust', 'cloud', 'cloudlow', 'ceil', 'vis', 'rain', 'cape', 'wstar', 'zi', 'depth', 'cubase', 'cudepth', 'cuclass', 'cucover', 'elevation', 'mslp', 'overdev', 'cloudmid', 'cloudhigh', 'cueff', 'refc')
+FIELDS = ('t2', 'td2', 'u_sfc', 'v_sfc', 'gust', 'cloud', 'cloudlow', 'ceil', 'vis', 'rain', 'cape', 'wstar', 'zi', 'depth', 'cubase', 'cudepth', 'cuclass', 'cucover', 'elevation', 'mslp', 'overdev', 'cloudmid', 'cloudhigh', 'cueff', 'refc', 'overdev_nb')
+NEAR_KM = 10.0
 
 def log(*a):
     print(*a, flush=True)
@@ -102,7 +103,10 @@ def station_cells(model, stations):
     return (np.array(idx, np.int32), np.array(iy), np.array(ix))
 
 def sample_hours(model, hours_dir, stations):
+    import build
+    from scipy.ndimage import maximum_filter
     idx, iy, ix = station_cells(model, stations)
+    r = int(round(NEAR_KM / (build.REGIONS[model][4] * 111.0)))
     stamps = sorted((f[:-4] for f in os.listdir(hours_dir) if f.endswith('.npz') and (not f.endswith('.tmp.npz'))))
     if not stamps:
         return None
@@ -112,6 +116,10 @@ def sample_hours(model, hours_dir, stations):
             for j, name in enumerate(FIELDS):
                 if name in h.files:
                     codes[k, :, j] = h[name][iy, ix]
+            if 'overdev' in h.files:
+                od = h['overdev']
+                near = maximum_filter(np.where(od == 255, 0, od), size=2 * r + 1) if r else od
+                codes[k, :, FIELDS.index('overdev_nb')] = np.where(od[iy, ix] == 255, 255, near[iy, ix])
     has = (codes[:, :, FIELDS.index('t2')] != 255).any(axis=0)
     return (stamps, idx[has], codes[:, has, :])
 
@@ -136,6 +144,7 @@ def cmd_sample(a):
         todo = [r for r in todo if int(r.timestamp() // 43200) % n == i]
     log(f'{model}: {len(todo)} runs to do, {len(done)} done; until {deadline:%H:%M}Z')
     enc = {k: list(build.ENC[k]) for k in FIELDS if k in build.ENC}
+    enc['overdev_nb'] = enc['overdev']
     scratch = os.path.join(a.scratch, model)
     for run in todo:
         rid = f'{run:%Y%m%d%H}'
@@ -345,10 +354,13 @@ LEADS = ((1, 12), (13, 24), (25, 48), (49, 72), (73, 120), (121, 240))
 DAY_H = {'us': (15, 18, 21), 'europe': (9, 12, 15)}
 REGIONS = ('us', 'europe', 'elsewhere')
 MAX_DZ = 300
+LOW_P_M = 300
+SUN_PARTS = {'afternoon': (12, 18), 'night': (0, 6)}
+SUN_MEASURES = ('t2', 'td2', 'wind')
 MIN_N = {'cont': 50, 'cat': 100}
 STATION_OFF = 5.0
-CONT = {'t2': ('2 m temperature', '°C'), 'td2': ('2 m dewpoint', '°C'), 'wind': ('10 m wind speed', 'm/s'), 'wdir': ('Wind direction, winds of 5 kt and more', '°'), 'mslp': ('Sea-level pressure', 'hPa'), 'cubase': ('Cloudbase where both have cumulus (daytime)', 'm'), 'lowcloud': ('Low cloud cover (under 6,500 ft)', '%')}
-CAT = {'cumulus': 'Cumulus or not (daytime)', 'ceil3000': 'Ceiling under 3,000 ft', 'ceil1000': 'Ceiling under 1,000 ft', 'vis5k': 'Visibility under 5 km', 'fog': 'Fog (under 1 km)', 'mvfr': 'Flight rules MVFR or worse', 'ifr': 'Flight rules IFR or worse', 'precip': 'Precipitation falling', 'storm': 'Thunderstorm or Cb', 'gust20': 'Gusts of 20 kt or more'}
+CONT = {'t2': ('2 m temperature', '°C'), 'td2': ('2 m dewpoint', '°C'), 'wind': ('10 m wind speed', 'm/s'), 'wdir': ('Wind direction, winds of 5 kt and more', '°'), 'mslp': ('Sea-level pressure, stations under 300 m', 'hPa'), 'cubase': ('Cloudbase where both have cumulus (daytime)', 'm'), 'lowcloud': ('Low cloud cover (under 6,500 ft)', '%')}
+CAT = {'cumulus': 'Cumulus or not (daytime)', 'ceil3000': 'Ceiling under 3,000 ft', 'ceil1000': 'Ceiling under 1,000 ft', 'vis5k': 'Visibility under 5 km', 'fog': 'Fog (under 1 km)', 'mvfr': 'Flight rules MVFR or worse', 'ifr': 'Flight rules IFR or worse', 'precip': 'Precipitation falling', 'storm': 'Thunderstorm or Cb (forecast within 10 km)', 'gust20': 'Gusts of 20 kt or more'}
 
 def region_of(lat, lon):
     if 24 < lat < 50 and -125 < lon < -66:
@@ -404,7 +416,7 @@ def measures(fc, o, elev, day):
         wd = (np.degrees(np.arctan2(-fc['u_sfc'], -fc['v_sfc'])) + 360) % 360
         put('wdir', (wd - o['wd'] + 180) % 360 - 180, 5.0, (o['ws'] >= 5 * KT) & (ws >= 1))
     if 'mslp' in fc:
-        put('mslp', fc['mslp'] - o['mslp'], o['p_half'])
+        put('mslp', fc['mslp'] - o['mslp'], o['p_half'], np.asarray(elev) < LOW_P_M)
     cls = fc.get('cuclass')
     lo_m, hi_m = (CU_BASE_FT[0] * FT, CU_BASE_FT[1] * FT)
     if cls is not None and 'cubase' in fc:
@@ -435,7 +447,7 @@ def measures(fc, o, elev, day):
     if 'rain' in fc:
         cat['precip'] = (fc['rain'] >= 0.1, o['precip'] == 1, ~np.isnan(fc['rain']) & np.isfinite(o['precip']))
     if cls is not None:
-        f_st = (cls == 5) | (fc['overdev'] >= 50 if 'overdev' in fc else False)
+        f_st = fc['overdev_nb'] >= 50 if 'overdev_nb' in fc else (cls == 5) | (fc['overdev'] >= 50 if 'overdev' in fc else False)
         cat['storm'] = (f_st, o['storm'] == 1, (cls >= 0) & np.isfinite(o['storm']))
     if 'gust' in fc:
         peak = np.fmax(o['gust'], o['ws'])
@@ -483,7 +495,7 @@ def gather(samples_dirs, obs_dir, stations):
         day = np.array([v.hour in DAY_H.get(REGIONS[x], ()) for x in r])
         cont, cat = measures(fc, o, elev[idx], day)
         vh = int(v.timestamp() // 3600)
-        t = {'key': idx.astype(np.int64) * 10 ** 12 + vh * 1000 + lead, 'st': idx.astype(np.int32), 'reg': r, 'lead': np.full(len(idx), bins[lead_of(lead)], np.int8)}
+        t = {'key': idx.astype(np.int64) * 10 ** 12 + vh * 1000 + lead, 'st': idx.astype(np.int32), 'reg': r, 'lead': np.full(len(idx), bins[lead_of(lead)], np.int8), 'h': np.full(len(idx), lead, np.int16), 'sol': ((v.hour + lon[idx] / 15) % 24).astype(np.float32)}
         for n in CONT:
             e, b = cont.get(n, (None, None))
             t[n] = np.full(len(idx), np.nan, np.float32) if e is None else e.astype(np.float32)
@@ -559,7 +571,18 @@ def cmd_score(a):
                     s = s & np.isin(t['key'], common)
                     by[m] = cont_score(t[n][s], t[n + '_b'][s]) if n in CONT else cat_score(t[n][s])
                 side.append({'measure': n, 'region': r, 'lead': lead, 'n': int(len(common)), 'models': by})
-    out = {'generated': f'{datetime.now(UTC):%Y-%m-%dT%H:%MZ}', 'pairs': n_rows, 'stations_left_out': sorted((stations[s][0] for s in bad)), 'scores': rows, 'side_by_side': side}
+    by_sun = []
+    for ri, r in enumerate(REGIONS):
+        for part, (a0, a1) in SUN_PARTS.items():
+            for n in SUN_MEASURES:
+                by = {}
+                for m, t in tables.items():
+                    s = (t['reg'] == ri) & (t['h'] <= 48) & np.isfinite(t[n]) & ((t['sol'] - a0) % 24 < (a1 - a0) % 24)
+                    if s.sum() >= MIN_N['cont']:
+                        by[m] = {'n': int(s.sum()), 'bias': round(float(t[n][s].mean()), 2)}
+                if by:
+                    by_sun.append({'measure': n, 'region': r, 'part': part, 'models': by})
+    out = {'generated': f'{datetime.now(UTC):%Y-%m-%dT%H:%MZ}', 'pairs': n_rows, 'stations_left_out': sorted((stations[s][0] for s in bad)), 'scores': rows, 'side_by_side': side, 'by_sun': by_sun}
     with open(a.out, 'w') as f:
         json.dump(out, f, indent=1)
     log(f'{n_rows} forecasts paired with reports; {len(bad)} stations left out (every model off by {STATION_OFF:.0f} °C or more the same way: {', '.join(sorted((stations[s][0] for s in bad))[:20])})')
@@ -579,6 +602,10 @@ def cmd_score(a):
             for s in lines:
                 ev = max((v['events'] for v in s['models'].values()))
                 log(f'  {s['region']:10} {s['lead']:9} n={s['n']:7} events {ev:6}  ' + '  '.join((f'{m} {(v['heidke'] if v['heidke'] is not None else '-')} ({v['pod']:.2f}/{v['far']:.2f})' for m, v in s['models'].items())))
+    log("\nBias by the sun's time, leads 1-48 h (each model's own pairs):")
+    for s in by_sun:
+        title, units = CONT[s['measure']]
+        log(f'  {s['region']:10} {s['part']:9} {title.split(',')[0]:16} ' + '  '.join((f'{m} {v['bias']:+.2f} {units}' for m, v in s['models'].items())))
     return 0
 
 def main():
