@@ -31,7 +31,7 @@ on:
         default: ""
 
 concurrency:
-  group: ${{ github.event_name == 'push' && (contains(github.event.head_commit.message, 'no run') || contains(github.event.head_commit.message, 'runs stopped')) && format('forecast-skip-{0}', github.run_id) || 'forecast-data' }}
+  group: ${{ github.event_name == 'push' && (contains(github.event.head_commit.message, 'no run') || contains(github.event.head_commit.message, 'runs stopped')) && format('forecast-skip-{0}', github.run_id) || ((contains(fromJSON('["02:00","09:40","14:00","21:40"]'), inputs.slot) || github.event.schedule == '0 2,8,14,20 * * *' || github.event.schedule == '40 9,15,21 * * *') && 'forecast-data-long' || 'forecast-data') }}
   cancel-in-progress: false
 
 env:

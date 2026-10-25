@@ -44,6 +44,13 @@ fallback() { # name; true if its run from before is in dist-data
   [ -f "dist-data/$n/latest.json" ] || return 1
   echo "$n: no output yet, its run from before ($(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['runId'])" "dist-data/$n/latest.json" 2> /dev/null)) kept"
 }
+deploying() {
+  local since busy
+  since="$(date -u -d '20 minutes ago' +%Y-%m-%dT%H:%M:%S)"
+  busy="$(curl -fsS --max-time 20 -H "Authorization: Bearer $NETLIFY_AUTH_TOKEN" "https://api.netlify.com/api/v1/sites/$NETLIFY_SITE_ID/deploys?per_page=10" 2> /dev/null |
+    jq -r --arg since "$since" '[.[] | select((.state | IN("ready", "error", "rejected")) | not) | select(.created_at >= $since)] | length' 2> /dev/null)" || return 1
+  [ "${busy:-0}" -gt 0 ] 2> /dev/null
+}
 through() {
   local left
   left="$(gh api --paginate "repos/$R/actions/runs/$RUN/attempts/$ATTEMPT/jobs?per_page=100" \
@@ -82,6 +89,11 @@ sync)
       [ -n "$n" ] || continue
       [ "$(jq -r --arg n "$n" '.[$n] // ""' <<<"$live" 2> /dev/null)" = "$id" ] || new="$new $n"
     done <<<"$want"
+    if [ "$have_all" = true ] && [ -n "$new" ] && deploying; then
+      echo "another deploy going out: waiting for it"
+      sleep 20
+      continue
+    fi
     if [ "$have_all" = true ] && [ -n "$new" ]; then
       echo "::group::deploy:$new (newer than the data site's)"
       ok=true
@@ -92,6 +104,12 @@ sync)
       done <<<"$want"
       if [ "$ok" = true ]; then
         jq -Rn '[inputs | split(" ") | {(.[0]): (.[1] | tonumber)}] | add' <<<"$want" > dist-data/_outs.json
+        if [ "$(newest $names)" != "$want" ] || deploying; then
+          echo "newer outputs or another deploy meanwhile: read again"
+          echo "::endgroup::"
+          sleep 10
+          continue
+        fi
         { "$0" assemble && "$0" deploy "$(xargs <<<"$new")"; } || { echo "::warning::the deploy failed"; ok=false; }
       fi
       echo "::endgroup::"
