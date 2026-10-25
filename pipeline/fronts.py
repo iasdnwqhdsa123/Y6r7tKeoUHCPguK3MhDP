@@ -642,6 +642,7 @@ def ml_lines(g, prob, nx_, ny_, prev=None, zs=None):
             fy, fx = g.cell(ll[:, 0], ll[:, 1])
             return np.nan_to_num(sample(zs, fy, fx)) > HIGH_M
         joined = [q for ll in joined for q in _hairpins(ll, high(ll))]
+    joined = [np.c_[_unloop(ll[:, 0], ll[:, 1])] for ll in joined]
     for ll in joined:
         lon, lat = (ll[:, 0], ll[:, 1])
         L = km_between(lon[:-1], lat[:-1], lon[1:], lat[1:]).sum()
@@ -665,7 +666,7 @@ def ml_lines(g, prob, nx_, ny_, prev=None, zs=None):
         cands = _undouble(cands)
     for _, lon, lat, _pm in cands:
         if LINE_SMOOTH_KM > 0:
-            lon, lat = _smooth_line(lon, lat, LINE_SMOOTH_KM)
+            lon, lat = _unloop(*_smooth_line(lon, lat, LINE_SMOOTH_KM))
         elif len(lon) >= 5:
             lon = np.r_[lon[0], np.convolve(lon, np.ones(3) / 3, 'valid'), lon[-1]]
             lat = np.r_[lat[0], np.convolve(lat, np.ones(3) / 3, 'valid'), lat[-1]]
@@ -779,6 +780,25 @@ def _smooth_line(lon, lat, km, step=20.0):
     xs = ndimage.gaussian_filter1d(pad(x), sig, mode='nearest')[n:n + len(x)]
     ys = ndimage.gaussian_filter1d(pad(y), sig, mode='nearest')[n:n + len(y)]
     return (xs, ys)
+
+def _unloop(lon, lat):
+    while len(lon) >= 4:
+        x, y = (lon * np.cos(np.radians(lat)), lat)
+        ax, ay, dx, dy = (x[:-1], y[:-1], np.diff(x), np.diff(y))
+        den = dx[:, None] * dy[None, :] - dy[:, None] * dx[None, :]
+        ex, ey = (ax[None, :] - ax[:, None], ay[None, :] - ay[:, None])
+        with np.errstate(invalid='ignore', divide='ignore'):
+            t = (ex * dy[None, :] - ey * dx[None, :]) / den
+            u = (ex * dy[:, None] - ey * dx[:, None]) / den
+        hit = (den != 0) & (t >= 0) & (t <= 1) & (u >= 0) & (u <= 1)
+        hit &= np.triu(np.ones_like(hit), 2)
+        if not hit.any():
+            break
+        i, j = np.argwhere(hit)[0]
+        f = t[i, j]
+        lon = np.r_[lon[:i + 1], lon[i] + f * (lon[i + 1] - lon[i]), lon[j + 1:]]
+        lat = np.r_[lat[:i + 1], lat[i] + f * (lat[i + 1] - lat[i]), lat[j + 1:]]
+    return (lon, lat)
 
 def _hairpins(ll, high=None):
     if len(ll) < 4:

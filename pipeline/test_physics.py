@@ -930,6 +930,13 @@ class Fronts(unittest.TestCase):
         fold = np.r_[a, b]
         self.assertEqual(len(fronts._hairpins(fold)), 1)
         self.assertGreater(len(fronts._hairpins(fold, np.ones(len(fold), bool))), 1)
+        th = np.linspace(-np.pi / 2, 3 * np.pi / 2, 60)
+        loop = np.c_[-80 + 0.8 * np.cos(th), 39.7 + 0.8 * np.sin(th)]
+        line = np.r_[np.c_[np.linspace(-86, -80.2, 30), np.full(30, 38.9)], loop[1:-1], np.c_[np.linspace(-79.8, -74, 30), np.full(30, 38.9)]]
+        lon, lat = fronts._unloop(line[:, 0], line[:, 1])
+        self.assertLess(lat.max(), 39.0)
+        self.assertEqual((lon[0], lon[-1]), (-86, -74))
+        self.assertEqual(len(fronts._unloop(go[:, 0], go[:, 1])[0]), len(go))
 
     def test_centre_pressure_from_the_field(self):
         import fronts
