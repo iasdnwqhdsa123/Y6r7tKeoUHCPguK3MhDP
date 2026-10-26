@@ -166,12 +166,16 @@ def classify(v):
     wkm = np.where(np.isfinite(d), cumulus_width(np.maximum(0.2, d / 1000), np.maximum(0.3, zi / 1000), 1.0), np.nan)
     return (cls, score, wet, over, cover, wkm)
 COVER_WEIGHTS = (1.0, 0.7, 0.4)
+SUN_SLACK = 0.2
 
-def effective_cover(low, mid, high, total, cu, ceil=None):
+def effective_cover(low, mid, high, total, cu, ceil=None, sun=None):
     f = lambda c, k: 1 - k * clamp01(np.nan_to_num(c, nan=0.0) / 100)
     lay = np.isfinite(low) | np.isfinite(mid) | np.isfinite(high)
     lo = np.maximum(np.nan_to_num(low, nan=0.0), 100 * np.nan_to_num(cu, nan=0.0))
-    eff = 100 * (1 - f(lo, COVER_WEIGHTS[0]) * f(mid, COVER_WEIGHTS[1]) * f(high, COVER_WEIGHTS[2]))
+    mh = 1 - f(mid, COVER_WEIGHTS[1]) * f(high, COVER_WEIGHTS[2])
+    if sun is not None:
+        mh = np.where(np.isfinite(sun), np.minimum(mh, clamp01(1 - np.nan_to_num(sun, nan=1.0)) + SUN_SLACK), mh)
+    eff = 100 * (1 - f(lo, COVER_WEIGHTS[0]) * (1 - mh))
     c = np.full(np.shape(total), np.nan) if ceil is None else ceil
     k = np.where(~np.isfinite(c) | (c >= CEIL_NONE_JS), COVER_WEIGHTS[2], np.where(c < LOW_TOP, COVER_WEIGHTS[0], COVER_WEIGHTS[1]))
     tot = 100 * (1 - (1 - clamp01(np.nan_to_num(cu, nan=0.0))) * f(total, k))
@@ -206,7 +210,7 @@ def cloud_overview(q, enc, fine, smooth=True):
     cuclass, cusky = encode(cls, score, wet, over)
     out = {'cuclass': cuclass, 'cusky': cusky, 'cucover': _codes(cover, *enc['cucover'][:2]), 'cuwide': _codes(wkm, *enc['cuwide'][:2])}
     if 'cueff' in enc:
-        out['cueff'] = _codes(effective_cover(v['cloudlow'], v['cloudmid'], v['cloudhigh'], v['cloud'], cover, v['ceil']), *enc['cueff'][:2])
+        out['cueff'] = _codes(effective_cover(v['cloudlow'], v['cloudmid'], v['cloudhigh'], v['cloud'], cover, v['ceil'], v['sun']), *enc['cueff'][:2])
     off = q['wstar'] == 255
     for a in out.values():
         a[off] = 255
