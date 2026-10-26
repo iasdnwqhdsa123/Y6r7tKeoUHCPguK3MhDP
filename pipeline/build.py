@@ -1247,7 +1247,7 @@ SND_VARS = ('t', 'dpd', 'u', 'v', 'z', 'w')
 SND_SFC = {'ps': (400.0, 1100.0), 'sw': (0.0, 1270.0)}
 SND_MAP = ('elevation', 't2', 'td2', 'mslp', 'cloud', 'cloudlow', 'cloudmid', 'cloudhigh', 'rain', 'showers', 'cape', 'zi', 'heat', 'u_sfc', 'v_sfc', 'gust', 'vis', *(f'cc{p}' for p in P.CC_LEVELS))
 SND_BLOCK = 8
-SND_AHEAD_H = {'gfs': 48, 'ecmwf': 144}
+SND_AHEAD_H = {'gfs': 48, 'ecmwf': 360}
 
 def snd_enc(p):
     h = 44330.8 * (1 - (p / 1013.25) ** 0.190263)

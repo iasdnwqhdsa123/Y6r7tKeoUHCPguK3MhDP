@@ -315,7 +315,8 @@ class EcmwfHourly(unittest.TestCase):
         e, g = (SOURCES['ecmwf'], SOURCES['gfs'])
         self.assertEqual([h for h in range(0, 13) if build.snd_hour(e, h)], [0, 3, 6, 9, 12])
         self.assertTrue(build.snd_hour(e, 144))
-        self.assertFalse(build.snd_hour(e, 150))
+        self.assertFalse(build.snd_hour(e, 147))
+        self.assertTrue(build.snd_hour(e, 360))
         self.assertTrue(build.snd_hour(g, 47))
         self.assertFalse(build.snd_hour(g, 49))
 
