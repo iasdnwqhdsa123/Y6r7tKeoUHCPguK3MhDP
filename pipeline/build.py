@@ -330,6 +330,19 @@ def sun_elevation(valid, lat, lon):
     la = np.radians(lat)
     return np.degrees(np.arcsin(np.clip(np.sin(la) * math.sin(decl) + np.cos(la) * math.cos(decl) * np.cos(ha), -1, 1)))
 SUN_GATE = (1.0, 8.0)
+HPBL_SEASON = (1.15, 1.15, 1.08, 1.0, 1.0, 1.0, 1.0, 1.0, 1.08, 1.12, 1.15, 1.15)
+HPBL_SEASON_MID = (15, 46, 74, 105, 135, 166, 196, 227, 258, 288, 319, 349)
+HPBL_SEASON_WEST = (-105.0, -102.0)
+HPBL_SEASON_SE = (36.0, -85.0)
+
+def hpbl_season(valid, lat, lon):
+    mid = np.r_[HPBL_SEASON_MID[-1] - 365, HPBL_SEASON_MID, HPBL_SEASON_MID[0] + 365]
+    f = float(np.interp(valid.timetuple().tm_yday, mid, np.r_[HPBL_SEASON[-1], HPBL_SEASON, HPBL_SEASON[0]]))
+    w0, w1 = HPBL_SEASON_WEST
+    east = np.clip((lon - w0) / (w1 - w0), 0, 1)
+    se_lat, se_lon = HPBL_SEASON_SE
+    se = (1 - np.clip(lat - se_lat, 0, 1)) * (1 - np.clip(se_lon - lon, 0, 1))
+    return 1 + (f - 1) * east * (1 - se)
 
 def sun_gate(valid, lat, lon):
     lo, hi = SUN_GATE
@@ -488,6 +501,8 @@ def analyse(s, lv, levels, grid_step, lat2d, lon2d=None, valid=None):
         heat = heat_from_sunshine(s['sw'], s['t2'], s['td2'], s.get('lsm'))
     hth = heat * sun_gate(valid, lat2d, lon2d) if valid is not None and lon2d is not None else heat
     zi = s.get('hpbl')
+    if zi is not None and s.get('hpbl_season') and (valid is not None) and (lon2d is not None):
+        zi = zi * hpbl_season(valid, lat2d, lon2d)
     if zi is None or np.all(np.isnan(zi)):
         zi = P.parcel_ml_depth(prof, np.where(hth > 20, 1.0, 0.2))
         if s.get('blh') is not None:
@@ -1195,6 +1210,7 @@ def load_hour(src, run, fh, regrid_holder, region, valid, raw=None, fronts_out=N
             cold = (np.nan_to_num(s.get('tcc', 0), nan=0) >= OLR_TOP_COVER) & (tb <= s['t2'] - OLR_TOP_COLDER)
             s['ctop_olr'] = np.where(cold, z_olr, np.nan).astype(np.float32)
         s['hub_m'] = src.hub_m
+        s['hpbl_season'] = src.hpbl_season
         if src.derive:
             s = src.derive(s)
         rnsw, rnlw = (s.pop('rnsw', None), s.pop('rnlw', None))

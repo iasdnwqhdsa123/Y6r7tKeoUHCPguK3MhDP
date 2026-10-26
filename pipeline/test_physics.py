@@ -2641,6 +2641,25 @@ class EntrainingCumulus(unittest.TestCase):
         self.assertLess(P.cumulus_top(dry, base, tb, act, mix=mix)[0, 0], und[0, 0])
         self.assertLessEqual(P.cumulus_top(dry, base, tb, act, mix=mix)[0, 0], P.cumulus_top(wet, base, tb, act, mix=mix)[0, 0])
 
+class HpblSeason(unittest.TestCase):
+
+    def test_factor_by_season_and_place(self):
+        from datetime import datetime, timezone
+        import build
+        import sources
+        day = lambda m, d: datetime(2026, m, d, 18, tzinfo=timezone.utc)
+        lat = np.array([39.9, 32.9, 39.8, 35.2])
+        lon = np.array([-75.8, -80.0, -104.9, -97.4])
+        nov = build.hpbl_season(day(11, 15), lat, lon)
+        self.assertAlmostEqual(nov[0], 1.15, 2)
+        self.assertAlmostEqual(nov[1], 1.0)
+        self.assertLess(nov[2], 1.01)
+        self.assertAlmostEqual(nov[3], 1.15, 2)
+        np.testing.assert_allclose(build.hpbl_season(day(7, 15), lat, lon), 1.0)
+        self.assertAlmostEqual(build.hpbl_season(day(10, 15), lat, lon)[0], 1.12, 2)
+        self.assertTrue(sources.SOURCES['hrrr'].hpbl_season)
+        self.assertFalse(sources.SOURCES['gfs'].hpbl_season)
+
 class ThermalDrift(unittest.TestCase):
 
     def setUp(self):
