@@ -668,7 +668,7 @@ jobs:
           if [[ "$MESSAGE" == *"runs cleared"* ]]; then before="$(date -u +%Y-%m-%dT%H:%M:%SZ)"; echo "clearing every finished run"; fi
           self=".github/workflows/${SELF#*/.github/workflows/}"; self="${self%%@*}"
           ids="$(gh api --paginate "repos/${{ github.repository }}/actions/runs?status=completed&per_page=100" \
-            --jq ".workflow_runs[] | select(((.path | startswith(\".github/workflows/forecast-data\")) and (.path != \"$self\" or .created_at < \"$before\")) or ((.path == \".github/workflows/fronts-train.yml\" or .path == \".github/workflows/verify.yml\") and .created_at < \"$before\")) | .id")"
+            --jq ".workflow_runs[] | select(((.path | startswith(\".github/workflows/forecast-data\")) and (.path != \"$self\" or .created_at < \"$before\")) or ((.path == \".github/workflows/fronts-train.yml\" or .path == \".github/workflows/verify.yml\" or .path == \".github/workflows/stop-runs.yml\") and .created_at < \"$before\")) | .id")"
           keep="$(gh api --paginate "repos/${{ github.repository }}/actions/artifacts?per_page=100" \
             --jq '.artifacts[] | select((.name | startswith("store-") or startswith("out-") or startswith("verify-")) and (.expired | not)) | .workflow_run.id')" || { echo "couldn't list the stores: nothing deleted"; exit 0; }
           for id in $ids; do
