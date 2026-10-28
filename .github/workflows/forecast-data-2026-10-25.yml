@@ -228,7 +228,7 @@ jobs:
           cache: pip
           cache-dependency-path: pipeline/requirements.txt
 
-      - run: pip install -r pipeline/requirements.txt && cd pipeline && python -m unittest test_physics
+      - run: pip install -r pipeline/requirements.txt && cd pipeline && python -m unittest test_physics test_output
 
       - name: Make room
         run: |
@@ -421,6 +421,7 @@ jobs:
           .github/scripts/pre-upload.sh --wait
           if [ -f dist-data/.changed ]; then mv dist-data/.changed "dist-data/.changed-$M"; else echo "$M: nothing new"; exit 0; fi
           [ -f "dist-data/$M/latest.json" ] || { echo "::warning::$M has nothing to publish"; exit 0; }
+          python3 pipeline/verify_output.py dist-data "$M" || { echo "::error::$M's output isn't whole: not handed on, the site keeps its last whole one"; exit 1; }
           mkdir -p /tmp/hand
           parts=$(cd dist-data && ls -d "$M" "free/$M" "free/now/$M" ".changed-$M" 2> /dev/null || true)
           pack() { tar -C dist-data --exclude=_hours --exclude=_quarters --exclude='*.building' -cf - $parts; }
