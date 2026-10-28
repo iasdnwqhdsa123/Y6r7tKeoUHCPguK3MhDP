@@ -83,19 +83,6 @@ class PhysicsTest(unittest.TestCase):
         self.assertEqual(float(r[5, 7]), 400)
         self.assertEqual(float(r[0, 0]), 0)
 
-    def test_relief_along_the_wind(self):
-        e = np.zeros((12, 12), np.float32)
-        e[:, 6] = 600
-        west, south = (np.full_like(e, 10), np.zeros_like(e))
-        across = P.relief_along(e, west, south, 3)
-        along = P.relief_along(e, south, west, 3)
-        self.assertEqual(float(across[5, 4]), 600)
-        self.assertEqual(float(along[5, 4]), 0)
-        self.assertEqual(float(along[5, 6]), 0)
-        self.assertEqual(float(P.local_relief(e, 3)[5, 4]), 600)
-        self.assertEqual(float(P.relief_along(e, south, south, 3)[5, 4]), 0)
-        self.assertEqual(float(P.relief_along(e, west, west, 3)[5, 4]), 600)
-
 class SoilWetness(unittest.TestCase):
 
     def test_each_models_fields(self):
@@ -1461,7 +1448,7 @@ class LeeWaveFields(unittest.TestCase):
         self.assertLessEqual(float(snowd.max()), build.ENC['snowd'][1])
         self.assertTrue((out['wtrap'] > 5).all() and (out['wtrap'] <= 100).all(), out['wtrap'])
         self.assertTrue((out['wlam'] > 1000).all() and (out['wlam'] < 60000).all(), out['wlam'])
-        self.assertTrue((out['wavepot'] == 0).all())
+        self.assertNotIn('wavepot', out)
         for ft in build.WAVE_ALTS_FT:
             d = out[f'dpd{ft}']
             self.assertTrue((d >= 0).all() and (d < 60).all(), (ft, d))

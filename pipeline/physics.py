@@ -454,24 +454,6 @@ def local_relief(elev, radius=2):
             hi = np.maximum(hi, win)
             lo = np.minimum(lo, win)
     return hi - lo
-
-def relief_along(elev, u, v, radius=2):
-    ny, nx = elev.shape
-    sp = np.hypot(u, v)
-    calm = ~(sp > 0.5)
-    ex = np.where(calm, 0, u / np.where(calm, 1, sp))
-    ey = np.where(calm, 0, v / np.where(calm, 1, sp))
-    jj, ii = np.mgrid[0:ny, 0:nx]
-    hi = elev.astype(np.float32).copy()
-    lo = hi.copy()
-    for k in range(-radius, radius + 1):
-        if k:
-            x = np.clip(np.rint(ii + k * ex), 0, nx - 1).astype(np.intp)
-            y = np.clip(np.rint(jj - k * ey), 0, ny - 1).astype(np.intp)
-            e = elev[y, x]
-            hi = np.fmax(hi, e)
-            lo = np.fmin(lo, e)
-    return hi - lo
 SM = 1609.344
 CEIL_NONE = 6000.0
 
