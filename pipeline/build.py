@@ -698,7 +698,7 @@ def analyse(s, lv, levels, grid_step, lat2d, lon2d=None, valid=None):
     ul, vl = P.layer_mean(prof, lb, np.maximum(lb + 800, np.minimum(zs + 3000, prof.ztop - 2500)), ['u', 'v'], 6)
     trapping = np.nan_to_num(score, nan=0) > 0
     out['wtrap'] = np.where(trapping, score * 100, np.nan)
-    out['wlam'] = np.where(trapping, wavelen, np.nan)
+    out['wlam'] = np.where(trapping, P.carry_wavelength(score, wavelen, ul, vl, grid_step, lat2d), np.nan)
     out['u_wl'], out['v_wl'] = (np.where(trapping | hilly, a, np.nan) for a in (ul, vl))
     out.update(general_aviation(s, lv, levels, prof, rain, grid_step, ddx, ddy, [out[f'cc{p}'] for p in P.CC_LEVELS], zi=zi))
     return out

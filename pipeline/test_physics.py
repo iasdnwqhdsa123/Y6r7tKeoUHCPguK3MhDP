@@ -83,6 +83,23 @@ class PhysicsTest(unittest.TestCase):
         sf, _ = P.wave_environment(flat)
         self.assertGreater(float(sa[0, 0]), float(sf[0, 0]) + 0.2)
 
+    def test_carry_wavelength_downwind(self):
+        ny, nx = (5, 16)
+        score = np.full((ny, nx), 0.4, np.float32)
+        score[:, :3] = 1.0
+        score[:, -1] = 0
+        lam = np.full((ny, nx), 2500.0, np.float32)
+        lam[:, :3] = 9000.0
+        u, v = (np.full((ny, nx), 15.0), np.zeros((ny, nx)))
+        lat = np.full((ny, nx), 40.0)
+        out = P.carry_wavelength(score, lam, u, v, 0.1, lat)
+        self.assertEqual(float(out[2, 3]), 9000.0)
+        self.assertEqual(float(out[2, 6]), 9000.0)
+        self.assertEqual(float(out[2, 9]), 9000.0)
+        self.assertEqual(float(out[2, 13]), 2500.0)
+        self.assertEqual(float(out[2, 1]), 9000.0)
+        self.assertEqual(float(out[2, -1]), 2500.0)
+
     def test_local_relief(self):
         e = np.zeros((10, 10), np.float32)
         e[5, 5] = 400

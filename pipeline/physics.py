@@ -443,6 +443,28 @@ def wave_environment(prof: Profile):
     kmean = np.sqrt(np.maximum((l2l + np.maximum(l2u, 0)) / 2, 0))
     wavelength = np.where((l2l > 0) & (kmean > 0), 2 * np.pi / np.maximum(kmean, 1e-09), np.nan)
     return (np.where(ok, score, np.nan), np.where(ok, np.minimum(wavelength, 60000), np.nan))
+WAVE_CARRY_KM = (10.0, 20.0, 35.0, 50.0, 65.0, 80.0)
+CARRY_SHARE = 0.8
+
+def carry_wavelength(score, wavelen, u, v, step_deg, lat2d, reach_km=WAVE_CARRY_KM):
+    sc = np.nan_to_num(score, nan=0.0)
+    lam = np.array(wavelen, dtype=np.float32, copy=True)
+    if lat2d is None or not step_deg:
+        return lam
+    ny, nx = sc.shape
+    U = np.hypot(u, v)
+    ok = np.isfinite(U) & (U > 0.5)
+    ex, ey = (np.where(ok, u / np.maximum(U, 1e-06), 0.0), np.where(ok, v / np.maximum(U, 1e-06), 0.0))
+    km_x = step_deg * 111.2 * np.cos(np.radians(lat2d)) + 1e-06
+    km_y = step_deg * 111.2
+    iy0, ix0 = np.indices((ny, nx))
+    for d in reach_km:
+        ix = np.clip(np.rint(ix0 - ex * d / km_x).astype(int), 0, nx - 1)
+        iy = np.clip(np.rint(iy0 + ey * d / km_y).astype(int), 0, ny - 1)
+        s_up, l_up = (sc[iy, ix], wavelen[iy, ix])
+        take = ok & (s_up >= CARRY_SHARE * sc) & (s_up > 0) & np.isfinite(l_up) & ~(lam >= l_up)
+        lam = np.where(take, l_up, lam)
+    return np.where(sc > 0, lam, wavelen).astype(np.float32)
 
 def local_relief(elev, radius=2):
     pad = np.pad(elev, radius, mode='edge')
