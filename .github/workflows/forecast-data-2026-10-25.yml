@@ -396,11 +396,14 @@ jobs:
         run: |
           r="$(ls /tmp/out/"$M".tar* 2> /dev/null | head -1 || true)"
           [ -n "$r" ] || { echo "::warning::out-$M not fetched"; exit 0; }
+          u=dist-data/.unpack; rm -rf "$u"; mkdir -p "$u"
           case "$r" in
-            *.enc) openssl enc -d -aes-256-ctr -pbkdf2 -pass env:DATA_PATH_SECRET -in "$r" | tar -C dist-data -xf - "$M" ;;
-            *) tar -C dist-data -xf "$r" "$M" ;;
+            *.enc) openssl enc -d -aes-256-ctr -pbkdf2 -pass env:DATA_PATH_SECRET -in "$r" | tar -C "$u" -xf - ;;
+            *) tar -C "$u" -xf "$r" ;;
           esac
-          rm -rf /tmp/out
+          mkdir -p "dist-data/$M"
+          cp -al "$u/$M/." "dist-data/$M/"
+          rm -rf "$u" /tmp/out
 
       - name: Free 24-hour window
         if: steps.what.outputs.free == 'true' && (contains(needs.check.outputs.free_models, format('"{0}"', matrix.model)) || steps.build.outcome == 'success' || steps.what.outputs.free_missing == 'true')

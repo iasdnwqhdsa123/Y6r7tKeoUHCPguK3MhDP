@@ -1812,7 +1812,7 @@ def write_tiles(rdir, hours_dir, times, tile, elev_time, only=None, levels=(), w
         for st in stamps:
             with np.load(os.path.join(hours_dir, f'{st}.npz')) as h:
                 files |= set(h.files)
-        names = sorted(files - NOT_TILES)
+        names = sorted((n for n in files - NOT_TILES if n in ENC))
         if only is not None:
             names = [n for n in names if n in only]
         same = reuse is not None and reuse[1].get(day) == stamps and os.path.isdir(os.path.join(reuse[0], day))
