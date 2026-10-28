@@ -76,6 +76,13 @@ class PhysicsTest(unittest.TestCase):
         self.assertGreater(float(sg[0, 0]), 0.3)
         self.assertLess(float(sc[0, 0]), 0.05)
 
+    def test_wave_environment_counts_wind_strengthening_aloft(self):
+        aloft = column(lapse=0.004, top_ml=0, speed=lambda z: 6 + z / 600)
+        flat = column(lapse=0.004, top_ml=0, speed=lambda z: 9)
+        sa, _ = P.wave_environment(aloft)
+        sf, _ = P.wave_environment(flat)
+        self.assertGreater(float(sa[0, 0]), float(sf[0, 0]) + 0.2)
+
     def test_local_relief(self):
         e = np.zeros((10, 10), np.float32)
         e[5, 5] = 400

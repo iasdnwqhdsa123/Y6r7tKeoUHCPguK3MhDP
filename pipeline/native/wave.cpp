@@ -95,10 +95,11 @@ void cx_wave_finish(int64_t m, const float* sl, const float* su, const float* tu
         const double ratio = l2u > F(1e-9) ? static_cast<double>(l2l / npmax(l2u, F(1e-9))) : (l2l > 0.0f ? 10.0 : 0.0);
         const float nlow = std::sqrt(npmax(n2l, 0.0f));
         const float s_l = sl[j], s_u = su[j];
-        const float f1 = npclip((s_l - F(5.0)) / F(7.5), 0.0f, 1.0f);
+        const float s_w = s_u > s_l ? (s_l + s_u) / F(2.0) : s_l;
+        const float f1 = npclip((s_w - F(5.0)) / F(7.5), 0.0f, 1.0f);
         const float f2 = npclip(1.0f - (turn[j] - F(20.0)) / F(40.0), 0.0f, 1.0f);
         const float f3 = s_u >= s_l ? 1.0f : npclip(s_u / npmax(s_l, F(1e-3)), 0.0f, 1.0f);
-        const float f4 = npclip((nlow - F(0.005)) / F(0.007), 0.0f, 1.0f);
+        const float f4 = npclip((nlow - F(0.005)) / F(0.005), 0.0f, 1.0f);
         const double f5 = 0.4 + 0.6 * clipd((ratio - 1.0) / 3.0, 0.0, 1.0);
         score[j] = static_cast<double>(f1 * f2 * f3 * f4) * f5;
         const float kmean = std::sqrt(npmax((l2l + npmax(l2u, 0.0f)) / F(2.0), 0.0f));
