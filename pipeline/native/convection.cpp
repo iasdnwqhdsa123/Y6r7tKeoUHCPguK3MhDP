@@ -37,6 +37,25 @@ inline float moist_lapse(float t, float p, int mode) {
     const float rt = f(287.05) * tk;
     return f(9.80665) * (1.0f + f(2.5e6) * rs / rt) / (f(1004.0) + f(2.5e6 * 2.5e6) * rs * f(0.622) / (rt * tk));
 }
+inline float cloud_mix(float tp, float te, float tde, float p, float m, int mode) {
+    const float k = f(2.5e6 / 1004.0);
+    auto rsat = [&](float t) {
+        const float e = f(6.112) * np_expf(f(17.67) * t / (t + f(243.5)), mode);
+        return f(0.622) * e / npmax(p - e, 1.0f);
+    };
+    const float hp = tp + k * rsat(tp);
+    const float he = te + k * rsat(tde);
+    const float h = hp + m * (he - hp);
+    float t = tp;
+    for (int it = 0; it < 2; ++it) {
+        const float e = f(6.112) * np_expf(f(17.67) * t / (t + f(243.5)), mode);
+        const float d = npmax(p - e, 1.0f);
+        const float rs = f(0.622) * e / d;
+        const float u = t + f(243.5);
+        t = t - (t + k * rs - h) / (1.0f + k * rs * p / d * f(4302.645) / (u * u));
+    }
+    return t;
+}
 inline bool ascending(const float* z, int32_t L, int64_t n, int64_t i) {
     bool up = true;
     for (int32_t k = 1; k < L; ++k) up &= z[(k - 1) * n + i] <= z[k * n + i];
@@ -97,10 +116,7 @@ CX_FMA_CLONES void cx_cumulus_top(const Profile* p, const float* zbase, const fl
                 if (!stop) {
                     const float pz = np_expf(interp(p->lnp, b), exp_mode);
                     float t2 = tp - moist_lapse(tp, pz, exp_mode) * step;
-                    if (mix) {
-                        const float tde = interp(p->td, b);
-                        t2 = t2 + mix[i] * ((te - (te - tde) / 3.0f) - t2);
-                    }
+                    if (mix) t2 = cloud_mix(t2, te, interp(p->td, b), pz, mix[i], exp_mode);
                     ltp[g] = t2;
                     lz[g] = z + step;
                     ++lk[g];

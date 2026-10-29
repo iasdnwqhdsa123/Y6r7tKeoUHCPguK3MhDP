@@ -375,6 +375,20 @@ def shear_tilt(ws, shear):
 def density_altitude(p, t):
     pa_ft = (1 - (p / 1013.25) ** 0.190284) * 145366.45
     return (pa_ft + 118.8 * (t - (15 - 1.98 * pa_ft / 1000))) * FT
+LV_CP = LV / CP
+
+def cloud_mix(tp, te, tde, p, mix):
+    hp = tp + LV_CP * mixing_ratio(tp, p)
+    he = te + LV_CP * mixing_ratio(tde, p)
+    h = hp + mix * (he - hp)
+    t = tp
+    for _ in range(2):
+        e = es(t)
+        d = np.maximum(p - e, 1.0)
+        rs = EPS * e / d
+        u = t + 243.5
+        t = t - (t + LV_CP * rs - h) / (1 + LV_CP * rs * p / d * 4302.645 / (u * u))
+    return t
 
 def cumulus_top(prof: Profile, zbase, tbase, active, step=200.0, max_above=10000.0, mix=None):
     top = np.where(active, np.nan, zbase).astype(np.float32)
@@ -392,7 +406,7 @@ def cumulus_top(prof: Profile, zbase, tbase, active, step=200.0, max_above=10000
         top = np.where(stop, z, top)
         tp = tp - moist_lapse(tp, p) * step
         if mix is not None:
-            tp = tp + mix * (te - (te - tde) / 3 - tp)
+            tp = cloud_mix(tp, te, tde, p, mix)
         z = z + step
     return np.where(np.isnan(top), z, top)
 ENTRAIN_MIN, ENTRAIN_MAX = (0.0001, 0.001)

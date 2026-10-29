@@ -2652,6 +2652,20 @@ class EntrainingCumulus(unittest.TestCase):
         self.assertLess(P.cumulus_top(dry, base, tb, act, mix=mix)[0, 0], und[0, 0])
         self.assertLessEqual(P.cumulus_top(dry, base, tb, act, mix=mix)[0, 0], P.cumulus_top(wet, base, tb, act, mix=mix)[0, 0])
 
+    def test_cloud_mix_keeps_moist_static_energy(self):
+        f32 = lambda *v: np.array(v, np.float32)
+        tp, te, tde, p = (f32(10, -15, 20), f32(5, -18, 15), f32(-20, -38, 14), f32(700, 500, 950))
+        h = lambda t, q: t + P.LV_CP * P.mixing_ratio(q, p)
+        for m in (0.0, 0.04, 0.2):
+            t = P.cloud_mix(tp, te, tde, p, f32(m, m, m))
+            np.testing.assert_allclose(h(t, t), h(tp, tp) + m * (h(te, tde) - h(tp, tp)), atol=0.01)
+        np.testing.assert_array_equal(P.cloud_mix(tp, te, tde, p, f32(0, 0, 0)), tp)
+        t = te.copy()
+        for _ in range(6):
+            t = P.cloud_mix(t, te, tde, p, f32(1, 1, 1))
+        self.assertAlmostEqual(float(t[1]), -20.9, delta=0.1)
+        self.assertGreater(float(t[1]) - float(te[1] - (te[1] - tde[1]) / 3), 3.5)
+
 class HpblSeason(unittest.TestCase):
 
     def test_factor_by_season_and_place(self):
