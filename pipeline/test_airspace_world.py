@@ -214,6 +214,13 @@ class ControlledKinds(unittest.TestCase):
         ctl, _ = E.oa_features([rec(0, 2), rec(0, 3), rec(0, 1), rec(0, 0), rec(0, 8), rec(4, 3)], 'NZ')
         self.assertEqual(sorted((f['properties']['c'] for f in ctl)), ['B', 'C', 'D', 'D'])
 
+    def test_airways_with_a_class_are_controlled(self):
+        import europe_airspace as E
+        sq = {'type': 'Polygon', 'coordinates': [[[-1.0, 52.0], [0.0, 52.0], [0.0, 52.1], [-1.0, 52.0]]]}
+        rec = lambda c, n: {'type': 15, 'icaoClass': c, 'name': n, 'geometry': sq, 'lowerLimit': {'value': 55, 'unit': 6, 'referenceDatum': 2}, 'upperLimit': {'value': 195, 'unit': 6, 'referenceDatum': 2}}
+        ctl, _ = E.oa_features([rec(0, 'L9'), rec(4, 'N601'), rec(8, 'Y3')], 'GB')
+        self.assertEqual([(f['properties']['c'], f['properties']['n'], f['properties']['lo']) for f in ctl], [('A', 'L9', 'FL55')])
+
     def test_transponder_and_radio_mandatory_zones(self):
         import europe_airspace as E
         sq = {'type': 'Polygon', 'coordinates': [[[-1.0, 51.0], [-0.5, 51.0], [-0.5, 51.5], [-1.0, 51.0]]]}

@@ -16,14 +16,14 @@ from airspace import simplify
 UA = {'User-Agent': 'wx-pipeline/1.0'}
 SNAPSHOTS = 'https://snapshots.openflightmaps.org/live'
 REGIONS = [(('ed', 'edww', 'edgg', 'edmm'), 'ed'), (('lovv',), 'lo'), (('lsas',), 'ls'), (('lkaa',), 'lk'), (('lzbb',), 'lz'), (('ebbu',), 'eb'), (('ehaa',), 'eh'), (('ekdk',), 'ek'), (('esaa',), 'es'), (('epww',), 'ep'), (('lhcc',), 'lh'), (('ljla',), 'lj'), (('ldzo',), 'ld'), (('lbsr',), 'lb'), (('lrbb',), 'lr'), (('efin',), 'ef'), (('lggg',), 'lg'), (('limm', 'li'), 'li')]
-CONTROLLED = {'CTR', 'TMA', 'CTA', 'CLASS'}
+CONTROLLED = {'CTR', 'TMA', 'CTA', 'CLASS', 'AWY'}
 ZONES = ('TMZ', 'RMZ')
 OPENAIP = 'https://api.core.openaip.net/api/airspaces'
 OPENAIP_AREAS = {'eu': ('GB', 'IE', 'ES', 'PT', 'FR', 'MA', 'DZ', 'TN', 'NO', 'EE', 'LV', 'LT', 'LU', 'IS', 'RS', 'BA', 'ME', 'MK', 'AL', 'XK', 'MD', 'CY', 'MT', 'TR', 'IL'), 'sa': ('BR', 'AR', 'CL', 'UY', 'PY', 'BO', 'PE', 'EC', 'CO', 'VE'), 'af': ('ZA', 'NA', 'BW', 'ZW', 'MZ', 'LS', 'SZ', 'ZM'), 'nz': ('NZ',), 'ca': ('CA',), 'mx': ('MX', 'GT', 'BZ', 'SV', 'HN', 'NI', 'CR', 'PA'), 'au': ('AU',), 'jp': ('JP',)}
 SOURCES = {'eu': 'open flightmaps + openAIP'}
 OPENAIP_BUDGET = 600
 EAST_OF_180 = {'NZ'}
-OA_CONTROLLED = {4: 'CTR', 7: 'TMA', 26: 'CTA'}
+OA_CONTROLLED = {4: 'CTR', 7: 'TMA', 15: 'AWY', 26: 'CTA'}
 OA_ZONES = {5: 'TMZ', 6: 'RMZ'}
 OA_SUA = {1: 'R', 2: 'D', 3: 'P', 8: 'TRA', 9: 'TSA', 13: 'ATZ', 14: 'MATZ', 21: 'GLD'}
 OA_CLASS = {0: 'A', 1: 'B', 2: 'C', 3: 'D'}
