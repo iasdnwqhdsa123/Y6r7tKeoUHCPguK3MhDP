@@ -1430,31 +1430,27 @@ class RidgeFields(unittest.TestCase):
         for f in ('nlow', 'wlow'):
             self.assertNotIn(f, build.FREE_FIELDS)
 
-class WaveExposure(unittest.TestCase):
+class LeeExposure(unittest.TestCase):
 
     def test_ridge_across_the_wind(self):
         import math
         try:
-            import wave_exposure as we
+            import lee_exposure as le
         except ImportError:
-            self.skipTest('no wave_exposure.py here')
+            self.skipTest('no lee_exposure.py here')
         m = 1000.0
         x = np.arange(400)
-        a = 9000 / (2 * math.pi) / m
-        slab = np.tile(500 / (1 + ((x - 200) / a) ** 2), (60, 1)).astype(np.float32)
-        E = we.exposure(slab, m)
-        j = we.LAMS.index(9000.0)
-        east, west, north = (E[j * we.DIRS + d][30] for d in (2, 6, 0))
-        self.assertAlmostEqual(int(np.argmax(east)) - 200, 4, delta=1)
-        self.assertAlmostEqual(int(np.argmax(west)) - 200, -4, delta=1)
-        self.assertLess(float(east[:195].max()), 0.002)
-        self.assertLess(float(north.max()), 0.002)
-        self.assertTrue(1.1 < 15 * float(east.max()) < 1.7, east.max())
-        self.assertLess(float(east.max()), we.SCALE)
-        strong = E[(len(we.LAMS) + j) * we.DIRS + 2][30]
-        self.assertAlmostEqual(float(strong.max()), float(east.max()), delta=0.05 * float(east.max()))
-        self.assertGreater(float(strong[245:265].max()), 0.4 * float(east.max()))
-        self.assertLess(float(east[245:265].max()), 0.1 * float(east.max()))
+        slab = np.tile(500 / (1 + ((x - 200) / 3.0) ** 2), (300, 1)).astype(np.float32)
+        E = le.exposure(slab, m)
+        band = [k for k in range(le.NBAND) if le.EDGES[k] <= 10000 < le.EDGES[k + 1]][0]
+        east, north = (E[band * le.DIRS + 2][150], E[band * le.DIRS + 0][150])
+        self.assertLess(float(north.max()), 0.001)
+        self.assertGreater(float(east[205:300].max()), 0.05)
+        self.assertLess(float(east[:170].max()), 0.2 * float(east[205:300].max()))
+        s = 7000.0
+        whole = le.psi(s, 0.0, 2 * math.pi / le.EDGES[0])
+        parts = sum((le.psi(s, 2 * math.pi / le.EDGES[b + 1] if math.isfinite(le.EDGES[b + 1]) else 0.0, 2 * math.pi / le.EDGES[b]) for b in range(le.NBAND)))
+        self.assertAlmostEqual(abs(whole - parts), 0.0, places=9)
 
 class LeeWaveFields(unittest.TestCase):
 
