@@ -1,14 +1,8 @@
 name: Verify
 on:
-  push:
-    branches: [main]
-    paths:
-      - pipeline/verify.py
-  workflow_run:
-    workflows: [Forecast data]
-    types: [completed]
   schedule:
-    - cron: "50 * * * *"
+    - cron: "10 7,19 * * *"
+  workflow_dispatch:
 permissions:
   contents: read
   actions: write
@@ -20,7 +14,7 @@ env:
 jobs:
   gate:
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 25
     outputs:
       go: ${{ steps.when.outputs.go }}
       deadline: ${{ steps.when.outputs.deadline }}
@@ -34,8 +28,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          busy=$(gh api "repos/${{ github.repository }}/actions/runs?per_page=40" \
-            --jq '[.workflow_runs[] | select((.name | startswith("Forecast data")) and .status != "completed")] | length')
+          for i in $(seq 0 20); do
+            busy=$(gh api "repos/${{ github.repository }}/actions/runs?per_page=40" \
+              --jq '[.workflow_runs[] | select((.name | startswith("Forecast data")) and .status != "completed")] | length')
+            [ "$busy" = 0 ] && break
+            [ $i -lt 20 ] && sleep 60
+          done
           python3 - "$busy" >> "$GITHUB_OUTPUT" <<'PY'
           import ast, sys
           from datetime import datetime, timedelta, timezone
