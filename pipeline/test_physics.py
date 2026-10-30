@@ -2646,7 +2646,8 @@ class EntrainingCumulus(unittest.TestCase):
     def test_mix_from_the_thermal_width(self):
         m = P.cumulus_mix(np.array([100.0, 200.0, 1000.0, 5000.0, np.nan], np.float32))
         self.assertEqual(m.dtype, np.float32)
-        np.testing.assert_allclose(m, [0.2, 0.2, 0.04, 0.02, 0.04], rtol=1e-06)
+        np.testing.assert_allclose(m, [0.05, 0.05, 0.01, 0.005, 0.01], rtol=1e-06)
+        np.testing.assert_allclose(P.cumulus_mix(np.array([1000.0], np.float32), 200.0), [0.04], rtol=1e-06)
 
     def test_mixing_lowers_the_top_in_dry_air_not_in_moist(self):
         z = np.arange(0, 12001, 250, dtype=np.float32)[:, None, None]
@@ -3092,14 +3093,14 @@ class StormsFromTheModelsConvection(unittest.TestCase):
 
     def test_warm_topped_cumulus_is_no_cb(self):
         import build
-        warm = self.at(prate=0.0, cap_z=5500.0, sfc_t=33.0, rh_aloft=60.0)
+        warm = self.at(prate=0.0, cap_z=5500.0, sfc_t=33.0, rh_aloft=70.0)
         self.assertGreater(warm['cudepth'], 4000)
         self.assertLess(warm['overdev'], 50)
-        s, lv, levels = storm_column(prate=0.0, cap_z=5500.0, sfc_t=33.0, rh_aloft=60.0)
+        s, lv, levels = storm_column(prate=0.0, cap_z=5500.0, sfc_t=33.0, rh_aloft=70.0)
         prof = P.Profile(s['zs'], s['ps'], s['t2'], s['td2'], s['u10'], s['v10'], lv['z'], levels, lv['t'], lv['td'], lv['u'], lv['v'])
         t_top = float(prof.at(np.full((3, 3), warm['cubase'] + 2 + warm['cudepth'], np.float32), 't')[1, 1])
         self.assertTrue(build.GLACIATE_T < t_top < 0, t_top)
-        cold = self.at(prate=0.0, rh_aloft=60.0)
+        cold = self.at(prate=0.0, rh_aloft=85.0)
         self.assertGreaterEqual(cold['overdev'], 90)
         self.assertGreaterEqual(self.at(cap_z=5500.0, sfc_t=33.0, rh_aloft=60.0, refc=55.0)['overdev'], 70)
 

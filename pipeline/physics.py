@@ -389,8 +389,9 @@ def cloud_mix(tp, te, tde, p, mix):
         u = t + 243.5
         t = t - (t + LV_CP * rs - h) / (1 + LV_CP * rs * p / d * 4302.645 / (u * u))
     return t
+CU_STEP = 50.0
 
-def cumulus_top(prof: Profile, zbase, tbase, active, step=200.0, max_above=10000.0, mix=None):
+def cumulus_top(prof: Profile, zbase, tbase, active, step=CU_STEP, max_above=10000.0, mix=None):
     top = np.where(active, np.nan, zbase).astype(np.float32)
     tp = (tbase + 0.5).astype(np.float32)
     z = zbase.astype(np.float32).copy()
@@ -411,7 +412,7 @@ def cumulus_top(prof: Profile, zbase, tbase, active, step=200.0, max_above=10000
     return np.where(np.isnan(top), z, top)
 ENTRAIN_MIN, ENTRAIN_MAX = (0.0001, 0.001)
 
-def cumulus_mix(twidth, step=200.0):
+def cumulus_mix(twidth, step=CU_STEP):
     r = np.where(np.isfinite(twidth), np.asarray(twidth, np.float32), 1000.0)
     return (np.clip(0.2 / np.maximum(r, 1.0), ENTRAIN_MIN, ENTRAIN_MAX) * step).astype(np.float32)
 

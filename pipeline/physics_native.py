@@ -165,7 +165,7 @@ def _np_exp_mode():
 def _py_number(x):
     return type(x) in (int, float) and np.isfinite(x) and (abs(x) < 1e+30)
 
-def cumulus_top(prof, zbase, tbase, active, step=200.0, max_above=10000.0, mix=None):
+def cumulus_top(prof, zbase, tbase, active, step=_py.CU_STEP, max_above=10000.0, mix=None):
     f = cfunc('cx_cumulus_top', [ctypes.POINTER(_CProfile), _F, _F, ctypes.c_void_p, ctypes.c_float, ctypes.c_int32, ctypes.c_int32, ctypes.c_void_p, _F])
     if f is None or not is_native(prof) or (not _py_number(step)) or (not _py_number(max_above)) or (step <= 0):
         return _py.cumulus_top(prof, zbase, tbase, active, step, max_above, mix)
