@@ -1487,6 +1487,21 @@ class LeeWaveFields(unittest.TestCase):
         self.assertTrue(np.isnan(neutral['u_wl']).all() and np.isnan(neutral['v_wl']).all())
         self.assertEqual(build.ENC['u_wl'], (-60, 60, None))
         self.assertIn('u_wl', build.NOW_FIELDS)
+        sp = [float(np.hypot(out[f'u_g{m}'], out[f'v_g{m}'])[1, 1]) for m in build.COL_AGL_M]
+        self.assertEqual(sp, sorted(sp))
+        self.assertTrue(10 < sp[0] < sp[-1] < 30, sp)
+        for m in build.COL_AGL_M:
+            d = out[f'dpd_g{m}']
+            self.assertTrue((d >= 0).all() and (d < build.ENC[f'dpd_g{m}'][1]).all(), d)
+            self.assertTrue(np.isnan(neutral[f'u_g{m}']).all() and np.isnan(neutral[f'dpd_g{m}']).all())
+            self.assertIn(f'u_g{m}', build.NOW_FIELDS)
+            self.assertIn(f'dpd_g{m}', build.NOW_FIELDS)
+        self.assertEqual(len(build.STAB_NAMES), len(build.STAB_AGL_M) - 1)
+        for name in build.STAB_NAMES:
+            n = out[name]
+            self.assertTrue(((n > 0.005) & (n < 0.02)).all(), (name, n))
+            self.assertTrue(np.isnan(neutral[name]).all())
+            self.assertIn(name, build.NOW_FIELDS)
         self.assertEqual(build.ENC['wtrap'], (0, 100, None))
         self.assertEqual(build.ENC['wlam'], (0, 60000, None))
         for f in ('wtrap', 'wlam'):
