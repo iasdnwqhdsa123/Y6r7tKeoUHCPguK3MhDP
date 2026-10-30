@@ -1949,6 +1949,7 @@ class OverviewLevels(unittest.TestCase):
             self.assertIn('cc850', present)
             self.assertEqual(sorted(lp[2]), ['elevation', 'wstar'])
             self.assertIn('cc850', build.LEVEL_SKIP)
+            self.assertFalse({'thml', 'dth_m500'} & build.LEVEL_SKIP)
             self.assertFalse(build.LEVEL_SKIP & (build.CLASS_FIELDS | {'wstar', 'ceil', 'vis', 'u_sfc', 'u_g300', 'wv12000'}))
             self.assertIn('vis', build.SAMPLED_FIELDS)
 

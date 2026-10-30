@@ -152,7 +152,7 @@ for key in ['sfc', 'blavg', 'bltop'] + [f'a{ft}' for ft in WIND_ALTS_FT] + [f'g{
     ENC[f'u_{key}'] = enc
     ENC[f'v_{key}'] = enc
 LEVEL_NONE = {'ceil': 254}
-LEVEL_SKIP = {f'cc{p}' for p in P.CC_LEVELS} | {'thml', 'thx'} | {f'{k}_m{dz}' for dz in ML_TOP_DZ for k in ('dth', 'q')}
+LEVEL_SKIP = {f'cc{p}' for p in P.CC_LEVELS} | {'thx'} | {f'q_m{dz}' for dz in ML_TOP_DZ}
 
 def log(*a):
     print(time.strftime('%H:%M:%S'), *a, flush=True)
