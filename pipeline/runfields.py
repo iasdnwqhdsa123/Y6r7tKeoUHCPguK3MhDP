@@ -30,26 +30,51 @@ def _encode(v, lo, hi, transform):
     s = _steps(v, lo, hi, transform)
     return np.where(np.isfinite(s), np.rint(np.nan_to_num(s)), 255).astype(np.uint8)
 
+class _Decoded:
+
+    def __init__(self, q, enc):
+        self.q, self.enc, self.done = (q, enc, {})
+
+    def __contains__(self, n):
+        return n in self.enc and getattr(self.q.get(n), 'ndim', 0) == 2
+
+    def get(self, n, default=None):
+        if n not in self:
+            return default
+        if n not in self.done:
+            self.done[n] = sky.decode(self.q[n], *self.enc[n])
+        return self.done[n]
+
+    def __getitem__(self, n):
+        if n not in self:
+            raise KeyError(n)
+        return self.get(n)
+
 def publish(q, enc, grid, when, mid_by_ceil=False, agl_heights=True):
     if 'wstar' not in q or 'elevation' not in q:
         return {}
-    dec = {n: sky.decode(c, *enc[n]) for n, c in q.items() if n in enc and getattr(c, 'ndim', 0) == 2}
+    nodata = ~np.isfinite(sky.decode(q['wstar'], *enc['wstar']))
     out = {}
+
+    def put(n, v):
+        out[n] = np.where(nodata, 255, _encode(v, *enc[n])).astype(np.uint8)
     lee, ridge = (exposure('lee'), exposure('ridge'))
     bands = None
     if lee is not None and 'wtrap' in q:
-        lat = leelattice.lattice(dec, grid, lee.edges)
+        lat = leelattice.lattice(_Decoded(q, enc), grid, lee.edges)
         bands = leelattice.lattice_cells(lat, grid)
-    r = runwave.run_fields(dec, grid, lee, ridge, bands)
-    out['rrun'] = r['ridge']
-    out['wrun'] = r['wave']
+    r = runwave.run_fields(_Decoded(q, enc), grid, lee, ridge, bands)
+    put('rrun', r['ridge'])
+    put('wrun', r['wave'])
     for f, n in FINE.items():
-        s = _steps(out[n], *enc[n])
-        out[f] = s - np.rint(s)
-    out['wrunz'] = np.where(r['wave'] > 0, r['wave_agl'], np.nan)
-    out['wtop'] = r['wave_top']
-    out['crest'] = r['crest']
-    s = shade_mod.shade(dec, grid, when, mid_by_ceil, agl_heights, rays=True)
-    out['cshade'], out['cthin'], out['csun'] = (s['shade'], s['thin'], s['sun'])
-    nodata = ~np.isfinite(dec['wstar'])
-    return {n: np.where(nodata, 255, _encode(v, *enc[n])).astype(np.uint8) for n, v in out.items()}
+        s = _steps(r[{'rrun': 'ridge', 'wrun': 'wave'}[n]], *enc[n])
+        put(f, s - np.rint(s))
+    put('wrunz', np.where(r['wave'] > 0, r['wave_agl'], np.nan))
+    put('wtop', r['wave_top'])
+    put('crest', r['crest'])
+    del r, bands
+    s = shade_mod.shade(_Decoded(q, enc), grid, when, mid_by_ceil, agl_heights, rays=True)
+    put('cshade', s['shade'])
+    put('cthin', s['thin'])
+    put('csun', s['sun'])
+    return out

@@ -392,12 +392,24 @@ def node_range(grid):
     j0, j1 = (math.floor(south / LEE_LAT), math.floor(north / LEE_LAT) + 1)
     return (i0, j0, i1 - i0 + 1, j1 - j0 + 1)
 
+class _F64:
+
+    def __init__(self, fields):
+        self.fields, self.done = (fields, {})
+
+    def get(self, k, default=None):
+        if k not in self.done:
+            a = self.fields.get(k)
+            self.done[k] = None if a is None else np.asarray(a, np.float64)
+        a = self.done[k]
+        return default if a is None else a
+
 def lattice(fields, grid, edges, chunk=NODES_A_CHUNK):
     i0, j0, ni, nj = node_range(grid)
     jj, ii = np.meshgrid(np.arange(j0, j0 + nj), np.arange(i0, i0 + ni), indexing='ij')
     lat = (jj * LEE_LAT).astype(np.float64).ravel()
     lon = (ii * LEE_LAT).astype(np.float64).ravel()
-    fields = {k: np.asarray(a, np.float64) if a is not None else None for k, a in fields.items()}
+    fields = _F64(fields)
     P = _profiles(fields, lat, lon, grid)
     ks = band_wavenumbers(list(edges))
     nband = len(edges) - 1

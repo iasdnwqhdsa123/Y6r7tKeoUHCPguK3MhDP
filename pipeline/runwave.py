@@ -291,6 +291,18 @@ def _grid(grid):
     get = grid.get if isinstance(grid, dict) else lambda k: getattr(grid, k)
     return (float(get('west')), float(get('north')), float(get('step')), int(get('nx')), int(get('ny')))
 
+class _Rows:
+
+    def __init__(self, fields, y0, y1):
+        self.fields, self.y0, self.y1, self.done = (fields, y0, y1, {})
+
+    def get(self, k, default=None):
+        if k not in self.done:
+            a = self.fields.get(k)
+            self.done[k] = None if a is None else np.asarray(a[self.y0:self.y1], np.float64).reshape(-1)
+        a = self.done[k]
+        return default if a is None else a
+
 def run_fields(fields, grid, lee, ridge, lat_bands=None, chunk=CELLS_A_CHUNK):
     west, north, step, nx, ny = _grid(grid)
     out = {k: np.empty((ny, nx)) for k in ('ridge', 'wave', 'wave_agl', 'wave_top', 'crest')}
@@ -301,10 +313,7 @@ def run_fields(fields, grid, lee, ridge, lat_bands=None, chunk=CELLS_A_CHUNK):
         iy = np.arange(y0, y1)
         lat = np.repeat(north - iy * step, nx)
         lon = np.tile(west + xs * step, y1 - y0)
-        f = {}
-        for k, a in fields.items():
-            if a is not None:
-                f[k] = np.asarray(a[y0:y1], np.float64).reshape(-1)
+        f = _Rows(fields, y0, y1)
         lb = None
         if lat_bands is not None:
             lu, lv, B, ok = lat_bands(y0, y1) if callable(lat_bands) else (x[y0:y1] for x in lat_bands)
