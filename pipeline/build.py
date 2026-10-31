@@ -16,10 +16,11 @@ import grib
 import physics
 import physics as P
 import pack
+import runfields
 import sky
 import tiles
 from sources import OPEN_AHEAD_H, OPEN_SLACK_H, SOURCES, candidate_runs, latest_complete_run, needed_times
-from tiles import downsample, downsample_peak
+from tiles import downsample, downsample_at_peak, downsample_peak
 REGIONS = {'hrrr': (-125.0, 24.0, -66.5, 50.0, 0.03), 'gfs': (-170.0, -54.75, 179.75, 70.0, 0.25), 'ecmwf': (-170.0, -54.9, 179.9, 70.0, 0.1), 'icon': (-170.0, -54.875, 179.75, 70.0, 0.125), 'icond2': (-3.94, 43.18, 20.34, 58.08, 0.02)}
 KEEP = {'gfs': ((-130.0, 20.25, -52.0, 56.0), (-168.0, 59.0, -130.25, 70.0), (-163.0, 54.5, -148.0, 59.0), (-137.0, 54.5, -130.25, 59.0), (-25.0, 34.0, 44.75, 70.0), (-13.0, 27.0, 12.0, 34.0), (-76.0, -54.75, -53.0, -16.0), (-53.0, -34.0, -34.0, -2.0), (-82.0, -16.0, -66.0, 12.5), (11.0, -35.0, 36.0, -16.0), (166.0, -48.0, 179.0, -34.0), (114.0, -35.5, 120.5, -28.5), (131.5, -26.0, 136.5, -21.5), (144.0, -27.0, 154.0, -18.5), (136.0, -39.5, 154.0, -27.0), (143.5, -44.0, 148.75, -39.5), (72.0, 26.0, 97.0, 37.0))}
 KEEP['icon'] = KEEP['ecmwf'] = KEEP['gfs']
@@ -131,8 +132,9 @@ CLASS_FIELDS = {'ptype', 'fltcat', 'sinkby', 'cuclass', 'cusky'}
 WIND_ALTS_FT = [2000, 3000, 4000, 5000, 6000, 8000, 10000, 12000, 15000, 18000, 24000, 30000]
 WAVE_ALTS_FT = [8000, 10000, 12000, 14000, 18000, 24000]
 SAMPLED_FIELDS = {f'wv{ft}' for ft in WAVE_ALTS_FT} | {'wlow', 'vis', 'cucover', 'cuwide', 'cueff'}
-PEAK_FIELDS = {'overdev', 'refc', 'showers'}
-ENC = {'wstar': (0, 6, None), 'zi': (0, 6000, None), 'depth': (0, 6000, None), 'cubase': (0, 7000, None), 'cudepth': (0, 12000, None), 'blapse': (0, 15, None), 'twidth': (0, 1000, None), 'overdev': (0, 100, None), 'bs': (0, P.BS_MAX, None), 'cape': (0, 6000, 'sqrt'), 'rain': (0, 50, 'sqrt'), 'showers': (0, 1, None), 'sun': (0, 1.2, None), 'cloud': (0, 100, None), 'cloudlow': (0, 100, None), 'cloudmid': (0, 100, None), 'cloudhigh': (0, 100, None), 't2': (-40, 50, None), 'td2': (-45, 35, None), 'sst': (-2, 36, None), 'snowd': (0, 3, 'sqrt'), 'soilm': (0, 1, None), 'mslp': (950, 1060, None), 'heat': (0, 800, None), 'densalt': (-1000, 7000, None), 'gust': (0, 50, None), 'wavemax': (0, 8, None), 'wavemaxz': (0, 12000, None), 'nlow': (0, 0.04, None), 'wlow': (-4, 4, None), 'wtrap': (0, 100, None), 'wlam': (0, 60000, None), 'conv': (-2, 2, None), 'sink': (0, 6, None), 'sinkth': (0, 3, None), 'sinkby': (0, 254, None), 'ridge': (0, 4, None), 'bumpy': (0, 1, None), 'pm25': (0, 300, 'sqrt'), 'elevation': (-100, 6000, None), 'ceil': (0, P.CEIL_NONE, 'sqrt'), 'vis': (0, 16100, 'sqrt'), 'fltcat': (0, 254, None), 'ptype': (0, 254, None), 'slr': (P.SLR_RANGE[0], P.SLR_RANGE[1], None), 'snowshare': (0, 1, None), 'frzl': (-100, 6500, None), 'icing': (0, 100, None), 'icebase': (0, 8000, None), 'icetop': (0, 8000, None), 'turb': (0, 25, None), 'turbz': (0, 11000, None), 'turbbase': (0, 11000, None), 'turbtop': (0, 11000, None), 'llws': (0, 40, None), 'ctop': (0, 16000, None), 'refc': (0, 75, None), 'ceiltop': (0, 16000, None), 'accas': (0, 100, None), 'cuclass': (0, 254, None), 'cusky': (0, 254, None), 'cucover': (0, 1, None), 'cuwide': (0, 5, None), 'cueff': (0, 100, None), 'u_cuw': (-60, 60, None), 'v_cuw': (-60, 60, None), 'curh': (0, 1, None), 'u_wl': (-60, 60, None), 'v_wl': (-60, 60, None), 'u_twt': (-60, 60, None), 'v_twt': (-60, 60, None), 'u_twa': (-60, 60, None), 'v_twa': (-60, 60, None)}
+PEAK_FIELDS = {'overdev', 'refc', 'showers', 'wrun'}
+AT_PEAK = {'wrunz': 'wrun'}
+ENC = {'wstar': (0, 6, None), 'zi': (0, 6000, None), 'depth': (0, 6000, None), 'cubase': (0, 7000, None), 'cudepth': (0, 12000, None), 'blapse': (0, 15, None), 'twidth': (0, 1000, None), 'overdev': (0, 100, None), 'bs': (0, P.BS_MAX, None), 'cape': (0, 6000, 'sqrt'), 'rain': (0, 50, 'sqrt'), 'showers': (0, 1, None), 'sun': (0, 1.2, None), 'cloud': (0, 100, None), 'cloudlow': (0, 100, None), 'cloudmid': (0, 100, None), 'cloudhigh': (0, 100, None), 't2': (-40, 50, None), 'td2': (-45, 35, None), 'sst': (-2, 36, None), 'snowd': (0, 3, 'sqrt'), 'soilm': (0, 1, None), 'mslp': (950, 1060, None), 'heat': (0, 800, None), 'densalt': (-1000, 7000, None), 'gust': (0, 50, None), 'wavemax': (0, 8, None), 'wavemaxz': (0, 12000, None), 'nlow': (0, 0.04, None), 'wlow': (-4, 4, None), 'wtrap': (0, 100, None), 'wlam': (0, 60000, None), 'conv': (-2, 2, None), 'sink': (0, 6, None), 'sinkth': (0, 3, None), 'sinkby': (0, 254, None), 'ridge': (0, 4, None), 'bumpy': (0, 1, None), 'pm25': (0, 300, 'sqrt'), 'elevation': (-100, 6000, None), 'ceil': (0, P.CEIL_NONE, 'sqrt'), 'vis': (0, 16100, 'sqrt'), 'fltcat': (0, 254, None), 'ptype': (0, 254, None), 'slr': (P.SLR_RANGE[0], P.SLR_RANGE[1], None), 'snowshare': (0, 1, None), 'frzl': (-100, 6500, None), 'icing': (0, 100, None), 'icebase': (0, 8000, None), 'icetop': (0, 8000, None), 'turb': (0, 25, None), 'turbz': (0, 11000, None), 'turbbase': (0, 11000, None), 'turbtop': (0, 11000, None), 'llws': (0, 40, None), 'ctop': (0, 16000, None), 'refc': (0, 75, None), 'ceiltop': (0, 16000, None), 'accas': (0, 100, None), 'cuclass': (0, 254, None), 'cusky': (0, 254, None), 'cucover': (0, 1, None), 'cuwide': (0, 5, None), 'cueff': (0, 100, None), 'u_cuw': (-60, 60, None), 'v_cuw': (-60, 60, None), 'curh': (0, 1, None), 'u_wl': (-60, 60, None), 'v_wl': (-60, 60, None), 'u_twt': (-60, 60, None), 'v_twt': (-60, 60, None), 'u_twa': (-60, 60, None), 'v_twa': (-60, 60, None), 'rrun': (0, 8, 'sqrt'), 'wrun': (0, 8, 'sqrt'), 'wrunz': (0, 12700, None), 'crest': (-2540, 2540, None), 'rrunf': (-0.5, 0.5, None), 'wrunf': (-0.5, 0.5, None), 'cshade': (0, 1, None), 'cthin': (0, 1, None), 'csun': (0, 1.2, None)}
 for ft in WAVE_ALTS_FT:
     ENC[f'wv{ft}'] = (-8, 8, None)
     ENC[f'dpd{ft}'] = (0, 40, None)
@@ -160,7 +162,7 @@ for key in ['sfc', 'blavg', 'bltop'] + [f'a{ft}' for ft in WIND_ALTS_FT] + [f'g{
     ENC[f'u_{key}'] = enc
     ENC[f'v_{key}'] = enc
 LEVEL_NONE = {'ceil': 254}
-LEVEL_SKIP = {f'cc{p}' for p in P.CC_LEVELS} | {'thx'} | {f'q_m{dz}' for dz in ML_TOP_DZ}
+LEVEL_SKIP = {f'cc{p}' for p in P.CC_LEVELS} | {'thx'} | {f'q_m{dz}' for dz in ML_TOP_DZ} | {'rrunf', 'wrunf'}
 
 def log(*a):
     print(time.strftime('%H:%M:%S'), *a, flush=True)
@@ -1401,6 +1403,7 @@ def _process_hour(job, raw=None):
     if _CTX.pop('pick_physics', False):
         pick_physics(q, lambda: analyse_parts(parts, part_coords(holder['parts']), region[4], valid, windows, lat2d.shape), fh, keep)
     q.update(sky.cloud_overview(q, ENC, region[4] <= sky.FINE_STEP))
+    q.update(_run_fields(q, lat2d, lon2d, region, valid))
     if not step:
         fr = None
     elif wide:
@@ -1770,6 +1773,32 @@ def _link_strips(src, dst):
         return pack.keys_in(dst + '.pack')
     return None if os.path.isdir(src) else set()
 
+def _run_fields(q, lat2d, lon2d, region, valid):
+    grid = {'west': float(lon2d[0, 0]), 'north': float(lat2d[0, 0]), 'step': region[4], 'nx': lat2d.shape[1], 'ny': lat2d.shape[0]}
+    try:
+        return runfields.publish(q, ENC, grid, valid)
+    except Exception as e:
+        log(f'  {valid:%a %HZ} ridge/wave running and shade not published: {e}')
+        return {}
+
+def _runfields_job(job):
+    hours_dir, t, region = job
+    path = os.path.join(hours_dir, f'{t:%Y%m%d%H}.npz')
+    with np.load(path) as h:
+        if 'rrun' in h.files or 'wstar' not in h.files:
+            return 0
+        q = {k: h[k] for k in h.files}
+    lons, lats = target_grid(region)
+    lat2d, lon2d = (np.repeat(np.asarray(lats)[:, None], len(lons), axis=1), np.repeat(np.asarray(lons)[None, :], len(lats), axis=0))
+    add = _run_fields(q, lat2d, lon2d, region, t.replace(tzinfo=timezone.utc) if t.tzinfo is None else t)
+    if not add:
+        return 0
+    q.update(add)
+    part = path[:-4] + '.tmp.npz'
+    tiles.savez(part, q)
+    os.replace(part, path)
+    return 1
+
 def _sky_job(job):
     hours_dir, t, fine = job
     path = os.path.join(hours_dir, f'{t:%Y%m%d%H}.npz')
@@ -1809,13 +1838,16 @@ def _tile_job(job):
     else:
         shape = hours[0]['wstar'].shape
         grid = np.stack([h[name] if name in h.files else np.full(shape, 255, np.uint8) for h in hours])
+        by = AT_PEAK.get(name)
+        if by:
+            by = np.stack([h[by] if by in h.files else np.full(shape, 255, np.uint8) for h in hours])
     for h in hours:
         h.close()
     path = () if day is None else (day,)
     keys = _write_strips(grid, tile, os.path.join(rdir, *path, name))
     lkeys = {}
     for k, ltile in levels if name not in LEVEL_SKIP else ():
-        lv = downsample_peak(grid, k) if name in PEAK_FIELDS else downsample(grid, k, nearest=name in CLASS_FIELDS or name in SAMPLED_FIELDS, none=LEVEL_NONE.get(name), rms=_sqrt_from_zero(name))
+        lv = downsample_at_peak(grid, by, k) if day is not None and name in AT_PEAK else downsample_peak(grid, k) if name in PEAK_FIELDS else downsample(grid, k, nearest=name in CLASS_FIELDS or name in SAMPLED_FIELDS, none=LEVEL_NONE.get(name), rms=_sqrt_from_zero(name))
         lk = _write_strips(lv, ltile, os.path.join(rdir, f'o{k}', *path, name))
         if lk:
             lkeys[k] = lk
@@ -2273,6 +2305,9 @@ def main():
     n = sum(run_jobs(_sky_job, [(hours_dir, t, region[4] <= sky.FINE_STEP) for t in times], args.workers))
     if n:
         log(f'{src.id}: Cloud Layers added to {n} stored hours')
+    n = sum(run_jobs(_runfields_job, [(hours_dir, t, tuple(region)) for t in times], args.workers))
+    if n:
+        log(f'{src.id}: ridge/wave running and shade added to {n} stored hours')
     days, present, lpresent = write_tiles(build_dir, hours_dir, times, tile, done[0], levels=levels, workers=args.workers)
     qtimes = stored_quarters(qdir, min(needed), max(needed), prune=True) if src.id == 'hrrr' else []
     qdays, qpresent = write_quarters(build_dir, qdir, qtimes, tile, workers=args.workers) if qtimes else ({}, {})

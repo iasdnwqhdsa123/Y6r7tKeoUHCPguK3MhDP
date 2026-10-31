@@ -71,6 +71,25 @@ def downsample_peak(codes, k):
     cells = np.outer(np.minimum(k, ny - np.arange(my) * k), np.minimum(k, nx - np.arange(mx) * k))
     return np.where((n > 0) & (2 * n >= cells), top, 255).astype(np.uint8)
 
+def downsample_at_peak(codes, by, k):
+    codes, by = (np.asarray(codes, np.uint8), np.asarray(by, np.uint8))
+    ny, nx = codes.shape[-2:]
+    my, mx = (-(-ny // k), -(-nx // k))
+    pc = np.full(codes.shape[:-2] + (my * k, mx * k), 255, np.uint8)
+    pb = np.full(pc.shape, 255, np.uint8)
+    pc[..., :ny, :nx] = codes
+    pb[..., :ny, :nx] = by
+    best = np.full(codes.shape[:-2] + (my, mx), -1, np.int16)
+    out = np.full(best.shape, 255, np.uint8)
+    for dy in range(k):
+        for dx in range(k):
+            b = pb[..., dy::k, dx::k].astype(np.int16)
+            b[b == 255] = -1
+            up = b > best
+            best = np.where(up, b, best)
+            out = np.where(up, pc[..., dy::k, dx::k], out)
+    return np.where(downsample_peak(by, k) == 255, 255, out).astype(np.uint8)
+
 def downsample(codes, k, nearest=False, none=None, rms=False):
     codes = np.asarray(codes, np.uint8)
     ny, nx = codes.shape[-2:]
