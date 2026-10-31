@@ -5,8 +5,8 @@ import leelattice
 import runwave
 import shade as shade_mod
 import sky
-FIELDS = ('rrun', 'rrunf', 'wrun', 'wrunf', 'wrunz', 'crest', 'cshade', 'cthin', 'csun')
-RUN_FIELDS = ('rrun', 'rrunf', 'wrun', 'wrunf', 'wrunz', 'crest')
+FIELDS = ('rrun', 'rrunf', 'wrun', 'wrunf', 'wrunz', 'wtop', 'crest', 'cshade', 'cthin', 'csun')
+RUN_FIELDS = ('rrun', 'rrunf', 'wrun', 'wrunf', 'wrunz', 'wtop', 'crest')
 FINE = {'rrunf': 'rrun', 'wrunf': 'wrun'}
 SHADE_FIELDS = ('cshade', 'cthin', 'csun')
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -47,6 +47,7 @@ def publish(q, enc, grid, when, mid_by_ceil=False, agl_heights=True):
         s = _steps(out[n], *enc[n])
         out[f] = s - np.rint(s)
     out['wrunz'] = np.where(r['wave'] > 0, r['wave_agl'], np.nan)
+    out['wtop'] = r['wave_top']
     out['crest'] = r['crest']
     s = shade_mod.shade(dec, grid, when, mid_by_ceil, agl_heights, rays=True)
     out['cshade'], out['cthin'], out['csun'] = (s['shade'], s['thin'], s['sun'])

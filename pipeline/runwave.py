@@ -126,7 +126,7 @@ def _lee(lee, lat, lon, step, lu, lv, bands, lok):
     peak = np.zeros(n)
     kbest = np.zeros(n, np.int64)
     if lee is None:
-        return (top, peak, kbest)
+        return (top, peak, kbest, np.zeros(n, bool))
     aid, fx, fy = lee.locate(lat, lon)
     D, NB = (lee.dirs, lee.nband)
     dec = (np.arange(256) / 254.0) ** 2 * lee.scale
@@ -188,7 +188,7 @@ def _lee(lee, lat, lon, step, lu, lv, bands, lok):
         got = tn > 0
         top[sel[got]] = tsum[got] / tn[got]
         peak[sel], kbest[sel] = (bp, bk)
-    return (top, peak, kbest)
+    return (top, peak, kbest, aid >= 0)
 
 def _ridge_wind(u3, v3, uwl, vwl, h, cols):
     nan = np.isnan
@@ -264,7 +264,7 @@ def _cells(f, lat, lon, step, lee, ridge, lat_bands):
     lu = lv = B = lok = None
     if lat_bands is not None:
         lu, lv, B, lok = lat_bands
-    top, peak, kbest = _lee(lee, lat, lon, step, lu, lv, B, lok)
+    top, peak, kbest, inside = _lee(lee, lat, lon, step, lu, lv, B, lok)
     u, v = (g('u_blavg'), g('v_blavg'))
     u3 = np.where(np.isnan(g('u_g300')), u, g('u_g300'))
     v3 = np.where(np.isnan(g('v_g300')), v, g('v_g300'))
@@ -276,7 +276,7 @@ def _cells(f, lat, lon, step, lee, ridge, lat_bands):
         cols.append((m, np.where(up, cu, np.nan), np.where(up, cv, np.nan)))
     ur, vr = _ridge_wind(u3, v3, g('u_wl'), g('v_wl'), rh, cols)
     real = _ridge_lift(ridge, lat, lon, ur, vr, g('nlow'), step)
-    out = {'ridge': np.maximum(np.nan_to_num(real, nan=0.0), np.nan_to_num(g('ridge'), nan=0.0)), 'wave': np.zeros(lat.size), 'wave_agl': np.full(lat.size, np.nan), 'crest': top - zs}
+    out = {'ridge': np.maximum(np.nan_to_num(real, nan=0.0), np.nan_to_num(g('ridge'), nan=0.0)), 'wave': np.zeros(lat.size), 'wave_agl': np.full(lat.size, np.nan), 'wave_top': np.full(lat.size, np.nan), 'crest': top - zs}
     if lat_bands is not None:
         on = lok & (peak > 0)
         U = np.hypot(lu, lv)
@@ -284,6 +284,7 @@ def _cells(f, lat, lon, step, lee, ridge, lat_bands):
         out['wave'] = np.where(on, peak * ramp, 0.0)
         alt = zs + np.asarray(LEE_AGL)[kbest]
         out['wave_agl'] = np.where(on, alt - zs, np.nan)
+        out['wave_top'] = np.where(inside & lok, peak, np.nan)
     return out
 
 def _grid(grid):
@@ -292,7 +293,7 @@ def _grid(grid):
 
 def run_fields(fields, grid, lee, ridge, lat_bands=None, chunk=CELLS_A_CHUNK):
     west, north, step, nx, ny = _grid(grid)
-    out = {k: np.empty((ny, nx)) for k in ('ridge', 'wave', 'wave_agl', 'crest')}
+    out = {k: np.empty((ny, nx)) for k in ('ridge', 'wave', 'wave_agl', 'wave_top', 'crest')}
     rows = max(1, chunk // max(1, nx))
     xs = np.arange(nx)
     for y0 in range(0, ny, rows):
