@@ -42,7 +42,7 @@ class _Decoded:
         if n not in self:
             return default
         if n not in self.done:
-            self.done[n] = sky.decode(self.q[n], *self.enc[n])
+            self.done[n] = sky.decode(self.q[n], *self.enc[n]).astype(np.float32)
         return self.done[n]
 
     def __getitem__(self, n):

@@ -400,7 +400,11 @@ class _F64:
     def get(self, k, default=None):
         if k not in self.done:
             a = self.fields.get(k)
-            self.done[k] = None if a is None else np.asarray(a, np.float64)
+            if a is not None:
+                a = np.asarray(a)
+                if a.dtype.kind != 'f':
+                    a = a.astype(np.float64)
+            self.done[k] = a
         a = self.done[k]
         return default if a is None else a
 

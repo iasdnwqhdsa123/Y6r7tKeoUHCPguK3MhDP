@@ -1182,6 +1182,53 @@ class PruneStore(unittest.TestCase):
             wf.assert_called_once()
             self.assertEqual(sorted((f[:10] for f in os.listdir(d))), stamps)
 
+    def test_first_hour_to_compute_runs_in_process_not_a_kept_one(self):
+        import tempfile
+        import build
+        from datetime import datetime, timedelta, timezone
+        run = datetime(2026, 10, 31, 6, tzinfo=timezone.utc)
+        older = datetime(2026, 10, 31, 0, tzinfo=timezone.utc)
+        with tempfile.TemporaryDirectory() as d:
+            build._CTX.update({'src': None, 'run': run, 'region': None, 'hours': d, 'holder': {}, 'recompute': False})
+            for fh in (0, 1, 3):
+                open(os.path.join(d, f'{run + timedelta(hours=fh):%Y%m%d%H}.npz'), 'wb').close()
+                with open(os.path.join(d, f'{run + timedelta(hours=fh):%Y%m%d%H}.run'), 'w') as f:
+                    f.write(f'{run:%Y%m%d%H}')
+            jobs = [0, 1, 2, 3, 4, (older, 96), (older, 102)]
+            kept, first, rest = build.split_first(jobs)
+            self.assertEqual(kept, [0, 1, 3])
+            self.assertEqual(first, 2)
+            self.assertEqual(rest, [4, (older, 96), (older, 102)])
+            self.assertEqual(build.split_first([0, 1, 3]), ([0, 1, 3], None, []))
+            build._CTX['recompute'] = True
+            try:
+                self.assertEqual(build.split_first([0, 1]), ([], 0, [1]))
+            finally:
+                build._CTX['recompute'] = False
+
+    def test_lanes_start_in_turn(self):
+        import build
+        waits, real_sleep = ([], build.time.sleep)
+        build.time.sleep = lambda s: waits.append(s)
+        real_p, real_h = (build._prefetch, build._process_hour)
+        build._prefetch = lambda job: f'raw{job}'
+        build._process_hour = lambda job, raw=None: job
+        try:
+
+            class Q(list):
+                put = list.append
+            out = Q()
+            build._lane([(0, 10), (1, 11)], out, stagger=40)
+            self.assertEqual(waits, [40])
+            self.assertEqual(out, [(0, 10), (1, 11)])
+            waits.clear()
+            build._lane([(0, 10)], out)
+            self.assertEqual(waits, [], 'the first lane starts at once')
+        finally:
+            build.time.sleep = real_sleep
+            build._prefetch, build._process_hour = (real_p, real_h)
+        self.assertGreater(build.LANE_STAGGER_S, 0)
+
     def test_lanes_download_ahead_and_keep_order(self):
         import build
         seen = []

@@ -1402,8 +1402,6 @@ def _process_hour(job, raw=None):
             v[~keep] = 255
     if _CTX.pop('pick_physics', False):
         pick_physics(q, lambda: analyse_parts(parts, part_coords(holder['parts']), region[4], valid, windows, lat2d.shape), fh, keep)
-    q.update(sky.cloud_overview(q, ENC, region[4] <= sky.FINE_STEP))
-    q.update(_run_fields(q, lat2d, lon2d, region, valid))
     if not step:
         fr = None
     elif wide:
@@ -1420,12 +1418,16 @@ def _process_hour(job, raw=None):
         snd = sounding_grid(src, parts, windows, lat2d.shape, q)
         if snd is not None:
             q['snd'] = snd
+    del parts, wide
+    trim_malloc()
+    q.update(sky.cloud_overview(q, ENC, region[4] <= sky.FINE_STEP))
+    q.update(_run_fields(q, lat2d, lon2d, region, valid))
     part = os.path.join(hours_dir, f'{valid:%Y%m%d%H}.tmp.npz')
     tiles.savez(part, q)
     os.replace(part, npz)
     with open(stamp, 'w') as f:
         f.write(f'{run:%Y%m%d%H}')
-    log(f'  f{fh:03d} {valid:%a %HZ} done in {time.time() - t0:.1f}s')
+    log(f'  f{fh:03d} {valid:%a %HZ} done in {time.time() - t0:.1f}s{_mem_note()}')
     return valid
 
 def hour_fronts(parts, regrids, fh=0):
@@ -1532,11 +1534,29 @@ def trim_malloc():
             pass
 _LIBC = None
 
-def _lane(jobs, results):
+def _mem_note():
+    try:
+        hwm = avail = None
+        with open('/proc/self/status') as f:
+            for line in f:
+                if line.startswith('VmHWM:'):
+                    hwm = int(line.split()[1]) / 1048576
+        with open('/proc/meminfo') as f:
+            for line in f:
+                if line.startswith('MemAvailable:'):
+                    avail = int(line.split()[1]) / 1048576
+        return f' (peak {hwm:.1f} GB, {avail:.1f} GB free)' if hwm is not None and avail is not None else ''
+    except (OSError, ValueError):
+        return ''
+LANE_STAGGER_S = 20
+
+def _lane(jobs, results, stagger=0.0):
     from collections import deque
     from concurrent.futures import ThreadPoolExecutor
     with ThreadPoolExecutor(PREFETCH_AHEAD) as ex:
         ahead = deque((ex.submit(_prefetch, job) for _, job in jobs[:PREFETCH_AHEAD]))
+        if stagger > 0:
+            time.sleep(stagger)
         for n, (i, job) in enumerate(jobs):
             try:
                 raw = ahead.popleft().result()
@@ -1558,6 +1578,18 @@ def shard_hours(fhs, i, n, run=1):
     blocks = [fhs[k:k + run] for k in range(0, len(fhs), run)]
     return [fh for b in blocks[i::n] for fh in b]
 
+def split_first(jobs):
+    kept, rest, first = ([], [], None)
+    for j in jobs:
+        r, _, valid = _job_hour(j)
+        if _kept(r, valid):
+            kept.append(j)
+        elif first is None:
+            first = j
+        else:
+            rest.append(j)
+    return (kept, first, rest)
+
 def lane_jobs(jobs, workers, run=1):
     indexed = list(enumerate(jobs))
     blocks = [indexed[i:i + run] for i in range(0, len(indexed), run)]
@@ -1569,7 +1601,7 @@ def process_lanes(jobs, workers, progress=None, run=1):
     ctx = mp.get_context('fork')
     results = ctx.Queue()
     shares = lane_jobs(jobs, workers, run)
-    procs = [ctx.Process(target=_lane, args=(shares[w], results), daemon=True) for w in range(workers)]
+    procs = [ctx.Process(target=_lane, args=(shares[w], results, w * LANE_STAGGER_S), daemon=True) for w in range(workers)]
     for p in procs:
         p.start()
     out, got = ([None] * len(jobs), 0)
@@ -2243,25 +2275,28 @@ def main():
         with open(kfile, 'w') as f:
             f.write(keep_now)
     _CTX.update({'src': src, 'run': run, 'region': region, 'hours': hours_dir, 'holder': {}, 'recompute': args.recompute, 'pick_physics': not args.python_physics})
-    results = [_process_hour(fhs[0])]
-    trim_malloc()
-    rest = fhs[1:]
+    jobs = list(fhs)
     back = backfill_jobs(src, run, needed, hours_dir) if not args.max_hours and shard is None else []
     if back:
         log(f'{src.id}: backfilling {len(back)} hours from earlier runs ' + ', '.join(sorted({f'{r:%d %HZ}' for r, _ in back})))
-    rest += back
+    jobs += back
     end = run + timedelta(hours=src.last_fh(run))
     tail = sorted(((r + timedelta(hours=fh), r) for r, fh in back if r + timedelta(hours=fh) > end))
+    kept, first, rest = split_first(jobs)
+    results = {j: _process_hour(j) for j in kept}
+    if first is not None:
+        results[first] = _process_hour(first)
+    trim_malloc()
     if rest:
         workers = max(1, min(args.workers, len(rest)))
         progress = Progress(src.id, len(rest))
         if workers == 1:
-            for fh in rest:
-                results.append(_process_hour(fh))
+            for j in rest:
+                results[j] = _process_hour(j)
                 progress.tick()
         else:
-            results += process_lanes(rest, workers, progress, run=LANE_RUN if src.between_to else 1)
-    done = [t for t in results[:len(fhs)] if t is not None]
+            results.update(zip(rest, process_lanes(rest, workers, progress, run=LANE_RUN if src.between_to else 1)))
+    done = [t for t in (results.get(j) for j in fhs) if t is not None]
     if not done:
         raise SystemExit('no hours processed')
     if shard is not None:
