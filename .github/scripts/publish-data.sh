@@ -111,6 +111,7 @@ sync)
           continue
         fi
         { "$0" assemble && "$0" deploy "$(xargs <<<"$new")"; } || { echo "::warning::the deploy failed"; ok=false; }
+        if [ "$ok" = true ]; then "$0" archive $new || echo "::warning::the archive's upload failed (the deploy is out)"; fi
       fi
       echo "::endgroup::"
       if [ "$ok" = true ]; then sleep 15; else sleep 60; fi
@@ -154,5 +155,31 @@ deploy)
   "$CLI" deploy --alias "$DATA_ALIAS" --dir . --functions /tmp/no-functions --message "$msg ($DATA_ALIAS)" ||
     { [ "${ALIAS_ONLY:-}" != true ] && echo "::warning::the $DATA_ALIAS draft failed (production deployed)"; } || exit 1
   ;;
-*) echo "usage: publish-data.sh sync|assemble|deploy" >&2; exit 2 ;;
+archive)
+  shift
+  if [ -z "${ARCHIVE_S3_BUCKET:-}" ] || [ -z "${ARCHIVE_S3_ENDPOINT:-}" ]; then exit 0; fi
+  export AWS_ACCESS_KEY_ID="${ARCHIVE_S3_KEY:?}" AWS_SECRET_ACCESS_KEY="${ARCHIVE_S3_SECRET:?}" AWS_DEFAULT_REGION=auto
+  s3() { aws --endpoint-url "$ARCHIVE_S3_ENDPOINT" --only-show-errors "$@"; }
+  ROOT="s3://$ARCHIVE_S3_BUCKET${DATA_PATH_SECRET:+/$DATA_PATH_SECRET}"
+  A=/tmp/archive
+  rm -rf "$A"
+  staged="$(python3 pipeline/archive.py stage --dist dist-data --out "$A" "$@")"
+  [ -n "$staged" ] || { echo "archive: no model's morning run in this deploy"; exit 0; }
+  while read -r day model run; do
+    s3 s3 sync "$A/$day/$model/" "$ROOT/$day/$model/" --delete --exclude latest.json --cache-control "public, max-age=3600"
+    s3 s3 cp "$A/$day/$model/latest.json" "$ROOT/$day/$model/latest.json" --cache-control "public, max-age=300" --content-type application/json
+    echo "archive: $model $day from the $run run ($(du -sh "$A/$day/$model" | cut -f1))"
+  done <<<"$staged"
+  rm -rf "$A"
+  keys=/tmp/archive-keys.txt
+  s3 s3api list-objects-v2 --bucket "$ARCHIVE_S3_BUCKET" --prefix "${DATA_PATH_SECRET:+$DATA_PATH_SECRET/}" \
+    --query "Contents[?ends_with(Key, '/latest.json')].Key" --output text | tr '\t' '\n' > "$keys"
+  for day in $(python3 pipeline/archive.py old --keys "$keys"); do
+    s3 s3 rm "$ROOT/$day/" --recursive && echo "archive: $day deleted (past the month)"
+  done
+  python3 pipeline/archive.py index --keys "$keys" > /tmp/archive-index.json
+  s3 s3 cp /tmp/archive-index.json "$ROOT/index.json" --cache-control "no-cache" --content-type application/json
+  echo "archive: $(jq '.days | length' /tmp/archive-index.json) days listed"
+  ;;
+*) echo "usage: publish-data.sh sync|assemble|deploy|archive" >&2; exit 2 ;;
 esac

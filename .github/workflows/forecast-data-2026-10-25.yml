@@ -644,6 +644,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
           NETLIFY_SITE_ID: ${{ secrets.NETLIFY_DATA_SITE_ID }}
+          ARCHIVE_S3_ENDPOINT: ${{ secrets.ARCHIVE_S3_ENDPOINT }}
+          ARCHIVE_S3_BUCKET: ${{ secrets.ARCHIVE_S3_BUCKET }}
+          ARCHIVE_S3_KEY: ${{ secrets.ARCHIVE_S3_KEY }}
+          ARCHIVE_S3_SECRET: ${{ secrets.ARCHIVE_S3_SECRET }}
         run: .github/scripts/publish-data.sh sync
 
   cleanup:
