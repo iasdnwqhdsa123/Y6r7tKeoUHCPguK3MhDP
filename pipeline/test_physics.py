@@ -727,7 +727,7 @@ class CloudOverviewSmoothed(unittest.TestCase):
         n = 9
         q = {k: np.full((n, n), 0, np.uint8) for k in sky.INPUTS}
         enc = build.ENC
-        code = lambda name, v: np.uint8(round((v - enc[name][0]) / (enc[name][1] - enc[name][0]) * 254))
+        code = lambda name, v: build.quantize(np.array([v]), *enc[name])[0]
         q['wstar'][:] = code('wstar', 2.0)
         q['cudepth'][4, 4] = code('cudepth', 1500)
         cls = lambda out: sky.decode(out['cuclass'], 0, 254, None) / 50
