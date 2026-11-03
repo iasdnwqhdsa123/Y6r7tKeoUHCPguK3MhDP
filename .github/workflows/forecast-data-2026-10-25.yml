@@ -644,14 +644,33 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
           NETLIFY_SITE_ID: ${{ secrets.NETLIFY_DATA_SITE_ID }}
+        run: .github/scripts/publish-data.sh sync
+
+  archive:
+    needs: [check, model]
+    if: always() && needs.check.outputs.any == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      actions: read # this run's outputs (artifacts)
+    steps:
+      - uses: actions/checkout@v7
+      - name: Make room
+        run: |
+          df -h /
+          nohup sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/share/swift > /dev/null 2>&1 &
+      - name: Archive this run's models
+        env:
+          GH_TOKEN: ${{ github.token }}
           ARCHIVE_S3_ENDPOINT: ${{ secrets.ARCHIVE_S3_ENDPOINT }}
           ARCHIVE_S3_BUCKET: ${{ secrets.ARCHIVE_S3_BUCKET }}
           ARCHIVE_S3_KEY: ${{ secrets.ARCHIVE_S3_KEY }}
           ARCHIVE_S3_SECRET: ${{ secrets.ARCHIVE_S3_SECRET }}
-        run: .github/scripts/publish-data.sh sync
+        run: .github/scripts/publish-data.sh archive-run
 
   cleanup:
-    needs: [check, hours, model, mapdata, publish]
+    needs: [check, hours, model, mapdata, publish, archive]
     if: always() && needs.check.result != 'skipped'
     runs-on: ubuntu-24.04
     timeout-minutes: 10

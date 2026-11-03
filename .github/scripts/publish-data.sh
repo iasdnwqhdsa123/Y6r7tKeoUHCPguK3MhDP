@@ -54,7 +54,7 @@ deploying() {
 through() {
   local left
   left="$(gh api --paginate "repos/$R/actions/runs/$RUN/attempts/$ATTEMPT/jobs?per_page=100" \
-    --jq '.jobs[] | select(.name != "publish" and .name != "cleanup" and .status != "completed") | .name' 2> /dev/null)" || return 1
+    --jq '.jobs[] | select(.name != "publish" and .name != "archive" and .name != "cleanup" and .status != "completed") | .name' 2> /dev/null)" || return 1
   [ -z "$left" ]
 }
 case "$1" in
@@ -111,7 +111,6 @@ sync)
           continue
         fi
         { "$0" assemble && "$0" deploy "$(xargs <<<"$new")"; } || { echo "::warning::the deploy failed"; ok=false; }
-        if [ "$ok" = true ]; then "$0" archive $new || echo "::warning::the archive's upload failed (the deploy is out)"; fi
       fi
       echo "::endgroup::"
       if [ "$ok" = true ]; then sleep 15; else sleep 60; fi
@@ -122,7 +121,7 @@ sync)
       else echo "::warning::this run's jobs are through, but not every model's output is on hand: no deploy"; fi
       exit 0
     fi
-    [ $((i % 10)) -ne 1 ] || echo "waiting: $(gh api "repos/$R/actions/runs/$RUN/attempts/$ATTEMPT/jobs?per_page=100" --jq '[.jobs[] | select(.name != "publish" and .name != "cleanup" and .status != "completed") | .name] | join(", ")' 2> /dev/null || true)"
+    [ $((i % 10)) -ne 1 ] || echo "waiting: $(gh api "repos/$R/actions/runs/$RUN/attempts/$ATTEMPT/jobs?per_page=100" --jq '[.jobs[] | select(.name != "publish" and .name != "archive" and .name != "cleanup" and .status != "completed") | .name] | join(", ")' 2> /dev/null || true)"
     sleep 30
   done
   echo "::warning::still not through at the job's limit"
@@ -170,6 +169,8 @@ archive)
   staged="$(PYTHONPATH=pipeline "$PY" pipeline/archive.py stage --dist dist-data --out "$A" "$@")"
   [ -n "$staged" ] || { echo "archive: no model's morning run in this deploy"; exit 0; }
   while read -r day model run; do
+    there="$(s3 s3 cp "$ROOT/$day/$model/latest.json" - 2> /dev/null | jq -r '.runId // ""' 2> /dev/null || true)"
+    if [[ -n "$there" && "$there" > "$run" ]]; then echo "archive: $model $day has the newer $there run: $run not sent"; continue; fi
     s3 s3 sync "$A/$day/$model/" "$ROOT/$day/$model/" --only-show-errors --delete --exclude latest.json --cache-control "public, max-age=3600"
     s3 s3 cp "$A/$day/$model/latest.json" "$ROOT/$day/$model/latest.json" --only-show-errors --cache-control "public, max-age=300" --content-type application/json
     echo "archive: $model $day from the $run run ($(du -sh "$A/$day/$model" | cut -f1))"
@@ -185,5 +186,17 @@ archive)
   s3 s3 cp /tmp/archive-index.json "$ROOT/index.json" --only-show-errors --cache-control "no-cache" --content-type application/json
   echo "archive: $(jq '.days | length' /tmp/archive-index.json) days listed"
   ;;
-*) echo "usage: publish-data.sh sync|assemble|deploy|archive" >&2; exit 2 ;;
+archive-run)
+  if [ -z "${ARCHIVE_S3_BUCKET:-}" ] || [ -z "${ARCHIVE_S3_ENDPOINT:-}" ]; then echo "archive: no bucket set"; exit 0; fi
+  models="$(gh api "repos/$R/actions/runs/$RUN/artifacts?per_page=100" \
+    --jq '.artifacts[] | select((.name | startswith("out-")) and (.expired | not)) | .name | ltrimstr("out-")' | grep -vx 'mapdata\|ens' | sort -u || true)"
+  [ -n "$models" ] || { echo "archive: no model built in this run"; exit 0; }
+  mkdir -p /tmp/outs
+  for m in $models; do
+    take "$m" "" "$RUN" || { echo "::warning::out-$m of this run couldn't be fetched: not archived"; continue; }
+    "$0" archive "$m" || echo "::warning::$m's archive upload failed"
+    rm -rf "dist-data/$m" "dist-data/free/$m" "dist-data/free/now/$m"
+  done
+  ;;
+*) echo "usage: publish-data.sh sync|assemble|deploy|archive|archive-run" >&2; exit 2 ;;
 esac
