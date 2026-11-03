@@ -9,6 +9,8 @@ from datetime import datetime, timedelta, timezone
 ARCHIVE_DAYS = 31
 RUN_BY = {'hrrr': 12, 'gfs': 6, 'ecmwf': 0, 'icon': 6, 'icond2': 6}
 SKIP = {'ens'}
+QUARTER_FIELDS = ('ceil', 'vis', 'refc', 'rain', 'ptype', 'u_sfc', 'v_sfc', 'gust', 't2', 'td2', 'ctop')
+QUARTER = re.compile('^q_(%s)\\.pack$' % '|'.join(QUARTER_FIELDS))
 DAY = re.compile('^\\d{8}$')
 SND = re.compile('^(\\d{8})\\.pack$')
 
@@ -29,6 +31,7 @@ def trim_manifest(m: dict, day: str) -> dict:
     if snd and snd.get('days'):
         utc = {s[:8] for s in stamps}
         out['sounding'] = {**snd, 'days': {k: v for k, v in snd['days'].items() if k in utc}}
+    out['quarters'] = {}
     out['older'] = []
     out.pop('hours', None)
     out['archive'] = {'day': day}
@@ -45,7 +48,80 @@ def wanted(rel: str, day: str, snd_days: set[str]) -> bool:
         return len(parts) > 2 and parts[1] in snd_days
     if any((p.endswith('.building') or p.endswith('.tmp.npy') for p in parts)):
         return False
+    if QUARTER.match(parts[-1]):
+        return False
     return all((not DAY.match(p) or p == day for p in parts[:-1]))
+
+def _png(img):
+    try:
+        import tiles
+        if tiles.deflate is not None:
+            return tiles.png_bytes(img)
+    except ImportError:
+        pass
+    import io
+    from PIL import Image
+    buf = io.BytesIO()
+    Image.fromarray(img, mode='L').save(buf, format='PNG', compress_level=9)
+    return buf.getvalue()
+
+def _trim_entry(job):
+    blob, rows, W = job
+    if not blob:
+        return b''
+    import io
+    import numpy as np
+    from PIL import Image
+    img = np.asarray(Image.open(io.BytesIO(blob)).convert('L'))
+    return _png(np.ascontiguousarray(np.concatenate([img[k * W:(k + 1) * W] for k in rows])))
+
+def trim_rows(src: str, dst: str, rows: list[int], W: int, workers: int | None=None):
+    import struct
+    from concurrent.futures import ProcessPoolExecutor
+    with open(src, 'rb') as f:
+        head = f.read(12)
+        if head[:4] != b'APK1':
+            raise ValueError(f'{src}: not a tile pack')
+        ntx, nty = struct.unpack('<II', head[4:])
+        n = ntx * nty
+        ends = struct.unpack(f'<{n}I', f.read(4 * n))
+        data = f.read(ends[-1] if n else 0)
+    blobs = [data[ends[i - 1] if i else 0:ends[i]] for i in range(n)]
+    jobs = [(b, rows, W) for b in blobs]
+    workers = workers or os.cpu_count() or 1
+    if workers > 1 and n > 64:
+        with ProcessPoolExecutor(workers) as ex:
+            out = list(ex.map(_trim_entry, jobs, chunksize=max(1, n // (workers * 8))))
+    else:
+        out = [_trim_entry(j) for j in jobs]
+    total, offs = (0, [])
+    for b in out:
+        total += len(b)
+        offs.append(total)
+    tmp = dst + '.tmp'
+    with open(tmp, 'wb') as f:
+        f.write(b'APK1' + struct.pack('<II', ntx, nty) + struct.pack(f'<{n}I', *offs))
+        for b in out:
+            f.write(b)
+    os.replace(tmp, dst)
+
+def _trim_packs(am: dict, rdir: str, dest_run: str, day: str):
+    stamps = set(am['days'][day])
+    pts = am.get('points')
+    if pts and am.get('pack') and os.path.exists(os.path.join(rdir, 'pt.pack')):
+        rows = [k for k, s in enumerate(pts['stamps']) if s in stamps]
+        if len(rows) < len(pts['stamps']):
+            trim_rows(os.path.join(rdir, 'pt.pack'), os.path.join(dest_run, 'pt.pack'), rows, pts['block'] + 1)
+            am['points'] = {**pts, 'stamps': [pts['stamps'][k] for k in rows]}
+    snd = am.get('sounding')
+    for d, e in ((snd or {}).get('days') or {}).items():
+        src = os.path.join(rdir, 'snd', f'{d}.pack')
+        if not isinstance(e, dict) or not e.get('stamps') or (not os.path.exists(src)):
+            continue
+        rows = [k for k, s in enumerate(e['stamps']) if s in stamps]
+        if len(rows) < len(e['stamps']):
+            trim_rows(src, os.path.join(dest_run, 'snd', f'{d}.pack'), rows, snd['block'] + 1)
+            snd['days'][d] = {**e, 'stamps': [e['stamps'][k] for k in rows]}
 
 def stage(dist: str, model: str, out: str) -> tuple[str, str] | None:
     if model in SKIP:
@@ -82,6 +158,7 @@ def stage(dist: str, model: str, out: str) -> tuple[str, str] | None:
                 os.link(src, to)
             except OSError:
                 shutil.copy2(src, to)
+    _trim_packs(am, rdir, os.path.join(dest, run_id), day)
     with open(os.path.join(dest, 'latest.json'), 'w') as f:
         json.dump(am, f, separators=(',', ':'))
     return (day, run_id)
