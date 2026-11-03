@@ -1373,6 +1373,22 @@ class BandsAboveGround(unittest.TestCase):
         np.testing.assert_allclose(mid, [[0, 60, 0]])
         np.testing.assert_allclose(high, [[70, 30, 50]])
 
+    def test_low_band_under_a_mid_deck_is_mid(self):
+        import build
+        import physics as P
+        L = len(P.CC_LEVELS)
+        ps = np.full((1, 2), 1016.0)
+        h = np.array([160.0, 590, 1050, 1525, 2030, 3120, 4350, 5780, 7400, 9400, 10600, 12000], np.float32)[:, None, None] * np.ones((1, 1, 2))
+        cc = np.zeros((L, 1, 2), np.float32)
+        cc[P.CC_LEVELS.index(1000)] = 65
+        cc[P.CC_LEVELS.index(700)] = 80
+        rh = np.full((L, 1, 2), 30.0, np.float32)
+        rh[P.CC_LEVELS.index(1000), 0] = [91, 99]
+        rh[P.CC_LEVELS.index(700)] = 87
+        low, mid, _ = build.bands_agl([np.array([[65.0, 65]]), np.array([[80.0, 80]])], cc, h, ps, ['icon', 0.7895, 0.3948], rh=rh)
+        np.testing.assert_allclose(low, [[0, 65]])
+        np.testing.assert_allclose(mid, [[80, 80]])
+
     def test_high_ground_mid_band_is_low(self):
         import build
         import physics as P
