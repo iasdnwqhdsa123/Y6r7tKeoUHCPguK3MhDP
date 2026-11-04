@@ -320,7 +320,7 @@ class EcmwfHourly(unittest.TestCase):
         self.assertAlmostEqual(f, float(build.solar_estimate(v, lat, lon, 0)[0, 0]) / mean, places=2)
         self.assertGreater(f, 1)
 
-    def test_soundings_at_the_files_steps_to_144_h(self):
+    def test_soundings_to_the_last_hour(self):
         import build
         from sources import SOURCES
         e, g = (SOURCES['ecmwf'], SOURCES['gfs'])
@@ -330,6 +330,11 @@ class EcmwfHourly(unittest.TestCase):
         self.assertTrue(build.snd_hour(e, 360))
         self.assertTrue(build.snd_hour(g, 47))
         self.assertFalse(build.snd_hour(g, 49))
+        self.assertTrue(build.snd_hour(g, 51))
+        self.assertTrue(build.snd_hour(g, 384))
+        i = SOURCES['icon']
+        self.assertTrue(build.snd_hour(i, 77) and build.snd_hour(i, 180))
+        self.assertFalse(build.snd_hour(i, 79))
 
     def test_open_meteo_values_in_load_hours_units(self):
         from datetime import datetime, timezone
