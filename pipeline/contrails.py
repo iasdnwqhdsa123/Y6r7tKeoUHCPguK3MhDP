@@ -27,7 +27,8 @@ VIS_TAU = 0.05
 G_ASYM = 0.77
 COVER_SCALE = 0.8
 SHORT_H = 5 / 60
-IN_CIRRUS = 0.5
+ISSR_FIX = {'hrrr': (0.614, 0.82), 'gfs': (0.613, 1.92), 'ecmwf': (0.59, 1.38), 'icon': (0.595, 1.84), 'icond2': (0.595, 1.84)}
+ISSR_ETA = 0.34
 STEP_DEG = 0.25
 KIND_NONE, KIND_SHORT, KIND_NARROW, KIND_SPREAD = (0, 1, 2, 3)
 _traffic = None
@@ -170,18 +171,27 @@ def contrail_cirrus(t, rhi, u, v, shear, lat, lon, valid):
     tau = np.where(cov_sum > 0, tau_sum / np.maximum(cov_sum, 1e-09), 0)
     return (cover.reshape(shape).astype(np.float32), tau.reshape(shape).astype(np.float32), kinds.reshape((len(LEVELS),) + shape))
 
-def fold(s, cover, tau, mu):
+def issr_mask(t, rhi):
+    m = np.zeros(np.shape(t)[1:], bool)
+    for li, p in enumerate(LEVELS):
+        with np.errstate(invalid='ignore'):
+            m |= (np.asarray(t[li]) < sac_saturated(p, ISSR_ETA)[0]) & (np.asarray(rhi[li]) >= 100)
+    return m
+
+def fold_issr(s, issr, cover, tau, mu, fix):
     hcc = s.get('hcc')
     if hcc is None:
         return
-    h0 = np.clip(np.nan_to_num(hcc, nan=0), 0, 100) / 100
-    new = cover * (1 - h0)
-    s['contrail'] = (100 * new).astype(np.float32)
-    s['hcc'] = np.where(np.isfinite(hcc), 100 - (100 - hcc) * (1 - cover), hcc).astype(np.float32)
+    N, g = fix
+    c = np.where(issr, 1 - np.exp(-g * np.clip(cover, 0, 1)), 0).astype(np.float32)
+    s['contrail'] = (100 * (1 - N) * c).astype(np.float32)
+    on = issr & np.isfinite(hcc)
+    s['hcc'] = np.where(on, np.minimum(hcc, 100 * (N + (1 - N) * c)), hcc).astype(np.float32)
     if s.get('tcc') is not None:
-        tcc = s['tcc']
-        s['tcc'] = np.where(np.isfinite(tcc), np.maximum(100 - (100 - tcc) * (1 - cover), s['hcc']), tcc).astype(np.float32)
-    keep = (1 - (new + IN_CIRRUS * cover * h0) * reflectance(tau, mu)).astype(np.float32)
+        bands = [np.clip(np.nan_to_num(s.get(k), nan=0) if s.get(k) is not None else np.zeros_like(hcc), 0, 100) / 100 for k in ('lcc', 'mcc')]
+        total = 100 * (1 - (1 - bands[0]) * (1 - bands[1]) * (1 - s['hcc'] / 100))
+        s['tcc'] = np.where(on & np.isfinite(s['tcc']), total, s['tcc']).astype(np.float32)
+    keep = (1 - (1 - N) * c * reflectance(tau, mu)).astype(np.float32)
     for k in ('sw', 'rnsw'):
         if s.get(k) is not None:
             s[k] = (s[k] * keep).astype(np.float32)

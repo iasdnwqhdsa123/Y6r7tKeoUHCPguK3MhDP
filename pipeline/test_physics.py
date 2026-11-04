@@ -3478,16 +3478,32 @@ class Contrails(unittest.TestCase):
         self.assertGreater(float(down[0, 0]), 0.01)
         self.assertEqual(float(up[0, 0]), 0.0)
 
-    def test_fold_into_cloud_and_sunshine(self):
-        s = {'hcc': np.array([[50.0]], np.float32), 'tcc': np.array([[60.0]], np.float32), 'sw': np.array([[800.0]], np.float32), 'shf': np.array([[200.0, -20.0]], np.float32)}
-        self.C.fold(s, np.array([[0.5]], np.float32), np.array([[0.3]], np.float32), np.array([[0.8]], np.float32))
-        self.assertAlmostEqual(float(s['hcc'][0, 0]), 75.0, places=3)
-        self.assertAlmostEqual(float(s['tcc'][0, 0]), 80.0, places=3)
-        self.assertAlmostEqual(float(s['contrail'][0, 0]), 25.0, places=3)
-        r = float(self.C.reflectance(0.3, 0.8))
-        self.assertAlmostEqual(float(s['sw'][0, 0]), 800 * (1 - (0.25 + 0.5 * 0.25) * r), places=2)
-        self.assertLess(float(s['shf'][0, 0]), 200.0)
-        self.assertEqual(float(s['shf'][0, 1]), -20.0)
+    def test_fold_issr_replaces_the_models_cirrus(self):
+        C = self.C
+        s = {'hcc': np.array([[99.0, 99.0, 20.0]], np.float32), 'tcc': np.array([[99.0, 99.0, 30.0]], np.float32), 'lcc': np.array([[0.0, 50.0, 10.0]], np.float32), 'mcc': np.zeros((1, 3), np.float32), 'sw': np.array([[800.0, 800.0, 800.0]], np.float32), 'shf': np.array([[200.0, 200.0, -20.0]], np.float32)}
+        issr = np.array([[True, True, False]])
+        cover = np.array([[0.0, 0.5, 0.5]], np.float32)
+        tau = np.full((1, 3), 0.2, np.float32)
+        C.fold_issr(s, issr, cover, tau, np.full((1, 3), 0.8, np.float32), (0.6, 2.0))
+        self.assertAlmostEqual(float(s['hcc'][0, 0]), 60.0, places=3)
+        c = 1 - math.exp(-1.0)
+        self.assertAlmostEqual(float(s['hcc'][0, 1]), 100 * (0.6 + 0.4 * c), places=3)
+        self.assertEqual(float(s['hcc'][0, 2]), 20.0)
+        self.assertAlmostEqual(float(s['tcc'][0, 0]), 60.0, places=3)
+        self.assertAlmostEqual(float(s['tcc'][0, 1]), 100 * (1 - 0.5 * (1 - (0.6 + 0.4 * c))), places=3)
+        self.assertEqual(float(s['tcc'][0, 2]), 30.0)
+        self.assertEqual(float(s['sw'][0, 0]), 800.0)
+        self.assertAlmostEqual(float(s['sw'][0, 1]), 800 * (1 - 0.4 * c * float(C.reflectance(0.2, 0.8))), places=2)
+        self.assertLess(float(s['shf'][0, 1]), 200.0)
+        self.assertEqual(float(s['shf'][0, 2]), -20.0)
+        self.assertAlmostEqual(float(s['contrail'][0, 1]), 40 * c, places=3)
+
+    def test_issr_mask(self):
+        C = self.C
+        t = np.full((3, 1, 2), -55.0, np.float32)
+        rhi = np.array([[[90.0, 90.0]], [[100.0, 90.0]], [[80.0, 80.0]]], np.float32)
+        self.assertEqual(C.issr_mask(t, rhi).tolist(), [[True, False]])
+        self.assertEqual(C.issr_mask(t + 25, rhi + 20).tolist(), [[False, False]])
 
     def test_none_without_traffic(self):
         C = self.C
