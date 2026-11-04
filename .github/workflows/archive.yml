@@ -1,0 +1,39 @@
+name: Archive
+on:
+  workflow_run:
+    workflows: ["Forecast data"]
+    types: [completed]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  archive:
+    if: github.event.workflow_run.conclusion != 'cancelled'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      GH_TOKEN: ${{ github.token }}
+      FORECAST_RUN: ${{ github.event.workflow_run.id }}
+      DATA_PATH_SECRET: ${{ secrets.DATA_PATH_SECRET }}
+      ARCHIVE_S3_ENDPOINT: ${{ secrets.ARCHIVE_S3_ENDPOINT }}
+      ARCHIVE_S3_BUCKET: ${{ secrets.ARCHIVE_S3_BUCKET }}
+      ARCHIVE_S3_KEY: ${{ secrets.ARCHIVE_S3_KEY }}
+      ARCHIVE_S3_SECRET: ${{ secrets.ARCHIVE_S3_SECRET }}
+    steps:
+      - name: Anything built?
+        id: any
+        run: |
+          n="$(gh api "repos/${{ github.repository }}/actions/runs/$FORECAST_RUN/artifacts?per_page=100" \
+            --jq '[.artifacts[] | select((.name | startswith("out-")) and .name != "out-mapdata" and .name != "out-ens" and (.expired | not))] | length')"
+          echo "models=$n" >> "$GITHUB_OUTPUT"
+          [ "$n" -gt 0 ] || echo "the run built no model: nothing to archive"
+      - uses: actions/checkout@v7
+        if: steps.any.outputs.models != '0'
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+      - name: Make room
+        if: steps.any.outputs.models != '0'
+        run: nohup sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/share/swift > /dev/null 2>&1 &
+      - name: Archive the run's models
+        if: steps.any.outputs.models != '0'
+        run: .github/scripts/publish-data.sh archive-run

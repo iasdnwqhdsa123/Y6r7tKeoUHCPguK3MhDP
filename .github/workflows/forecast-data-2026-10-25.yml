@@ -646,31 +646,8 @@ jobs:
           NETLIFY_SITE_ID: ${{ secrets.NETLIFY_DATA_SITE_ID }}
         run: .github/scripts/publish-data.sh sync
 
-  archive:
-    needs: [check, model]
-    if: always() && needs.check.outputs.any == 'true'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    permissions:
-      contents: read
-      actions: read # this run's outputs (artifacts)
-    steps:
-      - uses: actions/checkout@v7
-      - name: Make room
-        run: |
-          df -h /
-          nohup sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/share/swift > /dev/null 2>&1 &
-      - name: Archive this run's models
-        env:
-          GH_TOKEN: ${{ github.token }}
-          ARCHIVE_S3_ENDPOINT: ${{ secrets.ARCHIVE_S3_ENDPOINT }}
-          ARCHIVE_S3_BUCKET: ${{ secrets.ARCHIVE_S3_BUCKET }}
-          ARCHIVE_S3_KEY: ${{ secrets.ARCHIVE_S3_KEY }}
-          ARCHIVE_S3_SECRET: ${{ secrets.ARCHIVE_S3_SECRET }}
-        run: .github/scripts/publish-data.sh archive-run
-
   cleanup:
-    needs: [check, hours, model, mapdata, publish, archive]
+    needs: [check, hours, model, mapdata, publish]
     if: always() && needs.check.result != 'skipped'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -696,7 +673,7 @@ jobs:
           if [[ "$MESSAGE" == *"runs cleared"* ]]; then before="$(date -u +%Y-%m-%dT%H:%M:%SZ)"; echo "clearing every finished run"; fi
           self=".github/workflows/${SELF#*/.github/workflows/}"; self="${self%%@*}"
           ids="$(gh api --paginate "repos/${{ github.repository }}/actions/runs?status=completed&per_page=100" \
-            --jq ".workflow_runs[] | select(((.path | startswith(\".github/workflows/forecast-data\")) and (.path != \"$self\" or .created_at < \"$before\")) or ((.path == \".github/workflows/fronts-train.yml\" or .path == \".github/workflows/verify.yml\" or .path == \".github/workflows/stop-runs.yml\") and .created_at < \"$before\")) | .id")"
+            --jq ".workflow_runs[] | select(((.path | startswith(\".github/workflows/forecast-data\")) and (.path != \"$self\" or .created_at < \"$before\")) or ((.path == \".github/workflows/fronts-train.yml\" or .path == \".github/workflows/verify.yml\" or .path == \".github/workflows/stop-runs.yml\" or .path == \".github/workflows/archive.yml\") and .created_at < \"$before\")) | .id")"
           keep="$(gh api --paginate "repos/${{ github.repository }}/actions/artifacts?per_page=100" \
             --jq '.artifacts[] | select((.name | startswith("store-") or startswith("out-") or startswith("verify-")) and (.expired | not)) | .workflow_run.id')" || { echo "couldn't list the stores: nothing deleted"; exit 0; }
           for id in $ids; do

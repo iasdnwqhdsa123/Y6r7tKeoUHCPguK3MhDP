@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-R="${GITHUB_REPOSITORY:?}" RUN="${GITHUB_RUN_ID:?}" ATTEMPT="${GITHUB_RUN_ATTEMPT:-1}"
+R="${GITHUB_REPOSITORY:?}" RUN="${FORECAST_RUN:-${GITHUB_RUN_ID:?}}" ATTEMPT="${GITHUB_RUN_ATTEMPT:-1}"
 P="${DATA_PATH_SECRET:+/$DATA_PATH_SECRET}"
 newest() {
   local n
