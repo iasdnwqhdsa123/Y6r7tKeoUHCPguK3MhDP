@@ -3421,5 +3421,94 @@ class VerifyReports(unittest.TestCase):
         self.assertAlmostEqual(sun['night', 't2']['bias'], 1.0, places=2)
         self.assertAlmostEqual(sun['afternoon', 't2']['bias'], 1.0, places=2)
         self.assertEqual(sun['night', 't2']['n'], 6 * 12)
+
+class Contrails(unittest.TestCase):
+
+    def setUp(self):
+        import contrails as C
+        self.C = C
+        self.saved = C._traffic
+        dens = np.zeros((24, 3, 3, 180, 360), np.float32)
+        dens[:, :, 1] = 0.05
+        C._traffic = (dens, np.ones(7, np.float32))
+
+    def tearDown(self):
+        self.C._traffic = self.saved
+
+    def run_at(self, t, rhi, shear=0.004, u=20.0, lat=48.0, lon=10.0):
+        from datetime import datetime
+        C = self.C
+        g = lambda v: np.full((3, 1, 1), v, np.float32)
+        return C.contrail_cirrus(g(t), g(rhi), g(u), g(0.0), np.full((1, 1), shear, np.float32), np.full((1, 1), lat), np.full((1, 1), lon), datetime(2026, 6, 10, 12))
+
+    def test_schmidt_appleman_threshold(self):
+        C = self.C
+        self.assertAlmostEqual(float(C.sac_threshold(250, 1.0, 0.34)), -41.2, delta=1.0)
+        self.assertAlmostEqual(float(C.sac_threshold(250, 0.0, 0.34)), -50.7, delta=1.0)
+        self.assertGreater(float(C.sac_threshold(250, 0.5, 0.37)), float(C.sac_threshold(250, 0.5, 0.3)))
+        self.assertGreater(float(C.sac_threshold(300, 0.5, 0.34)), float(C.sac_threshold(200, 0.5, 0.34)))
+
+    def test_kinds(self):
+        C = self.C
+        cover, _, kinds = self.run_at(-35.0, 110.0)
+        self.assertTrue(np.all(kinds == C.KIND_NONE))
+        self.assertEqual(float(cover[0, 0]), 0.0)
+        cover, _, kinds = self.run_at(-58.0, 70.0)
+        self.assertTrue(np.all(kinds == C.KIND_SHORT))
+        self.assertLess(float(cover[0, 0]), 0.01)
+        _, _, kinds = self.run_at(-58.0, 100.0, shear=0.0)
+        self.assertTrue(np.all(kinds == C.KIND_NARROW))
+        cover, tau, kinds = self.run_at(-55.0, 115.0, shear=0.006)
+        self.assertTrue(np.all(kinds == C.KIND_SPREAD))
+        self.assertGreater(float(cover[0, 0]), 0.5)
+        self.assertGreater(float(tau[0, 0]), 0.1)
+
+    def test_more_cover_and_thicker_the_moister(self):
+        c1, t1, _ = self.run_at(-55.0, 100.0)
+        c2, t2, _ = self.run_at(-55.0, 120.0)
+        self.assertGreater(float(c2[0, 0]), float(c1[0, 0]))
+        self.assertGreater(float(t2[0, 0]), float(t1[0, 0]))
+
+    def test_carried_downwind(self):
+        dens = np.zeros((24, 3, 3, 180, 360), np.float32)
+        dens[:, :, 1, 90 + 48, 180 + 10] = 0.2
+        self.C._traffic = (dens, np.ones(7, np.float32))
+        down, _, _ = self.run_at(-55.0, 110.0, u=30.0, lat=48.5, lon=13.0)
+        up, _, _ = self.run_at(-55.0, 110.0, u=30.0, lat=48.5, lon=8.0)
+        self.assertGreater(float(down[0, 0]), 0.01)
+        self.assertEqual(float(up[0, 0]), 0.0)
+
+    def test_fold_into_cloud_and_sunshine(self):
+        s = {'hcc': np.array([[50.0]], np.float32), 'tcc': np.array([[60.0]], np.float32), 'sw': np.array([[800.0]], np.float32), 'shf': np.array([[200.0, -20.0]], np.float32)}
+        self.C.fold(s, np.array([[0.5]], np.float32), np.array([[0.3]], np.float32), np.array([[0.8]], np.float32))
+        self.assertAlmostEqual(float(s['hcc'][0, 0]), 75.0, places=3)
+        self.assertAlmostEqual(float(s['tcc'][0, 0]), 80.0, places=3)
+        self.assertAlmostEqual(float(s['contrail'][0, 0]), 25.0, places=3)
+        r = float(self.C.reflectance(0.3, 0.8))
+        self.assertAlmostEqual(float(s['sw'][0, 0]), 800 * (1 - (0.25 + 0.5 * 0.25) * r), places=2)
+        self.assertLess(float(s['shf'][0, 0]), 200.0)
+        self.assertEqual(float(s['shf'][0, 1]), -20.0)
+
+    def test_none_without_traffic(self):
+        C = self.C
+        C._traffic, path = (None, C.TRAFFIC_FILE)
+        C.TRAFFIC_FILE = '/nonexistent/contrail_traffic.npz'
+        try:
+            self.assertIsNone(self.run_at(-55.0, 110.0))
+        finally:
+            C.TRAFFIC_FILE = path
+            C._traffic = None
+
+    def test_the_traffic_file(self):
+        C = self.C
+        C._traffic = None
+        tr = C.traffic()
+        self.assertIsNotNone(tr, 'contrail_traffic.npz missing')
+        dens, weekday = tr
+        self.assertEqual(dens.shape, (24, 3, 3, 180, 360))
+        self.assertEqual(weekday.shape, (7,))
+        europe = dens[:, :, :, 90 + 45:90 + 55, 180:180 + 20].sum(axis=(1, 2)).mean()
+        pacific = dens[:, :, :, 90 - 10:90 + 10, 180 - 170:180 - 140].sum(axis=(1, 2)).mean()
+        self.assertGreater(europe, 10 * pacific)
 from test_aviation_world import *
 from test_airspace_world import *
