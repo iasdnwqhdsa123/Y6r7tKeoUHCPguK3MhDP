@@ -2260,7 +2260,10 @@ def pick_run(src, needed, pin=None):
     if pin:
         run = datetime.strptime(pin, '%Y%m%d%H').replace(tzinfo=timezone.utc)
         fhs = [int((v - run).total_seconds() // 3600) for v in needed]
-        return (run, [f for f in fhs if 0 <= f <= src.last_fh(run) and src.builds(f)])
+        fhs = [f for f in fhs if 0 <= f <= src.last_fh(run) and src.builds(f)]
+        if not fhs and run < needed[0]:
+            fhs = [f for f in range(0, 49) if f <= src.last_fh(run) and src.builds(f)]
+        return (run, fhs)
     run, fhs = latest_complete_run(src, needed, log)
     if run is None:
         raise SystemExit(f'no complete {src.id} run found')
