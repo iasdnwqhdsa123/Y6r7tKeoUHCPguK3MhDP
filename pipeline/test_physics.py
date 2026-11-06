@@ -531,6 +531,30 @@ class WindowedFields(unittest.TestCase):
         self.b.resolve_windows(hrrr, None, 0, native, lambda f, k: None)
         self.assertAlmostEqual(float(native['prate'][0]) * 3600, 0.5, places=5)
 
+    def test_hrrr_analysis_hour_takes_its_rain_from_the_run_an_hour_before(self):
+        from datetime import datetime, timezone
+        hrrr, run = (self.S['hrrr'], datetime(2026, 11, 6, 17, tzinfo=timezone.utc))
+        asked = []
+
+        def fetch(src, r, fh, keys):
+            asked.append((r.hour, fh))
+            return {hrrr.surface['prate']: np.array([2.0]), hrrr.surface['refmax']: np.array([38.0]), hrrr.surface['crain']: np.array([1.0])}
+        native = {'prate': None, 'prate_now': np.array([0.0]), 'refmax': np.array([0.0]), 'crain': np.array([0.0]), 't2': np.array([290.0])}
+        self.b.analysis_from_prev(hrrr, run, 0, native, fetch)
+        self.b.resolve_windows(hrrr, run, 0, native, lambda f, k: self.fail('no earlier file of this run'))
+        self.assertEqual(asked, [(16, 1)])
+        self.assertAlmostEqual(float(native['prate'][1][0]) * 3600, 2.0, places=5)
+        self.assertEqual((float(native['refmax'][0]), float(native['crain'][0]), float(native['t2'][0])), (38.0, 1.0, 290.0))
+        native = {'prate': np.array([1.0])}
+        self.b.analysis_from_prev(hrrr, run, 3, native, lambda *a: self.fail('only at step 0'))
+        native = {'prate': None, 'prate_now': np.array([0.0])}
+
+        def gone(*a):
+            raise OSError('404')
+        self.b.analysis_from_prev(hrrr, run, 0, native, gone)
+        self.assertIsNone(native['prate'])
+        self.assertEqual(self.S['gfs'].analysis_prev, ())
+
     def test_ecmwf_gust_none_at_step_0_and_found_at_every_step(self):
         native = {'gust': np.array([0.0])}
         self.b.resolve_windows(self.S['ecmwf'], None, 0, native, lambda f, k: None)
@@ -1344,6 +1368,18 @@ class RainDamp(unittest.TestCase):
         sh = build.showers_share(None, rain, z, z, np.array([48.0, 20, 50]))
         np.testing.assert_allclose(sh[:2], [1.0, 0.0])
         self.assertTrue(np.isnan(sh[2]))
+
+    def test_hrrr_showers_from_its_rains_texture(self):
+        import build
+        even = np.full((15, 15), 2.0)
+        cell = np.zeros((15, 15))
+        cell[6:9, 6:9] = 4.0
+        z, quiet = (np.zeros((15, 15)), np.full((15, 15), 25.0))
+        self.assertLess(build.rain_texture(even, 0.03)[7, 7], 0.01)
+        self.assertGreater(build.rain_texture(cell, 0.03)[7, 7], build.RAIN_CV)
+        self.assertEqual(float(build.showers_share(None, even, z, z, quiet, grid_step=0.03)[7, 7]), 0.0)
+        self.assertEqual(float(build.showers_share(None, cell, z, z, quiet, grid_step=0.03)[7, 7]), 1.0)
+        self.assertEqual(float(build.showers_share(None, cell, z, z, quiet)[7, 7]), 0.0)
 
 class BandsAboveGround(unittest.TestCase):
 
