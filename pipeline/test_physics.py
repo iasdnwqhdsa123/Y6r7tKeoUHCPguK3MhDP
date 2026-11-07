@@ -3078,6 +3078,82 @@ class AromeSource(unittest.TestCase):
         self.assertEqual(out['lsm', 'mf'].parts, [(1.0, 'lsm:0')])
         self.assertNotIn(('ps', ''), out)
 
+class IconD2Omega(unittest.TestCase):
+
+    def test_omega_at_the_levels_from_dwds_files(self):
+        from datetime import datetime, timezone
+        import dwd
+        from sources import ICOND2_GRID, SOURCES
+        src = SOURCES['icond2']
+        self.assertTrue(src.omega)
+        self.assertEqual(src.level_vars['w'], 'omega')
+        omega = [k for k in src.wanted() if k[0] == 'omega']
+        self.assertEqual(omega, [('omega', f'{p} mb') for p in src.levels])
+        self.assertEqual([k for k in src.wanted(sounding=False) if k[0] == 'omega'], omega)
+        run = datetime(2026, 11, 6, 12, tzinfo=timezone.utc)
+        self.assertEqual(dwd.url(run, 9, 'omega', 700), 'https://opendata.dwd.de/weather/nwp/icon-d2/grib/12/omega/icon-d2_germany_regular-lat-lon_pressure-level_2026110612_009_700_omega.grib2.bz2')
+        self.assertEqual(ICOND2_GRID, (43.18, -3.94, 0.02, 746, 1215))
+
+    def test_a_message_is_read_north_first_inside_the_boxes(self):
+        import bz2
+        from unittest import mock
+        import eccodes
+        import dwd
+        import grib
+        import om
+        g = eccodes.codes_grib_new_from_samples('regular_ll_sfc_grib2')
+        for k, v in (('Ni', 4), ('Nj', 3), ('latitudeOfFirstGridPointInDegrees', 0.0), ('latitudeOfLastGridPointInDegrees', 2.0), ('longitudeOfFirstGridPointInDegrees', 10.0), ('longitudeOfLastGridPointInDegrees', 13.0), ('iDirectionIncrementInDegrees', 1.0), ('jDirectionIncrementInDegrees', 1.0), ('jScansPositively', 1)):
+            eccodes.codes_set(g, k, v)
+        a = np.arange(12, dtype=np.float64).reshape(3, 4)
+        eccodes.codes_set_values(g, a.ravel())
+        msg = eccodes.codes_get_message(g)
+        eccodes.codes_release(g)
+        f = dwd.Field(om.Grid(0.0, 10.0, 1.0, 3, 4), msg)
+        np.testing.assert_allclose(f.read((10.0, 0.0, 13.0, 2.0, 1.0)), a[::-1], atol=0.001)
+        np.testing.assert_allclose(f.read((11.0, 1.0, 12.0, 2.0, 1.0)), a[::-1][:2, 1:3], atol=0.001)
+        boxed = f.read((10.0, 0.0, 13.0, 2.0, 1.0), boxes=[(0, 1, 0, 2)])
+        self.assertTrue(np.isnan(boxed[1:]).all() and np.isnan(boxed[0, 2:]).all())
+        np.testing.assert_allclose(boxed[0, :2], [8, 9], atol=0.001)
+        with mock.patch.object(grib, 'http_get', lambda u, **k: bz2.compress(msg)):
+            self.assertEqual(dwd.message('x'), msg)
+
+    def test_fetch_takes_omega_from_dwd_and_builds_without_it(self):
+        from contextlib import redirect_stdout
+        import io
+        from datetime import datetime, timezone
+        from unittest import mock
+        import dwd
+        import om
+        from sources import SOURCES
+        src = SOURCES['icond2']
+        run = datetime(2026, 11, 6, 12, tzinfo=timezone.utc)
+        wanted, asked, got = (src.wanted(), [], [])
+
+        def theirs(urls, static, grid, keys, workers=8):
+            asked.append(list(keys))
+            return {k: f'om:{k[0]}' for k in keys}
+        with mock.patch.object(om, 'fetch_hour', theirs), mock.patch.object(dwd, 'message', lambda u: got.append(u) or u):
+            out = src.fetch(run, 9, wanted)
+        self.assertFalse([k for k in asked[0] if k[0] == 'omega'])
+        self.assertEqual(len(got), len(src.levels))
+        self.assertIsInstance(out['omega', '700 mb'], dwd.Field)
+        self.assertEqual(out['omega', '700 mb'].msg, dwd.url(run, 9, 'omega', 700))
+        self.assertEqual(out['temperature', '700 mb'], 'om:temperature')
+
+        def gone(u):
+            raise IOError('404')
+        with mock.patch.object(om, 'fetch_hour', theirs), mock.patch.object(dwd, 'message', gone), redirect_stdout(io.StringIO()) as log:
+            out = src.fetch(run, 9, wanted)
+        self.assertFalse([k for k in out if k[0] == 'omega'])
+        self.assertEqual(out['temperature', '700 mb'], 'om:temperature')
+        self.assertIn('ICON-D2 from DWD unavailable', log.getvalue())
+
+    def test_omega_to_w(self):
+        import build
+        self.assertAlmostEqual(float(build.omega_to_w(np.float32(-1.0), np.float32(-5.0), 700)), 0.1121, places=4)
+        w = build.omega_to_w(np.array([[[2.0]], [[2.0]]], np.float32), np.array([[[15.0]], [[-20.0]]], np.float32), np.array([1000, 500], np.float32)[:, None, None])
+        np.testing.assert_allclose(w.ravel(), [-2 * 287.05 * 288.15 / (100000.0 * 9.80665), -2 * 287.05 * 253.15 / (50000.0 * 9.80665)], rtol=1e-05)
+
 class IconOpenMeteo(unittest.TestCase):
 
     def setUp(self):
