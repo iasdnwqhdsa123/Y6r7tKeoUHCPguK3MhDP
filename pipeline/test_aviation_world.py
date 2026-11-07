@@ -4,7 +4,7 @@ import tempfile
 import unittest
 import aviation as A
 import borders as B
-__all__ = ['AviationWorld', 'BordersWorld', 'IdentsKFallback']
+__all__ = ['AviationWorld', 'BordersWorld', 'IdentsKFallback', 'RunwayHeadings', 'OverviewHeading']
 
 def field(id_, lat, lon, ident, kind='small_airport', name='', icao='', local='', region='US-XX'):
     return {'id': id_, 'type': kind, 'name': name or f'Field {id_}', 'latitude_deg': str(lat), 'longitude_deg': str(lon), 'elevation_ft': '500', 'icao_code': icao, 'gps_code': icao or ident, 'local_code': local, 'ident': ident, 'iata_code': '', 'municipality': 'Town', 'iso_region': region}
@@ -15,14 +15,14 @@ FILLERS = [field(str(i), 30 + i % 20, -120 + i % 40, f'X{i:04d}', local=f'{i:04d
 KBIG = field('big', 39.4, -77.4, 'KBIG', kind='large_airport', name='Big Intl', icao='KBIG', local='BIG', region='US-MD')
 US_NAVAIDS = [navaid('WWW', 40, -118, 14.3, 'VORTAC', 'West'), navaid('EEE', 40, -75, -12.0, 'VOR', 'East')]
 
-def snapshot(airports, navaids):
-    fake = {'airports.csv': airports, 'runways.csv': [], 'airport-frequencies.csv': [], 'navaids.csv': navaids}
+def snapshot(airports, navaids, runways=()):
+    fake = {'airports.csv': airports, 'runways.csv': list(runways), 'airport-frequencies.csv': [], 'navaids.csv': navaids}
     real = A.ourairports
     A.ourairports = lambda name: fake[name]
     try:
         with tempfile.TemporaryDirectory() as d:
             out = {'kinds': A.build_airports(d)}
-            for name in ('idents', 'airports', 'magvar', 'cells'):
+            for name in ('idents', 'airports', 'magvar', 'cells', 'overview'):
                 with open(os.path.join(d, f'{name}.json')) as f:
                     out[name] = json.load(f)
             return out
@@ -102,3 +102,53 @@ class IdentsKFallback(unittest.TestCase):
         self.assertNotIn('KXYZ', idents)
         self.assertEqual(idents['XYZ'][3], 'US VOR')
         self.assertEqual(idents['SBGR'][3], 'GUARULHOS')
+
+class RunwayHeadings(unittest.TestCase):
+
+    def setUp(self):
+        self.grid = A.magvar_grid([(40, -118, 14.0), (40, -75, -11.0)])
+
+    def rw(self, le='', heading='', ends=None):
+        r = {'le_ident': le, 'le_heading_degT': heading}
+        if ends:
+            r.update(zip(('le_latitude_deg', 'le_longitude_deg', 'he_latitude_deg', 'he_longitude_deg'), map(str, ends)))
+        return r
+
+    def test_own_heading_first(self):
+        self.assertEqual(A.runway_heading(self.rw('15', '143.6'), (40, -75), self.grid), 144)
+
+    def test_from_the_ends(self):
+        self.assertEqual(A.runway_heading(self.rw('18', ends=(40.0, -75.0, 40.01, -75.0)), (40, -75), self.grid), 0)
+        self.assertEqual(A.runway_heading(self.rw('09', ends=(40.0, -75.01, 40.0, -75.0)), (40, -75), self.grid), 90)
+
+    def test_number_turned_to_true(self):
+        self.assertEqual(A.runway_heading(self.rw('15'), (40, -75), self.grid), 139)
+        self.assertEqual(A.runway_heading(self.rw('9L'), (40, -118), self.grid), 104)
+        self.assertEqual(A.runway_heading(self.rw('NE'), (40, -75), self.grid), 45)
+
+    def test_none_for_helipads_and_odd_idents(self):
+        for le in ('H1', 'ALL', '', '40', '00'):
+            self.assertIsNone(A.runway_heading(self.rw(le), (40, -75), self.grid), le)
+
+class OverviewHeading(unittest.TestCase):
+
+    def rw(self, ref, le, he, length, surface, heading=''):
+        return {'airport_ref': ref, 'le_ident': le, 'he_ident': he, 'length_ft': str(length), 'width_ft': '100', 'surface': surface, 'lighted': '1', 'closed': '0', 'le_heading_degT': heading}
+
+    def test_main_runway_as_the_map_picks_it(self):
+        med = field('med', 39.7, -77.7, 'KMED', kind='medium_airport', name='Med Regional', icao='KMED', region='US-MD')
+        bare = field('bare', 39.9, -77.9, 'KBAR', kind='medium_airport', name='No Runways', icao='KBAR', region='US-MD')
+        runways = [self.rw('big', '18', '36', 9000, 'ASP', '3.4'), self.rw('med', '09', '27', 5000, 'TURF', '88.6'), self.rw('med', '14', '32', 4000, 'ASPH', '137.2'), self.rw('small', '05', '23', 3000, 'ASP', '50')]
+        ov = snapshot(FILLERS + [KBIG, med, bare], US_NAVAIDS, runways)['overview']
+        recs = {r[0]: r for r in ov['a']}
+        self.assertEqual(recs['KBIG'][7:], [3])
+        self.assertEqual(recs['KMED'][7:], [137])
+        self.assertEqual(len(recs['KBAR']), 7)
+        self.assertTrue(all((isinstance(r[7], int) for r in ov['a'] if len(r) > 7)))
+
+    def test_main_runway_heading(self):
+        rw = lambda length, surface, h: ['', length, 50, surface, 0, h]
+        self.assertEqual(A.main_runway_heading([rw(5000, 'TURF', 90), rw(3000, 'ASP', 140)]), 90)
+        self.assertEqual(A.main_runway_heading([rw(5000, 'GRS', None), rw(2000, 'GRS', 10)]), 10)
+        self.assertIsNone(A.main_runway_heading([rw(5000, 'ASP', None)]))
+        self.assertIsNone(A.main_runway_heading([]))

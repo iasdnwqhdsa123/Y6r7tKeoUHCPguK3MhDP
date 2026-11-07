@@ -5,6 +5,7 @@ import io
 import json
 import math
 import os
+import re
 import time
 import urllib.error
 import urllib.parse
@@ -12,7 +13,7 @@ import urllib.request
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from airspace import west_pacific
-VERSION = 9
+VERSION = 11
 UA = {'User-Agent': 'wx-pipeline/1.0'}
 OURAIRPORTS = ('https://davidmegginson.github.io/ourairports-data', 'https://ourairports.com/data')
 REGIONS = ((-180.0, 5.0, -50.0, 75.0), (-32.0, 26.0, 60.0, 72.0), (-82.0, -56.0, -32.0, 5.0), (9.0, -36.0, 38.0, -14.0), (165.0, -48.0, 179.9, -33.0))
@@ -98,12 +99,20 @@ def build_airports(d: str) -> dict:
     runways = ourairports('runways.csv')
     freqs = ourairports('airport-frequencies.csv')
     navaids = ourairports('navaids.csv')
+    vars_ = []
+    for n in navaids:
+        lat, lon = (num(n.get('latitude_deg'), 5), num(n.get('longitude_deg'), 5))
+        mv = num(n.get('magnetic_variation_deg'), 1)
+        if (n.get('type') or '').upper() in NAVAID_TYPES and region_of(lat, lon) is not None and (mv is not None):
+            vars_.append((lat, lon, mv))
+    grid = magvar_grid(vars_)
+    where = {a['id']: (num(a.get('latitude_deg')), num(a.get('longitude_deg'))) for a in airports}
     rw_by = defaultdict(list)
     for r in runways:
         if r.get('closed') == '1':
             continue
         ids = '/'.join((x for x in (r.get('le_ident'), r.get('he_ident')) if x))
-        rw_by[r['airport_ref']].append([ids, num(r.get('length_ft'), 0), num(r.get('width_ft'), 0), (r.get('surface') or '').strip()[:12], 1 if r.get('lighted') == '1' else 0, num(r.get('le_heading_degT'), 0)])
+        rw_by[r['airport_ref']].append([ids, num(r.get('length_ft'), 0), num(r.get('width_ft'), 0), (r.get('surface') or '').strip()[:12], 1 if r.get('lighted') == '1' else 0, runway_heading(r, where.get(r['airport_ref']), grid)])
     fq_by = defaultdict(list)
     for f in freqs:
         mhz = num(f.get('frequency_mhz'), 3)
@@ -131,12 +140,12 @@ def build_airports(d: str) -> dict:
         kinds[t] += 1
         by_region[REGION_NAMES[reg]] += 1
         if t in ('L', 'M'):
-            overview['a'].append(rec[:7])
+            h = main_runway_heading(rec[11])
+            overview['a'].append(rec[:7] + ([h] if h is not None else []))
         if t != 'H':
             for key in {code, lid} - {''}:
                 (idents if reg < IDENTS_FIRST else later).setdefault(key, [lat, lon, 'A', rec[1][:30]])
             search.append([code, rec[1], t, round(lat, 3), round(lon, 3), rec[9], rec[10], ' '.join(sorted({lid, rec[8]} - {'', code}))])
-    vars_ = []
     for n in navaids:
         t = (n.get('type') or '').upper()
         lat, lon = (num(n.get('latitude_deg'), 5), num(n.get('longitude_deg'), 5))
@@ -145,14 +154,11 @@ def build_airports(d: str) -> dict:
             continue
         khz = num(n.get('frequency_khz'))
         freq = None if khz is None else round(khz / 1000, 2) if khz >= 10000 else round(khz)
-        mv = num(n.get('magnetic_variation_deg'), 1)
         rec = [(n.get('ident') or '').upper(), (n.get('name') or '')[:40], t, lat, lon, freq, num(n.get('elevation_ft'), 0), (n.get('dme_channel') or '').strip()]
         cells[cell_of(lat, lon)]['n'].append(rec)
         kinds[t] += 1
         if t in ('VOR', 'VORTAC', 'VOR-DME'):
             overview['n'].append(rec[:6])
-        if mv is not None:
-            vars_.append((lat, lon, mv))
         if rec[0]:
             (idents if reg < IDENTS_FIRST else later).setdefault(rec[0], [lat, lon, 'N', rec[1][:30], t])
     merge_later(idents, later)
@@ -168,8 +174,50 @@ def build_airports(d: str) -> dict:
     sizes += write(os.path.join(d, 'idents.json'), idents)
     sizes += write(os.path.join(d, 'airports.json'), {'v': 1, 'a': search})
     print(f'airports: {len(cells)} cells, {len(idents)} idents, {len(search)} searchable, {sizes / 1000000.0:.1f} MB', flush=True)
-    write(os.path.join(d, 'magvar.json'), magvar_grid(vars_))
+    write(os.path.join(d, 'magvar.json'), grid)
     return dict(kinds)
+PAVED = re.compile('ASP|CON|PEM|BIT|TAR|PAV|ASF|BRI', re.I)
+
+def main_runway_heading(rws):
+    rws = [rw for rw in rws if rw[5] is not None]
+    if not rws:
+        return None
+    longest = max((rw[1] or 0 for rw in rws))
+    hard = next((rw for rw in rws if PAVED.search(rw[3] or '') and (rw[1] or 0) >= 0.7 * longest), None)
+    return int(round((hard or max(rws, key=lambda rw: rw[1] or 0))[5])) % 360
+COMPASS = {'N': 0, 'NNE': 22.5, 'NE': 45, 'ENE': 67.5, 'E': 90, 'ESE': 112.5, 'SE': 135, 'SSE': 157.5, 'S': 180, 'SSW': 202.5, 'SW': 225, 'WSW': 247.5, 'W': 270, 'WNW': 292.5, 'NW': 315, 'NNW': 337.5}
+
+def magvar_at(grid: dict, lat: float, lon: float):
+    fx, fy = ((lon - grid['west']) / grid['step'], (lat - grid['south']) / grid['step'])
+    x0, y0 = (math.floor(fx), math.floor(fy))
+    sw = sv = 0.0
+    for dx, dy in ((0, 0), (1, 0), (0, 1), (1, 1)):
+        y, x = (y0 + dy, x0 + dx)
+        v = grid['values'][y][x] if 0 <= y < grid['ny'] and 0 <= x < grid['nx'] else None
+        if v is None:
+            continue
+        w = (fx - x0 if dx else 1 - (fx - x0)) * (fy - y0 if dy else 1 - (fy - y0))
+        sw += w
+        sv += w * v
+    return sv / sw if sw > 0.05 else None
+
+def runway_heading(r: dict, at, grid: dict):
+    h = num(r.get('le_heading_degT'))
+    if h is not None:
+        return round(h) % 360
+    la1, lo1, la2, lo2 = (num(r.get(k)) for k in ('le_latitude_deg', 'le_longitude_deg', 'he_latitude_deg', 'he_longitude_deg'))
+    if None not in (la1, lo1, la2, lo2) and (la1, lo1) != (la2, lo2):
+        p1, p2, dl = (math.radians(la1), math.radians(la2), math.radians(lo2 - lo1))
+        b = math.degrees(math.atan2(math.sin(dl) * math.cos(p2), math.cos(p1) * math.sin(p2) - math.sin(p1) * math.cos(p2) * math.cos(dl)))
+        return round(b) % 360
+    le = (r.get('le_ident') or '').strip().upper()
+    if le in COMPASS:
+        return round(COMPASS[le]) % 360
+    m = re.match('^(\\d{1,2})[LRCWGSUAT]?$', le)
+    if not m or not 1 <= int(m.group(1)) <= 36:
+        return None
+    mv = magvar_at(grid, *at) if at and None not in at else None
+    return round(int(m.group(1)) * 10 + (mv or 0)) % 360
 
 def magvar_grid(samples, step: float=2.0) -> dict:
     west = [v for lat, lon, v in samples if 30 < lat < 50 and -125 < lon < -110]
