@@ -1535,6 +1535,26 @@ class RidgeFields(unittest.TestCase):
         for f in ('nlow', 'wlow'):
             self.assertNotIn(f, build.FREE_FIELDS)
 
+    def test_wave_only_w_stays_out_of_ridge_and_sink(self):
+        import build
+        from sources import SOURCES
+        self.assertTrue(SOURCES['icond2'].w_wave_only)
+        self.assertFalse(SOURCES['hrrr'].w_wave_only)
+        s, lv, levels, _ = grid_column(n=3)
+        one = lambda x: np.full((3, 3), x, np.float32)
+        s.update(ps=one(1013.25), sw=one(0), shf=one(0), hpbl=one(200))
+        s['zs'] = np.array([[0, 0, 0], [0, 300, 0], [0, 0, 0]], np.float32)
+        lv['w'] = np.full(lv['t'].shape, -1.5, np.float32)
+        both = build.analyse(dict(s), dict(lv), levels, 0.05, one(40))
+        only = build.analyse(dict(s), dict(lv, w_wave_only=True), levels, 0.05, one(40))
+        none = build.analyse(dict(s), {k: v for k, v in lv.items() if k != 'w'}, levels, 0.05, one(40))
+        self.assertIn('wv10000', only)
+        np.testing.assert_allclose(only['wv10000'], both['wv10000'])
+        self.assertIn('wlow', both)
+        self.assertNotIn('wlow', only)
+        np.testing.assert_allclose(only['sink'], none['sink'], equal_nan=True)
+        self.assertFalse(np.allclose(both['sink'], none['sink'], equal_nan=True))
+
 class LeeExposure(unittest.TestCase):
 
     def test_ridge_across_the_wind(self):
