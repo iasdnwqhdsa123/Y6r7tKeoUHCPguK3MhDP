@@ -1538,7 +1538,7 @@ class RidgeFields(unittest.TestCase):
     def test_wave_only_w_stays_out_of_ridge_and_sink(self):
         import build
         from sources import SOURCES
-        self.assertTrue(SOURCES['icond2'].w_wave_only)
+        self.assertTrue(SOURCES['icond2'].w_wave_only and SOURCES['arome'].w_wave_only)
         self.assertFalse(SOURCES['hrrr'].w_wave_only)
         s, lv, levels, _ = grid_column(n=3)
         one = lambda x: np.full((3, 3), x, np.float32)
@@ -2996,12 +2996,12 @@ class AromeSource(unittest.TestCase):
                 continue
             name = om.om_name(key)
             self.assertTrue(name in files or set(om.RECIPES.get(name, ((None,), None))[0]) <= files, key)
-        for key in ((g, f'{lv} mb') for lv in src.levels + src.cloud_levels + src.snd_levels for g in src.level_vars.values()):
+        for key in ((g, f'{lv} mb') for lv in src.levels + src.cloud_levels + src.snd_levels for g in src.level_vars.values() if g not in src.mf_levels):
             self.assertIn(om.om_name(key), files)
         self.assertEqual(set(src.mf_fields), {'ps', 'blh', 'shf', 'lsm'})
         for need in ('zs', 'ps', 't2', 'td2', 'u10', 'v10', 'mslp', 'sw', 'prate'):
             self.assertIn(need, src.surface)
-        self.assertNotIn('w', src.level_vars)
+        self.assertEqual((src.level_vars['w'], src.mf_levels), ('wz', {'wz': mf.WZ}))
         slots = {h: name for name, runs in check.SLOTS.items() for m, h in runs.items() if m == 'arome'}
         self.assertEqual(sorted(slots), [3, 9, 15, 21])
         for h, name in slots.items():
@@ -3173,6 +3173,204 @@ class IconD2Omega(unittest.TestCase):
         self.assertAlmostEqual(float(build.omega_to_w(np.float32(-1.0), np.float32(-5.0), 700)), 0.1121, places=4)
         w = build.omega_to_w(np.array([[[2.0]], [[2.0]]], np.float32), np.array([[[15.0]], [[-20.0]]], np.float32), np.array([1000, 500], np.float32)[:, None, None])
         np.testing.assert_allclose(w.ravel(), [-2 * 287.05 * 288.15 / (100000.0 * 9.80665), -2 * 287.05 * 253.15 / (50000.0 * 9.80665)], rtol=1e-05)
+
+class AromeIP3(unittest.TestCase):
+    LEVELS = (1000, 950, 925, 900, 850, 800, 700, 600, 500, 400, 300)
+
+    @staticmethod
+    def message(code, h, p, n):
+        import eccodes
+        g = eccodes.codes_grib_new_from_samples('regular_ll_pl_grib2')
+        for k, v in (('discipline', code[0]), ('parameterCategory', code[1]), ('parameterNumber', code[2]), ('typeOfFirstFixedSurface', 100), ('scaleFactorOfFirstFixedSurface', 0), ('scaledValueOfFirstFixedSurface', p * 100), ('indicatorOfUnitOfTimeRange', 1), ('forecastTime', h), ('Ni', n), ('Nj', 2)):
+            eccodes.codes_set(g, k, v)
+        eccodes.codes_set_values(g, h * 1000 + p + np.arange(2 * n) / 8)
+        m = eccodes.codes_get_message(g)
+        eccodes.codes_release(g)
+        return m
+
+    @classmethod
+    def ip3(cls, lo, nh, swap=None):
+        import mf
+        ms = [cls.message(c, lo + h, p, 2 + (f * 7 + h * 3 + j) % 11) for f, c in enumerate(mf.IP3_FIELDS) for h in range(nh) for j, p in enumerate(mf.IP3_LEVELS)]
+        if swap:
+            i, j = swap
+            ms[i], ms[j] = (ms[j], ms[i])
+        return b''.join(ms)
+
+    def served(self, data):
+        from unittest import mock
+        import grib
+        import mf
+        reads = []
+
+        class Ranges:
+
+            def __init__(self, u, **k):
+                self.size = None
+
+            def get(self, a, n):
+                reads.append(n)
+                self.size = len(data)
+                return data[a:a + n]
+
+            def close(self):
+                pass
+        return (reads, mock.patch.multiple(mf, _Ranges=Ranges, _IP3={}, PROBE=600), mock.patch.object(grib, 'http_get', lambda u, rng, **k: data[rng[0]:rng[1] + 1]))
+
+    def test_the_files_and_their_order(self):
+        from datetime import datetime, timezone
+        import mf
+        from sources import SOURCES
+        src = SOURCES['arome']
+        self.assertEqual((src.omega, src.w_wave_only, src.mf_levels['wz']), (False, True, (0, 2, 9)))
+        self.assertEqual(mf.WZ, (0, 2, 9))
+        self.assertEqual([k for k in src.wanted() if k[0] == 'wz'], [('wz', f'{p} mb') for p in src.levels])
+        self.assertTrue(set(src.levels) <= set(mf.IP3_LEVELS))
+        self.assertEqual(len(mf.IP3_SHARE), len(mf.IP3_FIELDS))
+        run = datetime(2026, 11, 7, 9, tzinfo=timezone.utc)
+        self.assertEqual(mf.url(run, 'IP3', 8), 'https://meteofrance-pnt.s3.rbx.io.cloud.ovh.net/pnt/2026-11-07T09:00:00Z/arome/0025/IP3/arome__0025__IP3__07H12H__2026-11-07T09:00:00Z.grib2')
+        self.assertEqual(mf.ip3_index((0, 2, 0, 7, 100), 7, 6), 0)
+        self.assertEqual(mf.ip3_index((0, 2, 9, 8, 300), 7, 6), (5 * 6 + 1) * 24 + 8)
+        for bad in ((0, 2, 9, 13, 300), (0, 2, 9, 8, 975), (0, 0, 0, 8, 300)):
+            with self.assertRaises(ValueError):
+                mf.ip3_index(bad, 7, 6)
+        self.assertEqual((mf._share(0, 6), mf._share(7 * 6 * 24, 6)), (0.0, 1.0))
+        m = self.message(mf.WZ, 8, 925, 3)
+        self.assertEqual(mf.head(m[:mf.HEAD]), ((0, 2, 9, 8, 925), len(m)))
+        self.assertIsNone(mf.head(m[:100]))
+        self.assertIsNone(mf.head(b'GRIB' + m[4:6] + b'\x00\x01' + m[8:mf.HEAD]))
+
+    def test_found_by_their_headers_and_downloaded_alone(self):
+        from datetime import datetime, timezone
+        import grib
+        import mf
+        lo, hi = mf.group(50)
+        nh = hi - lo + 1
+        data = self.ip3(lo, nh)
+        run = datetime(2026, 11, 7, 3, tzinfo=timezone.utc)
+        reads, ranges, dl = self.served(data)
+        with ranges, dl:
+            got = mf.isobaric(run, 50, mf.WZ, self.LEVELS)
+            first = list(reads)
+            reads.clear()
+            again = mf.isobaric(run, 51, mf.WZ, self.LEVELS)
+            known, n_again = (mf._IP3[mf.url(run, 'IP3', 51)], len(reads))
+            mf._IP3[mf.url(run, 'IP3', 50)] = (known[0], {i: (o + 7, n) for i, (o, n) in known[1].items()})
+            self.assertEqual(mf.isobaric(run, 50, mf.WZ, self.LEVELS), got)
+            self.assertEqual(mf._IP3[mf.url(run, 'IP3', 50)][1][0], (0, len(self.message(mf.IP3_FIELDS[0], lo, 100, 2))))
+        self.assertEqual(set(got), set(self.LEVELS))
+        for h, out in ((50, got), (51, again)):
+            for p, m in out.items():
+                self.assertEqual(mf.head(m[:mf.HEAD])[0], (0, 2, 9, h, p))
+                self.assertAlmostEqual(float(grib.decode(m)[0].flat[0]), h * 1000 + p, places=2)
+        self.assertEqual(first[0], mf.HEAD)
+        self.assertLessEqual(sum((n == mf.PROBE for n in first)), 5)
+        self.assertLessEqual(sum((n == mf.HEAD for n in first[1:])), 15)
+        self.assertLess(n_again, len(first))
+        self.assertEqual(known[0], len(data))
+
+    def test_a_file_not_laid_out_as_ip3s_gives_no_w(self):
+        from datetime import datetime, timezone
+        import mf
+        lo, hi = mf.group(50)
+        nh = hi - lo + 1
+        i = mf.ip3_index(mf.WZ + (50, 350), lo, nh)
+        reads, ranges, dl = self.served(self.ip3(lo, nh, swap=(i, i + 1)))
+        with ranges, dl, self.assertRaises(OSError):
+            mf.isobaric(datetime(2026, 11, 7, 3, tzinfo=timezone.utc), 50, mf.WZ, self.LEVELS)
+
+    def test_ranges_keep_one_connection_through_the_proxy(self):
+        from unittest import mock
+        import mf
+        made = []
+
+        class Response:
+
+            def __init__(self, status, body=b'x' * 10):
+                self.status, self.body = (status, body)
+
+            def read(self):
+                return self.body
+
+            def getheader(self, k, d=None):
+                return 'bytes 0-9/680727100' if k == 'Content-Range' and self.status == 206 else d
+
+        class Conn:
+
+            def __init__(self, host, port, timeout=None, context=None):
+                self.host, self.port, self.tunnel, self.asked = (host, port, None, [])
+                made.append(self)
+
+            def set_tunnel(self, host, port):
+                self.tunnel = (host, port)
+
+            def request(self, method, path, headers):
+                self.asked.append((path, headers['Range']))
+
+            def getresponse(self):
+                return Response(*statuses.pop(0))
+
+            def close(self):
+                pass
+        u = 'https://meteofrance-pnt.s3.rbx.io.cloud.ovh.net/pnt/x/IP3.grib2'
+        statuses = [(206,), (206,), (500,), (206,)]
+        with mock.patch.object(mf.http.client, 'HTTPSConnection', Conn), mock.patch.object(mf.time, 'sleep', lambda s: None), mock.patch.object(mf.urllib.request, 'getproxies', lambda: {'https': 'http://127.0.0.1:3128'}), mock.patch.object(mf.urllib.request, 'proxy_bypass', lambda h: False):
+            rd = mf._Ranges(u)
+            self.assertEqual(rd.get(0, 10), b'x' * 10)
+            self.assertEqual(rd.get(100, 256), b'x' * 10)
+            self.assertEqual(rd.size, 680727100)
+            self.assertEqual(len(made), 1)
+            self.assertEqual(((made[0].host, made[0].port), made[0].tunnel), (('127.0.0.1', 3128), ('meteofrance-pnt.s3.rbx.io.cloud.ovh.net', 443)))
+            self.assertEqual(made[0].asked, [('/pnt/x/IP3.grib2', 'bytes=0-9'), ('/pnt/x/IP3.grib2', 'bytes=100-355')])
+            rd.get(5, 1)
+            self.assertEqual(len(made), 2)
+            statuses[:] = [(404,)]
+            with self.assertRaises(FileNotFoundError):
+                rd.get(5, 1)
+            self.assertEqual(statuses, [])
+
+    def test_fetch_takes_w_from_ip3_and_builds_without_it(self):
+        from contextlib import redirect_stdout
+        import io
+        from datetime import datetime, timezone
+        from unittest import mock
+        import mf
+        import om
+        from sources import SOURCES
+        src = SOURCES['arome']
+        run = datetime(2026, 11, 7, 9, tzinfo=timezone.utc)
+        asked = []
+
+        def theirs(urls, static, grid, keys, workers=8):
+            asked.append(list(keys))
+            return {k: f'om:{k[0]}' for k in keys}
+        with mock.patch.object(om, 'fetch_hour', theirs), mock.patch.object(mf, 'local', lambda u: u), mock.patch.object(mf, 'message', lambda path, key: f'{key[0]}:{key[1]}'), mock.patch.object(mf, 'isobaric', lambda run, fh, code, ps: {p: f'{code}:{fh}:{p}' for p in ps}):
+            out = src.fetch(run, 12, src.wanted())
+        self.assertFalse([k for k in asked[0] if k[0] == 'wz'])
+        self.assertIsInstance(out['wz', '700 mb'], mf.Field)
+        self.assertEqual(out['wz', '700 mb'].parts, [(1.0, '(0, 2, 9):12:700')])
+        self.assertEqual(len([k for k in out if k[0] == 'wz']), len(src.levels))
+
+        def gone(*a):
+            raise FileNotFoundError('HTTP 404')
+        with mock.patch.object(om, 'fetch_hour', theirs), mock.patch.object(mf, 'local', lambda u: u), mock.patch.object(mf, 'message', lambda path, key: f'{key[0]}:{key[1]}'), mock.patch.object(mf, 'isobaric', gone), redirect_stdout(io.StringIO()) as log:
+            out = src.fetch(run, 12, src.wanted())
+        self.assertFalse([k for k in out if k[0] == 'wz'])
+        self.assertEqual(out['temperature', '700 mb'], 'om:temperature')
+        self.assertIsInstance(out['blh', 'mf'], mf.Field)
+        self.assertEqual(log.getvalue().count('\n'), 1)
+        self.assertIn('AROME IP3 wz unavailable', log.getvalue())
+
+    def test_replays_ask_the_archive_for_no_w(self):
+        try:
+            import replay
+        except ImportError:
+            self.skipTest('no replay.py here')
+        from sources import SOURCES
+        for m, w in (('icond2', 'omega'), ('arome', 'wz')):
+            v = replay.variables(SOURCES[m])
+            self.assertTrue(v)
+            self.assertFalse([x for x in v if x.startswith(w)], m)
 
 class IconOpenMeteo(unittest.TestCase):
 
