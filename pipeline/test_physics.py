@@ -678,7 +678,7 @@ class WindowedFields(unittest.TestCase):
                 check.main()
                 return dict((line.strip().split('=', 1) for line in f if '=' in line))
 
-        def site(models=('hrrr', 'gfs', 'ecmwf', 'icon', 'icond2', 'ens'), free=True, maps=True, stale=False):
+        def site(models=('hrrr', 'gfs', 'ecmwf', 'icon', 'icond2', 'arome', 'ens'), free=True, maps=True, stale=False):
 
             def pub(url):
                 if '/free/' in url:
@@ -693,13 +693,14 @@ class WindowedFields(unittest.TestCase):
         self.assertEqual(outputs(site(stale=True))['any'], 'true')
         self.assertEqual(outputs(site(stale=True), '--missing-only')['any'], 'false')
         o = outputs(site(models=(), free=False, maps=False), '--missing-only')
-        self.assertEqual((o['models'], o['free'], o['airspace']), ('hrrr gfs ecmwf icon icond2 ens', 'true', 'true'))
+        self.assertEqual((o['models'], o['free'], o['airspace']), ('hrrr gfs ecmwf icon icond2 arome ens', 'true', 'true'))
         from sources import PAUSED, REQUIRED, SOURCES
         self.assertEqual(o['active'], json.dumps([m for m in SOURCES if m not in PAUSED]))
         self.assertEqual(json.loads(o['required']), ['hrrr', 'gfs'])
-        self.assertEqual(outputs(site(models=('hrrr', 'gfs', 'ecmwf', 'icond2', 'ens')), '--missing-only')['models'], 'icon')
-        self.assertEqual(outputs(site(models=('hrrr', 'gfs', 'icon', 'icond2', 'ens')), '--missing-only')['models'], 'ecmwf')
-        self.assertEqual(outputs(site(models=('hrrr', 'gfs', 'ecmwf', 'icon', 'icond2')), '--missing-only')['models'], 'ens')
+        self.assertEqual(outputs(site(models=('hrrr', 'gfs', 'ecmwf', 'icond2', 'arome', 'ens')), '--missing-only')['models'], 'icon')
+        self.assertEqual(outputs(site(models=('hrrr', 'gfs', 'icon', 'icond2', 'arome', 'ens')), '--missing-only')['models'], 'ecmwf')
+        self.assertEqual(outputs(site(models=('hrrr', 'gfs', 'ecmwf', 'icon', 'icond2', 'arome')), '--missing-only')['models'], 'ens')
+        self.assertEqual(outputs(site(models=('hrrr', 'gfs', 'ecmwf', 'icon', 'icond2', 'ens')), '--missing-only')['models'], 'arome')
         o = outputs(site(maps=False), '--missing-only')
         self.assertEqual((o['models'], o['airspace'], o['any']), ('', 'true', 'true'))
 
@@ -2113,7 +2114,7 @@ class OverviewLevels(unittest.TestCase):
         self.assertEqual(g4, {'west': -124.925, 'north': 49.925, 'step': 0.2, 'nx': 293, 'ny': 131, 'tile': 200, 'ntx': 2, 'nty': 1})
         lon = lambda g, i: g['west'] + i * g['step']
         self.assertAlmostEqual(lon(g4, 10), np.mean([lon(hrrr, i) for i in range(40, 44)]), places=9)
-        self.assertEqual(build.OVERVIEW, {'hrrr': (2, 4, 8), 'icond2': (2, 4, 8)})
+        self.assertEqual(build.OVERVIEW, {'hrrr': (2, 4, 8), 'icond2': (2, 4, 8), 'arome': (2, 4, 8)})
         lons, lats = build.target_grid(build.REGIONS['hrrr'])
         fine = {'west': -125.0, 'north': 50.0, 'step': 0.03, 'nx': len(lons), 'ny': len(lats), 'tile': 100, 'ntx': 20, 'nty': 9}
         self.assertEqual([build.level_grid(fine, k)['step'] for k in build.OVERVIEW['hrrr']], [0.06, 0.12, 0.24])
@@ -2945,6 +2946,137 @@ class Regions(unittest.TestCase):
             np.testing.assert_allclose(got[k][keep], full[k][keep], rtol=1e-06, err_msg=k)
             self.assertTrue(np.isnan(got[k][~keep]).all(), k)
         self.assertIsNone(build.keep_windows('hrrr', region))
+
+class AromeSource(unittest.TestCase):
+
+    def test_steps_files_fields_and_slots(self):
+        from datetime import datetime, timedelta, timezone
+        import check
+        import mf
+        import om
+        from sources import AROME_GRID, DAYS, OPEN_AHEAD_H, SOURCES
+        src = SOURCES['arome']
+        self.assertEqual([fh for fh in range(0, 60) if src.fstep(fh)], list(range(1, 52)))
+        self.assertEqual((src.runs, DAYS['arome'], OPEN_AHEAD_H['arome']), ((3, 9, 15, 21), 2, 24))
+        run = datetime(2026, 11, 6, 15, tzinfo=timezone.utc)
+        self.assertEqual(src.url(run, 3), 'https://openmeteo.s3.amazonaws.com/data_spatial/meteofrance_arome_france0025/2026/11/06/1500Z/2026-11-06T1800.om')
+        self.assertEqual(src.idx_url(run, 51), src.url(run, 51))
+        self.assertEqual(src.static_url(), 'https://openmeteo.s3.amazonaws.com/data/meteofrance_arome_france0025/static/HSURF.om')
+        self.assertEqual([mf.group(fh) for fh in (0, 1, 6, 7, 12, 13, 48, 49, 51)], [(0, 6), (0, 6), (0, 6), (7, 12), (7, 12), (13, 18), (43, 48), (49, 51), (49, 51)])
+        self.assertEqual(mf.url(run, 'SP3', 8), 'https://meteofrance-pnt.s3.rbx.io.cloud.ovh.net/pnt/2026-11-06T15:00:00Z/arome/0025/SP3/arome__0025__SP3__07H12H__2026-11-06T15:00:00Z.grib2')
+        import build
+        lons, lats = build.target_grid(build.REGIONS['arome'])
+        self.assertEqual((len(lats), len(lons)), (AROME_GRID[3], AROME_GRID[4]))
+        self.assertEqual(om.Grid(*AROME_GRID).window(build.REGIONS['arome']), (716, 0, 717, 1121))
+        files = {'cape', 'cloud_cover', 'cloud_cover_high', 'cloud_cover_low', 'cloud_cover_mid', 'precipitation', 'pressure_msl', 'relative_humidity_2m', 'shortwave_radiation', 'snowfall_water_equivalent', 'temperature_2m', 'wind_gusts_10m', 'wind_u_component_10m', 'wind_v_component_10m', 'wind_u_component_100m', 'wind_v_component_100m', 'HSURF'}
+        files |= {f'{v}_{p}hPa' for p in (1000, 950, 925, 900, 850, 800, 750, 700, 650, 600, 550, 500, 450, 400, 350, 300, 275, 250, 225, 200, 175, 150) for v in ('temperature', 'relative_humidity', 'wind_u_component', 'wind_v_component', 'geopotential_height')}
+        for canon, key in src.surface.items():
+            if key[1] == 'mf':
+                self.assertIn(canon, src.mf_fields)
+                continue
+            name = om.om_name(key)
+            self.assertTrue(name in files or set(om.RECIPES.get(name, ((None,), None))[0]) <= files, key)
+        for key in ((g, f'{lv} mb') for lv in src.levels + src.cloud_levels + src.snd_levels for g in src.level_vars.values()):
+            self.assertIn(om.om_name(key), files)
+        self.assertEqual(set(src.mf_fields), {'ps', 'blh', 'shf', 'lsm'})
+        for need in ('zs', 'ps', 't2', 'td2', 'u10', 'v10', 'mslp', 'sw', 'prate'):
+            self.assertIn(need, src.surface)
+        self.assertNotIn('w', src.level_vars)
+        slots = {h: name for name, runs in check.SLOTS.items() for m, h in runs.items() if m == 'arome'}
+        self.assertEqual(sorted(slots), [3, 9, 15, 21])
+        for h, name in slots.items():
+            start = datetime(2026, 11, 6, h, tzinfo=timezone.utc)
+            at = check.expected_run(datetime(2026, 11, 7, int(name[:2]), int(name[3:]), tzinfo=timezone.utc), h)
+            self.assertEqual(at.hour, h)
+            slot = at.replace(hour=int(name[:2]), minute=int(name[3:])) + (timedelta(days=1) if int(name[:2]) < h else timedelta())
+            self.assertGreaterEqual(slot - at, check.lands('arome', h)[1], name)
+            self.assertLess(check.lands('arome', h)[0], check.lands('arome', h)[1])
+
+    def test_landed_needs_both_copies(self):
+        from datetime import datetime, timezone
+        from unittest import mock
+        import grib
+        from sources import SOURCES
+        src = SOURCES['arome']
+        run = datetime(2026, 11, 6, 15, tzinfo=timezone.utc)
+        for missing, want in ((None, True), ('openmeteo', False), ('SP2', False), ('SP3', False)):
+            with mock.patch.object(grib, 'exists', lambda u: missing is None or missing not in u):
+                self.assertEqual(src.landed(run, 51), want, missing)
+
+    def test_the_hours_mean_heat_flux_upward_cut_to_the_region(self):
+        from unittest import mock
+        import grib
+        import mf
+        import om
+        g = om.Grid(0.0, 10.0, 1.0, 3, 4)
+        acc = {'a1': np.full((3, 4), -3600.0 * 100), 'a2': np.arange(12, dtype=np.float32).reshape(3, 4) * 3600 - 3600.0 * 300}
+        with mock.patch.object(grib, 'decode', lambda m: (acc[m], {})):
+            f = mf.Field(g, [(-1 / 3600, 'a2'), (1 / 3600, 'a1')])
+            whole = f.read((10.0, 0.0, 13.0, 2.0, 1.0))
+            np.testing.assert_allclose(whole, 200 - np.arange(12).reshape(3, 4))
+            part = f.read((11.0, 0.0, 12.0, 1.0, 1.0))
+            np.testing.assert_allclose(part, (200 - np.arange(12).reshape(3, 4))[1:3, 1:3])
+            boxed = f.read((10.0, 0.0, 13.0, 2.0, 1.0), boxes=[(0, 1, 0, 2)])
+            self.assertTrue(np.isnan(boxed[1:]).all() and np.isnan(boxed[0, 2:]).all())
+            np.testing.assert_allclose(boxed[0, :2], [200, 199])
+        with mock.patch.object(mf, 'local', lambda u: u), mock.patch.object(mf, 'message', lambda path, key: f'{path.split('__')[3]}:{key[0]}:{key[1]}'):
+            from datetime import datetime, timezone
+            run = datetime(2026, 11, 6, 15, tzinfo=timezone.utc)
+            self.assertEqual(mf.hour_mean(run, 'SP3', 'sshf', 7, sign=-1.0), [(-1 / 3600, '07H12H:sshf:0-7'), (1 / 3600, '00H06H:sshf:0-6')])
+            self.assertEqual(mf.hour_mean(run, 'SP3', 'sshf', 1, sign=-1.0), [(-1 / 3600, '00H06H:sshf:0-1')])
+            self.assertEqual(mf.instant(run, 'SP2', 'blh', 13), [(1.0, '13H18H:blh:13')])
+
+    def test_a_files_messages_found_by_name_and_step(self):
+        import eccodes
+        import mf
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, 't.grib2')
+            with open(path, 'wb') as f:
+                for step, v in ((1, 1.0), (2, 2.0)):
+                    g = eccodes.codes_grib_new_from_samples('GRIB2')
+                    eccodes.codes_set(g, 'step', step)
+                    eccodes.codes_set_values(g, np.full(eccodes.codes_get(g, 'numberOfValues'), v))
+                    f.write(eccodes.codes_get_message(g))
+                    eccodes.codes_release(g)
+            ix = mf.index(path)
+            self.assertEqual(set(ix), {('t', '1'), ('t', '2')})
+            import grib
+            self.assertAlmostEqual(float(np.nanmean(grib.decode(mf.message(path, ('t', '2')))[0])), 2.0, places=3)
+            self.assertIsNone(mf.message(path, ('t', '3')))
+
+    def test_without_meteo_frances_packages_the_hour_still_builds(self):
+        from contextlib import redirect_stdout
+        import io
+        from datetime import datetime, timezone
+        from unittest import mock
+        import mf
+        import om
+        from sources import SOURCES
+        src = SOURCES['arome']
+        run = datetime(2026, 11, 6, 15, tzinfo=timezone.utc)
+        asked = []
+
+        def theirs(urls, static, grid, keys, workers=8):
+            asked.append(list(keys))
+            return {k: f'om:{k[0]}' for k in keys}
+        wanted = src.wanted()
+
+        def down(*a, **k):
+            raise IOError('no route')
+        with mock.patch.object(om, 'fetch_hour', theirs), mock.patch.object(mf, 'local', down), redirect_stdout(io.StringIO()):
+            out = src.fetch(run, 12, wanted)
+        self.assertNotIn(('blh', 'mf'), asked[0])
+        self.assertEqual(out['ps', 'mf'], 'om:ps')
+        for k in (('blh', 'mf'), ('shf', 'mf'), ('lsm', 'mf'), ('ps', '')):
+            self.assertNotIn(k, out)
+        with mock.patch.object(om, 'fetch_hour', theirs), mock.patch.object(mf, 'local', lambda u: u), mock.patch.object(mf, 'message', lambda path, key: f'{key[0]}:{key[1]}'):
+            out = src.fetch(run, 12, wanted)
+        self.assertIsInstance(out['ps', 'mf'], mf.Field)
+        self.assertEqual(out['ps', 'mf'].parts, [(1.0, 'sp:12')])
+        self.assertEqual(out['shf', 'mf'].parts, [(-1 / 3600, 'sshf:0-12'), (1 / 3600, 'sshf:0-11')])
+        self.assertEqual(out['lsm', 'mf'].parts, [(1.0, 'lsm:0')])
+        self.assertNotIn(('ps', ''), out)
 
 class IconOpenMeteo(unittest.TestCase):
 
