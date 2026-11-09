@@ -1643,6 +1643,23 @@ class WaveCloud(unittest.TestCase):
             np.testing.assert_array_equal(part[n], whole[n], err_msg=n)
         self.assertTrue((whole['cueff'] != q['cueff']).any())
 
+class LowDeckBase(unittest.TestCase):
+
+    def test_base(self):
+        import build
+        L = P.LOWBASE_LEVELS
+        dpd = lambda vals: {m: np.array([[v]], np.float32) for m, v in zip(L, vals)}
+        none = np.array([[P.CEIL_NONE]], np.float32)
+        b = P.low_deck_base(dpd([8, 5, 2, 0.5, 12]), none)[0, 0]
+        self.assertAlmostEqual(b, min((m + P.LOWBASE_K * d for m, d in zip(L, [8, 5, 2, 0.5, 12]))), places=3)
+        self.assertAlmostEqual(b, 1850.0, places=3)
+        self.assertTrue(np.isnan(P.low_deck_base(dpd([8, 5, 2, 0.5, 12]), np.array([[1600.0]], np.float32))[0, 0]))
+        self.assertFalse(np.isnan(P.low_deck_base(dpd([8, 5, 2, 0.5, 12]), np.array([[3200.0]], np.float32))[0, 0]))
+        self.assertTrue(np.isnan(P.low_deck_base(dpd([9, 8, 7, 6, 10]), none)[0, 0]))
+        self.assertAlmostEqual(P.low_deck_base(dpd([8, np.nan, 2, 0.5, 12]), none)[0, 0], 1850.0, places=3)
+        self.assertEqual(build.ENC['lowbase'], (0, 6000, None))
+        self.assertIn('lowbase', build.FREE_FIELDS)
+
 class LeeWaveFields(unittest.TestCase):
 
     def test_published_over_flat_ground(self):
