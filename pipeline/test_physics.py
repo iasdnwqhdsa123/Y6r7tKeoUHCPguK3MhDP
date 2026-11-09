@@ -1577,6 +1577,72 @@ class LeeExposure(unittest.TestCase):
         parts = sum((le.psi(s, 2 * math.pi / le.EDGES[b + 1] if math.isfinite(le.EDGES[b + 1]) else 0.0, 2 * math.pi / le.EDGES[b]) for b in range(le.NBAND)))
         self.assertAlmostEqual(abs(whole - parts), 0.0, places=9)
 
+class WaveCloud(unittest.TestCase):
+
+    def test_spread_at_the_mixed_layers_top(self):
+        import wavebars as wb
+        d = {600: np.array([2.0, 2.0, 2.0, 0.5, np.nan, np.nan]), 1000: np.array([7.0, 7.0, 7.0, 7.0, 3.0, np.nan])}
+        got = wb.ml_spread(d, np.array([700.0, 1100.0, 400.0, 900.0, 700.0, 700.0]))
+        want = [1.2, 6.2, 2.0, 0.0, 3.0, np.nan]
+        np.testing.assert_allclose(got, want, atol=1e-09)
+        np.testing.assert_allclose(wb.ml_spread({600: np.array([2.0])}, np.array([np.nan])), [2.0])
+
+    def test_cover_grows_with_the_lift_and_falls_with_the_spread(self):
+        import wavebars as wb
+        self.assertGreater(wb.cover(1.0, 1.5), wb.cover(0.5, 1.5))
+        self.assertGreater(wb.cover(0.5, 0.5), wb.cover(0.5, 1.5))
+        self.assertLess(wb.cover(0.3, 3.0), 0.1)
+        self.assertGreater(wb.cover(0.5, 0.0), 0.7)
+        self.assertLessEqual(wb.cover(5.0, 0.0), wb.CLOUD_MAX)
+
+    def test_raised_where_the_waves_ride_and_nowhere_else(self):
+        import wavebars as wb
+        ny, nx = (6, 8)
+        full = lambda v: np.full((ny, nx), float(v))
+        dec = {'wtrap': full(100), 'wlam': full(7000), 'u_wl': full(12), 'v_wl': full(-6), 'cloudlow': full(15), 'zi': full(700), 'wstar': full(0.5), 'dpd_g600': full(1.5), 'dpd_g1000': full(7)}
+        dec['wstar'][0, :] = 2.5
+        dec['wtrap'][1, :] = 20
+        dec['cloudlow'][2, :] = 95
+        dec['dpd_g600'][3, :] = 6
+        own = full(0.5)
+        own[4, :] = 0.05
+        own[4, 0] = np.nan
+        D = type('D', (), {'get': lambda self, n, default=None: dec.get(n, default)})()
+        low = wb.cloud(D, own, {'north': 41.0, 'step': 0.03})
+        want = 100 * wb.cover(0.5, 1.5 - 0.8)
+        np.testing.assert_allclose(low[5], want)
+        self.assertGreater(want, 40)
+        np.testing.assert_allclose(low[0], 15)
+        np.testing.assert_allclose(low[1], 15)
+        np.testing.assert_allclose(low[2], 95)
+        np.testing.assert_allclose(low[3], 15)
+        self.assertTrue(np.all(low[4] >= 15))
+        dec['dpd_g600'][:] = 9
+        self.assertIsNone(wb.cloud(D, own, {'north': 41.0, 'step': 0.03}), 'nothing gains: None')
+
+    def test_the_cloud_layers_again_only_round_the_change(self):
+        import build
+        import runfields
+        import sky
+        rng = np.random.default_rng(5)
+        ny, nx = (150, 170)
+        q = {n: rng.integers(0, 255, (ny, nx)).astype(np.uint8) for n in sky.INPUTS if n in build.ENC}
+        for n in sky.COVERS:
+            if n in q:
+                q[n] = np.repeat(np.repeat(rng.integers(0, 255, (ny // 10 + 1, nx // 10 + 1)), 10, 0), 10, 1)[:ny, :nx].astype(np.uint8)
+        q['wstar'][:3, :] = 255
+        q.update(sky.cloud_overview(q, build.ENC, True))
+        changed = np.zeros((ny, nx), bool)
+        changed[40:52, 60:75] = True
+        changed[140:, 0:4] = True
+        q2 = dict(q)
+        q2['cloudlow'] = np.where(changed, np.minimum(254, q['cloudlow'].astype(int) + 90), q['cloudlow']).astype(np.uint8)
+        whole = sky.cloud_overview(q2, build.ENC, True)
+        part = runfields._overview_again(q2, build.ENC, True, changed)
+        for n in whole:
+            np.testing.assert_array_equal(part[n], whole[n], err_msg=n)
+        self.assertTrue((whole['cueff'] != q['cueff']).any())
+
 class LeeWaveFields(unittest.TestCase):
 
     def test_published_over_flat_ground(self):
