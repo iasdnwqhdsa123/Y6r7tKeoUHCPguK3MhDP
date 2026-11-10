@@ -403,7 +403,7 @@ jobs:
             *) tar -C "$u" -xf "$r" ;;
           esac
           mkdir -p "dist-data/$M"
-          cp -al "$u/$M/." "dist-data/$M/"
+          cp -al --remove-destination "$u/$M/." "dist-data/$M/"
           rm -rf "$u" /tmp/out
 
       - name: Free 24-hour window

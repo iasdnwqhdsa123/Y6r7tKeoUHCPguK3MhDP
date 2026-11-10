@@ -3947,6 +3947,21 @@ class OwnSoundings(unittest.TestCase):
             days, present, _ = build.write_tiles(os.path.join(d, 't'), hours, times, 27, times[0])
             self.assertNotIn('snd', present)
 
+    def test_hours_from_other_levels_are_left_out(self):
+        import tempfile
+        from datetime import datetime, timezone
+        import build
+        import sources
+        src = sources.SOURCES['hrrr']
+        with tempfile.TemporaryDirectory() as d:
+            hours, out = (os.path.join(d, 'h'), os.path.join(d, 'out'))
+            os.makedirs(hours)
+            times = [datetime(2026, 10, 8, h, tzinfo=timezone.utc) for h in (16, 17, 18)]
+            for t, nv in zip(times, (3, 5, 5)):
+                np.savez_compressed(os.path.join(hours, f'{t:%Y%m%d%H}.npz'), snd=np.ones((nv, 5, 9), np.uint8))
+            m = build.write_soundings(out, hours, times, src, block=4)
+            self.assertEqual(m['days']['20261008']['stamps'], ['2026100817', '2026100818'])
+
 class VerifyReports(unittest.TestCase):
 
     def test_metar_precision_layers_and_trend(self):
