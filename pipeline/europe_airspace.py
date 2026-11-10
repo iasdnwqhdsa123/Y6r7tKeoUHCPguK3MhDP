@@ -19,7 +19,7 @@ REGIONS = [(('ed', 'edww', 'edgg', 'edmm'), 'ed'), (('lovv',), 'lo'), (('lsas',)
 CONTROLLED = {'CTR', 'TMA', 'CTA', 'CLASS', 'AWY'}
 ZONES = ('TMZ', 'RMZ')
 OPENAIP = 'https://api.core.openaip.net/api/airspaces'
-OPENAIP_AREAS = {'eu': ('GB', 'IE', 'ES', 'PT', 'FR', 'MA', 'DZ', 'TN', 'NO', 'EE', 'LV', 'LT', 'LU', 'IS', 'RS', 'BA', 'ME', 'MK', 'AL', 'XK', 'MD', 'CY', 'MT', 'TR', 'IL'), 'sa': ('BR', 'AR', 'CL', 'UY', 'PY', 'BO', 'PE', 'EC', 'CO', 'VE'), 'af': ('ZA', 'NA', 'BW', 'ZW', 'MZ', 'LS', 'SZ', 'ZM'), 'nz': ('NZ',), 'ca': ('CA',), 'mx': ('MX', 'GT', 'BZ', 'SV', 'HN', 'NI', 'CR', 'PA'), 'au': ('AU',), 'jp': ('JP',), 'me': ('EG', 'SA', 'AE', 'IR', 'IQ', 'LB', 'JO', 'KW', 'QA', 'BH', 'OM')}
+OPENAIP_AREAS = {'eu': ('GB', 'IE', 'ES', 'PT', 'FR', 'MA', 'DZ', 'TN', 'NO', 'EE', 'LV', 'LT', 'LU', 'IS', 'RS', 'BA', 'ME', 'MK', 'AL', 'XK', 'MD', 'CY', 'MT', 'TR', 'IL'), 'sa': ('BR', 'AR', 'CL', 'UY', 'PY', 'BO', 'PE', 'EC', 'CO', 'VE'), 'af': ('ZA', 'NA', 'BW', 'ZW', 'MZ', 'LS', 'SZ', 'ZM'), 'nz': ('NZ',), 'ca': ('CA',), 'mx': ('MX', 'GT', 'BZ', 'SV', 'HN', 'NI', 'CR', 'PA'), 'au': ('AU',), 'jp': ('JP',), 'me': ('EG', 'SA', 'AE', 'IR', 'IQ', 'LB', 'JO', 'KW', 'QA', 'BH', 'OM'), 'cn': ('CN',)}
 SOURCES = {'eu': 'open flightmaps + openAIP'}
 OPENAIP_BUDGET = 600
 EAST_OF_180 = {'NZ'}
@@ -315,7 +315,7 @@ def build(out: str, today: date | None=None) -> dict:
             areas[area][0].extend(c)
             areas[area][1].extend(s)
     if not key:
-        print("airspace: no OPENAIP_API_KEY, so only open flightmaps' Europe (no UK, Ireland, Iberia, France, Norway, the Baltics, the Balkans, Turkey, North Africa, South America, southern Africa, New Zealand, Canada, Mexico, Central America, Australia, Japan or the Middle East)", flush=True)
+        print("airspace: no OPENAIP_API_KEY, so only open flightmaps' Europe (no UK, Ireland, Iberia, France, Norway, the Baltics, the Balkans, Turkey, North Africa, South America, southern Africa, New Zealand, Canada, Mexico, Central America, Australia, Japan, the Middle East or China)", flush=True)
     print('airspace:', ', '.join(got) or 'none', flush=True)
     written = {}
     os.makedirs(os.path.join(out, 'airspace', 'aviation'), exist_ok=True)
