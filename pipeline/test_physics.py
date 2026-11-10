@@ -107,6 +107,46 @@ class PhysicsTest(unittest.TestCase):
         self.assertEqual(float(r[5, 7]), 400)
         self.assertEqual(float(r[0, 0]), 0)
 
+class GfsTwoFiles(unittest.TestCase):
+
+    def idx(self, rows):
+        return '\n'.join((f'{i + 1}:{i * 100}:d=2026111000:{v}:{lv}:6 hour fcst:' for i, (v, lv) in enumerate(rows))).encode()
+
+    def test_each_message_from_its_file(self):
+        from unittest import mock
+        import grib
+        import sources
+        src = sources.SOURCES['gfs']
+        run = sources.datetime(2026, 11, 10, 0, tzinfo=sources.timezone.utc)
+        self.assertTrue(src.url(run, 6, 'b').endswith('/gfs.20261110/00/atmos/gfs.t00z.pgrb2b.0p25.f006'))
+        self.assertIn(875, src.levels)
+        a = self.idx([('TMP', '850 mb'), ('TMP', '900 mb')])
+        b = self.idx([('TMP', '875 mb'), ('TMP', '850 mb')])
+        get = lambda u, **k: b if '.pgrb2b.' in u else a
+        with mock.patch.object(grib, 'http_get', get):
+            sel = src.inventory(run, 6, [('TMP', '850 mb'), ('TMP', '875 mb'), ('TMP', '900 mb')])
+        self.assertEqual({k: r['part'] for k, r in sel.items()}, {('TMP', '850 mb'): '', ('TMP', '875 mb'): 'b', ('TMP', '900 mb'): ''})
+
+        def gone(u, **k):
+            if '.pgrb2b.' in u:
+                raise OSError('404')
+            return a
+        with mock.patch.object(grib, 'http_get', gone):
+            sel = src.inventory(run, 6, [('TMP', '850 mb'), ('TMP', '875 mb')])
+        self.assertEqual(set(sel), {('TMP', '850 mb')})
+        got = []
+
+        def fetch(url, mine, **k):
+            if '.pgrb2b.' in url:
+                raise OSError('reset')
+            got.append(url)
+            return {key: b'm' for key in mine}
+        sel = {('TMP', '850 mb'): {'part': ''}, ('TMP', '875 mb'): {'part': 'b'}}
+        with mock.patch.object(grib, 'fetch_messages', fetch):
+            out = src.fetch(run, 6, sel)
+        self.assertEqual(set(out), {('TMP', '850 mb')})
+        self.assertTrue(got[0].endswith('.pgrb2.0p25.f006'))
+
 class SoilWetness(unittest.TestCase):
 
     def test_each_models_fields(self):
