@@ -181,7 +181,7 @@ jobs:
     needs: check
     if: needs.check.outputs.matrix != '[]' && needs.check.outputs.matrix != ''
     runs-on: ubuntu-24.04
-    timeout-minutes: 180 # up to ~70 waiting for its run (check.py lands), the build up to 100
+    timeout-minutes: 250 # up to ~70 waiting for its run (check.py lands), the build up to 150
     permissions:
       contents: read
       actions: write # its store and output (artifacts of earlier runs); dropping the replaced ones
@@ -346,7 +346,7 @@ jobs:
         id: build
         if: steps.what.outputs.build == 'true'
         continue-on-error: true
-        timeout-minutes: 100
+        timeout-minutes: 150
         env:
           NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
           NETLIFY_SITE_ID: ${{ secrets.NETLIFY_DATA_SITE_ID }}
@@ -443,7 +443,7 @@ jobs:
 
       - name: Pack ${{ matrix.model }}'s store
         id: pack
-        if: steps.build.outcome == 'success' && steps.hand.outputs.has == 'true'
+        if: (steps.build.outcome == 'success' || steps.build.outcome == 'failure') && steps.hand.outputs.has == 'true'
         continue-on-error: true
         run: |
           rm -rf /tmp/hand
