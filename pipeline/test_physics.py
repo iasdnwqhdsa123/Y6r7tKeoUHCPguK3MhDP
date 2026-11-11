@@ -4133,3 +4133,96 @@ class Contrails(unittest.TestCase):
         self.assertGreater(europe, 10 * pacific)
 from test_aviation_world import *
 from test_airspace_world import *
+
+class Decks(unittest.TestCase):
+
+    @staticmethod
+    def deck_column(inv_m=700.0, wind=6.0, n=1):
+        levels = np.array([1000, 950, 925, 900, 850, 800, 700, 600, 500, 400, 300], np.float32)
+        z = (44330 * (1 - (levels / 1013.25) ** 0.1903)).astype(np.float32)
+        t = np.where(z <= inv_m, 21 - 0.0065 * z, 21 - 0.0065 * inv_m + 3 - 0.0065 * (z - inv_m)).astype(np.float32)
+        td = np.where(z <= inv_m, t - 0.5, t - 8).astype(np.float32)
+        shape = (len(levels), 1, n)
+        one = lambda v: np.full((1, n), v, np.float32)
+        st = lambda a: np.broadcast_to(a.reshape(-1, 1, 1), shape).astype(np.float32)
+        prof = P.Profile(one(0), one(1013.25), one(21), one(20.5), one(0), one(-wind * 0.4), st(z), levels, st(t), st(td), st(np.zeros_like(z)), st(-wind * np.ones_like(z)))
+        return (prof, levels, z)
+
+    def organise(self, low=50.0, wind=6.0, sst=np.nan, sun=-5.0, mid=0.0):
+        import decks
+        prof, levels, z = self.deck_column(wind=wind)
+        one = lambda v: np.full((1, 1), v, np.float32)
+        cc = np.full((len(P.CC_LEVELS), 1, 1), 0.0, np.float32)
+        cc[1] = low
+        zc = P.level_heights(levels, z.reshape(-1, 1, 1))
+        return decks.organisation(prof, one(0), one(21), one(20.5), one(1013.25), one(0), one(-wind * 0.4), one(sst), one(0), one(50), cc, zc, one(low), one(mid), one(0), one(np.nan), one(np.nan), one(sun))
+
+    def test_night_deck_over_land_in_rows(self):
+        o = self.organise()
+        self.assertGreaterEqual(float(o['rowstr'][0, 0]), 0.3)
+        self.assertAlmostEqual(float(o['rowdir'][0, 0]) % 180, 0, delta=16)
+        self.assertGreater(float(o['wdeck'][0, 0]), 0.4)
+        self.assertAlmostEqual(float(o['dtop'][0, 0]), 700, delta=200)
+
+    def test_overcast_and_sea_and_no_deck(self):
+        self.assertLess(float(self.organise(low=95)['rowstr'][0, 0]), 0.05)
+        self.assertTrue(np.isnan(self.organise(sst=24)['rowstr'][0, 0]))
+        self.assertTrue(np.isnan(self.organise(low=10)['rowstr'][0, 0]))
+
+    def test_calm_is_not_rows(self):
+        self.assertLess(float(self.organise(wind=0.5)['rowstr'][0, 0]), 0.3)
+
+    def test_sun_and_cloud_above_weaken_the_tops_cooling(self):
+        w = lambda **k: float(self.organise(**k)['wdeck'][0, 0])
+        self.assertLess(w(sun=60), w())
+        self.assertLess(w(mid=90), w())
+
+    def test_sea_flux(self):
+        import decks
+        one = lambda v: np.full((1, 1), v, np.float32)
+        warm = decks.sea_flux(one(26), one(22), one(19), one(6), one(1013))
+        same = decks.sea_flux(one(20), one(20), one(20), one(6), one(1013))
+        self.assertGreater(float(warm[0, 0]), 20)
+        self.assertLess(float(same[0, 0]), 2)
+
+class HourToHour(unittest.TestCase):
+
+    def enc(self):
+        import build
+        return build.ENC
+
+    def test_time_smoothed(self):
+        import sky
+        enc = self.enc()
+        code = lambda v: sky._codes(np.full((1, 2), v, np.float64), enc['cloudlow'][0], enc['cloudlow'][1])
+        q, b, a = ({'cloudlow': code(40.0)}, {'cloudlow': code(80.0)}, {'cloudlow': code(0.0)})
+        s = sky.decode(sky.time_smoothed(q, b, a, enc)['cloudlow'], *enc['cloudlow'])
+        self.assertAlmostEqual(float(s[0, 0]), 40.0, delta=0.5)
+        s1 = sky.decode(sky.time_smoothed(q, b, None, enc)['cloudlow'], *enc['cloudlow'])
+        self.assertAlmostEqual(float(s1[0, 0]), 53.3, delta=0.5)
+
+    def test_hold_decks(self):
+        import sky
+        sc, cu = (np.uint8(sky.CLASS_CODE0 + sky.SC - sky.CB), np.uint8(2 * 50))
+        st = np.uint8(sky.CLASS_CODE0 + sky.ST - sky.CB)
+        prev = np.array([[sc, st, sc, cu]], np.uint8)
+        cls = np.array([[cu, cu, cu, cu]], np.uint8)
+        low = np.array([[50.0, 50.0, 40.0, 50.0]])
+        out = sky.hold_decks(prev, cls, low)
+        self.assertEqual(list(out[0]), [sc, sc, cu, cu])
+        self.assertIs(sky.hold_decks(None, cls, low), cls)
+
+    def test_wave_bars_kept(self):
+        import sky
+        enc = self.enc()
+        shape = (3, 3)
+        q = {n: np.full(shape, 255, np.uint8) for n in sky.INPUTS if n in enc}
+        q['wstar'][:] = 0
+        q['cudepth'][:] = 0
+        q['overdev'][:] = 0
+        q['cloudlow'][:] = 200
+        q['cuclass'] = np.full(shape, sky.WB_CODE, np.uint8)
+        q['cuclass'][0, 0] = 0
+        out = sky.hour_class(q, None, None, enc, False)
+        self.assertEqual(int(out['cuclass'][1, 1]), sky.WB_CODE)
+        self.assertNotEqual(int(out['cuclass'][0, 0]), sky.WB_CODE)
