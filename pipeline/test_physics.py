@@ -2173,7 +2173,7 @@ class OverviewLevels(unittest.TestCase):
         self.assertEqual(build.downsample(c, 4, nearest=True).tolist(), [[9, 13], [41, 45]])
         ptype = np.array([[1, 3], [3, 3]], np.uint8)
         self.assertEqual(int(build.downsample(ptype, 2, nearest=True)[0, 0]), 1)
-        self.assertEqual(build.CLASS_FIELDS, {'ptype', 'fltcat', 'sinkby', 'cuclass', 'cusky'})
+        self.assertEqual(build.CLASS_FIELDS, {'ptype', 'fltcat', 'sinkby', 'cuclass', 'cusky', 'spot1', 'spot2'})
         for name in build.CLASS_FIELDS:
             self.assertEqual(build.ENC[name], (0, 254, None))
 
