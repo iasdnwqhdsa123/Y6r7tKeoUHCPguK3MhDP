@@ -3988,11 +3988,12 @@ class ElevatedParcels(unittest.TestCase):
         z, t, td, rh, zs, zi, t2, td2, ps = self.column()
         lv = {'z': z, 't': t, 'td': td, 'rh': rh, 'u': np.zeros_like(z), 'v': np.zeros_like(z)}
         s = {'t2': t2, 'td2': td2, 'ps': ps}
-        out = build.castellanus(lv, self.LEVELS, zs, zi, s, 0.125, np.zeros((1, 1)))
-        self.assertGreater(float(out['acscore'][0, 0]), 50)
-        self.assertTrue(2000 <= float(out['acbase'][0, 0]) <= 7000)
         was = build.EA_OWN_ONLY
         try:
+            build.EA_OWN_ONLY = False
+            out = build.castellanus(lv, self.LEVELS, zs, zi, s, 0.125, np.zeros((1, 1)))
+            self.assertGreater(float(out['acscore'][0, 0]), 50)
+            self.assertTrue(2000 <= float(out['acbase'][0, 0]) <= 7000)
             build.EA_OWN_ONLY = True
             self.assertEqual(build.castellanus(lv, self.LEVELS, zs, zi, s, 0.125, np.zeros((1, 1))), {})
             self.assertEqual(build.castellanus({**lv, 'w': np.zeros_like(z), 'w_wave_only': True}, self.LEVELS, zs, zi, s, 0.125, np.zeros((1, 1))), {})
