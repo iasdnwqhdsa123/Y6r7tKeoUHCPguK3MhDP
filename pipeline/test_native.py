@@ -504,5 +504,383 @@ class NativeTiles(unittest.TestCase):
                 self.assertEqual(z.files, list(arrays))
                 for k, v in arrays.items():
                     np.testing.assert_array_equal(z[k], v)
+LEE_EDGES = [2000.0, 3500.0, 5000.0, 7000.0, 10000.0, 15000.0, 25000.0, 50000.0, None]
+SAMPLE_DATA = os.environ.get('SAMPLE_DATA') or os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'dist-data')
+
+def hour_fields(grid, seed=0, drop=(), f64=False):
+    import leelattice as LL
+    import runwave as RW
+    rng = np.random.default_rng(seed)
+    ny, nx = shape = (grid['ny'], grid['nx'])
+    f = lambda a: np.asarray(a, np.float64 if f64 else np.float32)
+    rough = lambda k=4: np.kron(rng.random((ny // k + 1, nx // k + 1)), np.ones((k, k)))[:ny, :nx]
+    by, bx = (max(2, ny // 5), max(2, nx // 6))
+    out = {'elevation': rough() ** 2 * 3000}
+    ang, base = (rough(8) * 2 * np.pi, 2 + rough(8) * 10)
+    calm = np.ones(shape)
+    calm[-by:, :bx] = 0.01
+
+    def wind(k, z):
+        spd = (base + z / 350 + rng.random(shape) * 3) * calm
+        out[f'u_{k}'], out[f'v_{k}'] = (spd * np.cos(ang + z / 7000), spd * np.sin(ang + z / 7000))
+    wind('sfc', 10.0)
+    wind('blavg', 500.0)
+    wind('wl', 1750.0)
+    for m in sorted(set(LL.AGL_WIND_M) | set(RW.RIDGE_COL_M)):
+        wind(f'g{m}', float(m))
+    for ft in LL.WIND_ALTS_FT:
+        wind(f'a{ft}', ft * 0.3048)
+    out['wstar'] = np.where(rng.random(shape) < 0.3, 0.1, rng.random(shape) * 3)
+    out['zi'] = 300 + rough() * 2700
+    out['thml'] = 290 + rough() * 20
+    out['nlow'] = 0.004 + rough() * 0.016
+    d = np.zeros(shape)
+    for dz in LL.ML_DZ:
+        d = d + rng.random(shape) * 2.5
+        out[f'dth_m{dz}'] = d.copy()
+    for m in LL.STAB_M:
+        out[f'n_g{m}'] = 0.004 + rng.random(shape) * 0.016
+    for ft in LL.TEMP_FT:
+        out[f't{ft}'] = 18 - 6.2 * ft * 0.3048 / 1000 + rng.normal(0, 1.5, shape)
+    out['ridge'] = rng.random(shape) * 1.5
+    out['ceil'] = np.where(rng.random(shape) < 0.5, 800 + rng.random(shape) * 2000, np.nan)
+    out['ceiltop'] = out['ceil'] + 200 + rng.random(shape) * 600
+    out['cubase'] = np.where(rng.random(shape) < 0.5, 900 + rng.random(shape) * 1500, np.nan)
+    out['cudepth'] = rng.random(shape) * 1500
+    out['elevation'][:by, :bx] = np.nan
+    for k in list(out):
+        if k[:2] in ('u_', 'v_'):
+            out[k][:by, -bx:] = np.nan
+            if k[2:] != 'sfc':
+                out[k][-by:, -bx:] = np.nan
+    out['u_g600'][by:2 * by, bx:2 * bx] = np.nan
+    out['v_a8000'][by:2 * by, :bx] = np.nan
+    for k in ('wstar', 'nlow', 'dth_m1000', 'n_g1750', 't12000', 'thml', 'zi', 'ridge'):
+        out[k][rng.random(shape) < 0.06] = np.nan
+    return {k: f(v) for k, v in out.items() if not any((k.startswith(d) for d in drop))}
+
+def write_exposure(folder, kind, areas, seed=0, tile=16):
+    import json
+    from PIL import Image
+    rng = np.random.default_rng(seed)
+    dirs = 8
+    ix = {'dirs': dirs, 'tile': tile, 'areas': {}}
+    if kind == 'lee':
+        ix.update(scale=8.0, edges=LEE_EDGES, topStep=20.0)
+        planes = (len(LEE_EDGES) - 1) * dirs + 1
+    else:
+        ix.update(scale=0.5, reliefStep=4.0)
+        planes = dirs + 1
+    for name, g in areas.items():
+        os.makedirs(os.path.join(folder, name))
+        tiles = []
+        for ty in range(-(-g['ny'] // tile)):
+            for tx in range(-(-g['nx'] // tile)):
+                if rng.random() < 0.2:
+                    continue
+                c = rng.integers(0, 255, (planes, tile, tile)).astype(np.uint8)
+                c[:, rng.random((tile, tile)) < 0.3] = 0
+                Image.fromarray(c.reshape(planes * tile, tile), 'L').save(os.path.join(folder, name, f'{tx}_{ty}.png'))
+                tiles.append(f'{tx}_{ty}')
+        ix['areas'][name] = {'grid': g, 'tiles': tiles}
+    with open(os.path.join(folder, 'index.json'), 'w') as fh:
+        json.dump(ix, fh)
+COARSE = {'west': -107.3, 'north': 41.2, 'step': 0.25, 'nx': 19, 'ny': 15}
+FINE_GRID = {'west': -106.4, 'north': 40.6, 'step': 0.03, 'nx': 70, 'ny': 50}
+
+@unittest.skipUnless(N.available(), f'C++ physics not available: {N.error}')
+class NativeLattice(unittest.TestCase):
+
+    def check(self, grid, **kw):
+        import leelattice as LL
+        import runfields_native as RN
+        f = hour_fields(grid, **kw)
+        a, b = (LL.lattice(f, grid, LEE_EDGES), RN.lattice(f, grid, LEE_EDGES))
+        for k in a:
+            self.assertTrue(same(a[k], b[k]), f'{k} {kw}')
+        return a
+
+    def test_bit_for_bit(self):
+        for seed in range(4):
+            a = self.check(COARSE, seed=seed, f64=seed == 3)
+            self.assertTrue(a['ok'].any() and (not a['ok'].all()) and (a['bands'] > 0).any())
+        self.check(FINE_GRID, seed=7)
+
+    def test_fields_missing(self):
+        for drop in (('dth_',), ('n_g', 't'), ('u_g1000', 'v_a'), ('u_g', 'u_a'), ('u_', 'v_'), ('elevation',)):
+            self.check(COARSE, seed=11, drop=drop)
+
+    def test_passes_and_chunks(self):
+        import leelattice as LL
+        import runfields_native as RN
+        f = hour_fields(COARSE, seed=5)
+        a = LL.lattice(f, COARSE, LEE_EDGES)
+        old = RN.NODES_A_PASS
+        try:
+            RN.NODES_A_PASS = 5
+            b = RN.lattice(f, COARSE, LEE_EDGES, chunk=13)
+        finally:
+            RN.NODES_A_PASS = old
+        for k in a:
+            self.assertTrue(same(a[k], b[k]), k)
+
+    def test_lattice_at(self):
+        import leelattice as LL
+        import runfields_native as RN
+        L = LL.lattice(hour_fields(COARSE, seed=2), COARSE, LEE_EDGES)
+        rng = np.random.default_rng(0)
+        lat = np.concatenate([rng.uniform(36.5, 42.5, 400), np.arange(36.0, 43.0, 0.5), [37.5, 39.0, 60.0]])
+        lon = np.concatenate([rng.uniform(-108.5, -101.5, 400), np.arange(-109.0, -102.0, 0.5), [-105.0, -110.0, -105.0]])
+        for x, y in zip(LL.lattice_at(L, lat, lon), RN.lattice_at(L, lat, lon)):
+            self.assertTrue(same(x, y))
+        a, b = (LL.lattice_cells(L, COARSE), RN.lattice_cells(L, COARSE))
+        for y0, y1 in ((0, 4), (4, 15)):
+            for x, y in zip(a(y0, y1), b(y0, y1)):
+                self.assertTrue(same(x, y))
+        self.assertFalse(a(0, 15)[3].all())
+
+    def test_sampler(self):
+        import leelattice as LL
+        import runfields_native as RN
+        rng = np.random.default_rng(1)
+        g = dict(COARSE)
+        lat, lon = (rng.uniform(37.0, 41.6, 500), rng.uniform(-107.8, -102.4, 500))
+        py, cx = (LL._Sampler(g, lat, lon), RN._Sampler(g, lat, lon))
+        for dtype in (np.float32, np.float64):
+            a = rng.normal(0, 50, (g['ny'], g['nx'])).astype(dtype)
+            a[rng.random(a.shape) < 0.25] = np.nan
+            self.assertTrue(same(py(a), cx(a)))
+            self.assertTrue(same(py(a[::-1]), cx(a[::-1])))
+        self.assertIsNone(cx(None))
+        self.assertIsNotNone(RN._fns.get('cx_lee_sample'), 'the C++ was used, not the fallback')
+
+@unittest.skipUnless(N.available(), f'C++ physics not available: {N.error}')
+class NativeRunning(unittest.TestCase):
+
+    @classmethod
+    def setUpClass(cls):
+        import tempfile
+        cls.tmp = tempfile.TemporaryDirectory()
+        d = cls.tmp.name
+        write_exposure(os.path.join(d, 'lee'), 'lee', {'a': {'west': -107.0, 'north': 41.0, 'step': 0.05, 'nx': 61, 'ny': 45}, 'b': {'west': -104.5, 'north': 40.0, 'step': 0.05, 'nx': 50, 'ny': 50}}, seed=1)
+        write_exposure(os.path.join(d, 'ridge'), 'ridge', {'a': {'west': -107.0, 'north': 41.0, 'step': 0.025, 'nx': 121, 'ny': 89}, 'b': {'west': -104.5, 'north': 40.0, 'step': 0.025, 'nx': 100, 'ny': 100}}, seed=2)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def exposures(self):
+        import runwave as RW
+        return (RW.Exposure(os.path.join(self.tmp.name, 'lee')), RW.Exposure(os.path.join(self.tmp.name, 'ridge')))
+
+    def check(self, grid, seed=0, lattice=True, bars=True, chunk=None, drop=()):
+        import leelattice as LL
+        import runfields_native as RN
+        import runwave as RW
+        f = hour_fields(grid, seed=seed, drop=drop)
+        L = LL.lattice(f, grid, LEE_EDGES) if lattice else None
+        kw = {} if chunk is None else {'chunk': chunk}
+        ea, eb = (self.exposures(), self.exposures())
+        b = RN.run_fields(f, grid, *eb, RN.lattice_cells(L, grid) if lattice else None, bars=bars, **kw)
+        a = RW.run_fields(f, grid, *ea, LL.lattice_cells(L, grid) if lattice else None, bars=bars, **kw)
+        self.assertEqual(list(a), list(b))
+        for k in a:
+            self.assertTrue(same(a[k], b[k]), f'{k} {grid['step']} seed {seed}')
+        for x, y in zip(ea, eb):
+            for p, q in zip(x.areas, y.areas):
+                self.assertTrue(np.array_equal(p.loaded, q.loaded), f"{p.name}'s tiles, {grid['step']} seed {seed}")
+        return a
+
+    def test_bit_for_bit(self):
+        for seed in range(3):
+            a = self.check(COARSE, seed=seed)
+            self.assertTrue((a['wave'] > 0).any() and (a['ridge'] > 0).any() and np.isfinite(a['crest']).any())
+            self.assertTrue((np.nan_to_num(a['bar_own']) > 0).any())
+        a = self.check(FINE_GRID, seed=3)
+        self.assertTrue((a['wave_top'] > 0).any() and (a['ridge'] > 0).any())
+
+    def test_without(self):
+        self.check(COARSE, seed=4, lattice=False)
+        self.check(COARSE, seed=4, bars=False)
+        self.check(COARSE, seed=4, drop=('nlow', 'u_g', 'v_g', 'ridge'))
+        import runfields_native as RN
+        import runwave as RW
+        f = hour_fields(COARSE, seed=4)
+        a, b = (RW.run_fields(f, COARSE, None, None), RN.run_fields(f, COARSE, None, None))
+        for k in a:
+            self.assertTrue(same(a[k], b[k]), k)
+
+    def test_chunks_and_passes(self):
+        import runfields_native as RN
+        old = RN.PAIRS_A_PASS
+        try:
+            RN.PAIRS_A_PASS = 1
+            self.check(COARSE, seed=6, chunk=40)
+        finally:
+            RN.PAIRS_A_PASS = old
+
+    def test_tile_not_loaded_stops(self):
+        import runfields_native as RN
+        old = RN._need
+        try:
+            RN._need = lambda *a: None
+            with self.assertRaises(RuntimeError):
+                RN.run_fields(hour_fields(COARSE, seed=0), COARSE, *self.exposures())
+        finally:
+            RN._need = old
+
+class RunfieldsPick(unittest.TestCase):
+
+    def setUp(self):
+        import runfields
+        self.R = runfields
+        self.old = (runfields.NATIVE, runfields.LOG, runfields._running, runfields.runfields_native.available)
+        self.logged = []
+        runfields.NATIVE, runfields.LOG = (None, lambda *a: self.logged.append(' '.join(map(str, a))))
+        runfields.runfields_native.available = lambda: True
+
+    def tearDown(self):
+        self.R.NATIVE, self.R.LOG, self.R._running, self.R.runfields_native.available = self.old
+
+    def codes(self, edit=None):
+        rng = np.random.default_rng(0)
+        out = {k: rng.integers(0, 255, (120, 200)).astype(np.uint8) for k in ('rrun', 'rrunf', 'wrun', 'wrunf', 'wtop', 'crest')}
+        if edit:
+            edit(out)
+        return out
+
+    def pick(self, native_codes, lattice=True):
+        import datetime
+        calls = []
+
+        def running(q, enc, grid, nodata, native):
+            calls.append(native)
+            if native and native_codes is None:
+                raise ValueError('no')
+            return (native_codes if native else self.codes(), q, lattice)
+        self.R._running = running
+        out, _ = self.R._pick({}, {}, {}, None, datetime.datetime(2026, 11, 10, 18))
+        self.assertTrue(all((np.array_equal(out[k], v) for k, v in self.codes().items())), "the reference's codes that hour")
+        return calls
+
+    def test_match(self):
+        self.assertEqual(self.pick(self.codes()), [False, True])
+        self.assertIs(self.R.NATIVE, True)
+        self.assertIn('C++ (matches', self.logged[-1])
+        self.assertEqual(self.pick(self.codes()), [True])
+
+    def test_no_lattice_decides_nothing(self):
+        self.assertEqual(self.pick(self.codes(), lattice=False), [False])
+        self.assertIsNone(self.R.NATIVE)
+
+    def test_mismatch_and_failure(self):
+
+        def two_apart(o):
+            o['crest'][3, 4] = (int(o['crest'][3, 4]) + 2) % 255
+        for native in (self.codes(two_apart), None, {k: v for k, v in self.codes().items() if k != 'wtop'}):
+            self.R.NATIVE = None
+            self.pick(native)
+            self.assertIs(self.R.NATIVE, False)
+            self.assertIn('::warning::', self.logged[-1])
+        self.assertEqual(self.pick(self.codes()), [False])
+
+    def test_tolerance(self):
+
+        def one_cell(o):
+            o['crest'][3, 4] += 1 if o['crest'][3, 4] < 200 else -1
+        self.pick(self.codes(one_cell))
+        self.assertIs(self.R.NATIVE, True)
+        self.assertIn('crest 1 cells', self.logged[-1])
+
+        def three_cells(o):
+            o['crest'][3, 4:7] = (o['crest'][3, 4:7].astype(int) + 1) % 255
+        self.R.NATIVE = None
+        self.pick(self.codes(three_cells))
+        self.assertIs(self.R.NATIVE, False)
+
+    def test_fine_fields_as_16_bits(self):
+
+        def edge(o):
+            o['rrun'][5, 5], o['rrunf'][5, 5] = (10, 254)
+        ref = self.codes(edge)
+
+        def other(o):
+            o['rrun'][5, 5], o['rrunf'][5, 5] = (11, 0)
+        bad, near = self.R._differ(ref, self.codes(other))
+        self.assertEqual((bad, near), ([], []))
+
+        def off(o):
+            o['rrun'][5, 5], o['rrunf'][5, 5] = (11, 9)
+        bad, near = self.R._differ(ref, self.codes(off))
+        self.assertEqual(len(bad), 1)
+
+    def test_failure_later_falls_back(self):
+        self.R.NATIVE = True
+        self.assertEqual(self.pick(None), [True, False])
+        self.assertIs(self.R.NATIVE, False)
+        self.assertIn('::warning::', self.logged[-1])
+
+def sample_hours():
+    import glob
+    import json
+    out = []
+    for latest in sorted(glob.glob(os.path.join(SAMPLE_DATA, '*', 'latest.json'))):
+        with open(latest) as fh:
+            g = json.load(fh).get('grid') or {}
+        if all((k in g for k in ('west', 'north', 'step', 'nx', 'ny'))):
+            d = os.path.dirname(latest)
+            out += [(os.path.basename(d), g, f) for f in sorted(glob.glob(os.path.join(d, '_hours', '*.npz')))]
+    return out
+
+@unittest.skipUnless(N.available() and sample_hours(), 'no C++ physics, or no stored sample hours')
+class NativeRunfieldsStored(unittest.TestCase):
+    WINDOW = (140, 220)
+
+    def test_bit_for_bit(self):
+        try:
+            import build
+        except Exception as e:
+            self.skipTest(f'build.py not importable: {e}')
+        import leelattice as LL
+        import runfields
+        import runfields_native as RN
+        import runwave as RW
+        lee, ridge = (runfields.exposure('lee'), runfields.exposure('ridge'))
+        if lee is None or ridge is None:
+            self.skipTest('no terrain exposures')
+        done, coded = (0, set())
+        for model, g, path in sample_hours():
+            with np.load(path) as h:
+                q = {k: h[k] for k in h.files if k not in runfields.FIELDS}
+            if q.get('wstar') is None or q['wstar'].shape != (g['ny'], g['nx']):
+                continue
+            ny, nx = q['wstar'].shape
+            wy, wx = self.WINDOW
+            wins = [(0, 0)] if ny <= 2 * wy and nx <= 2 * wx else None
+            if wins is None:
+                have = q['wstar'] != 255
+                count = {(y, x): int(have[y:y + wy, x:x + wx].sum()) for y in range(0, ny - wy + 1, wy) for x in range(0, nx - wx + 1, wx)}
+                wins = [max(count, key=count.get), ((ny - wy) // 2, (nx - wx) // 2)]
+            for y0, x0 in wins:
+                y1, x1 = (min(ny, y0 + (ny if len(wins) == 1 else wy)), min(nx, x0 + (nx if len(wins) == 1 else wx)))
+                qw = {k: np.ascontiguousarray(v[y0:y1, x0:x1]) if getattr(v, 'shape', None) == (ny, nx) else v for k, v in q.items()}
+                grid = {'west': g['west'] + x0 * g['step'], 'north': g['north'] - y0 * g['step'], 'step': g['step'], 'nx': x1 - x0, 'ny': y1 - y0}
+                what = f'{model} {os.path.basename(path)} window {y0},{x0}'
+                dec = lambda: runfields._Decoded(qw, build.ENC)
+                a, b = (LL.lattice(dec(), grid, lee.edges), RN.lattice(dec(), grid, lee.edges))
+                for k in a:
+                    self.assertTrue(same(a[k], b[k]), f'lattice {k}: {what}')
+                rb = RN.run_fields(dec(), grid, lee, ridge, RN.lattice_cells(b, grid), bars='cuclass' in qw)
+                ra = RW.run_fields(dec(), grid, lee, ridge, LL.lattice_cells(a, grid), bars='cuclass' in qw)
+                for k in ra:
+                    self.assertTrue(same(ra[k], rb[k]), f'{k}: {what}')
+                if model not in coded:
+                    coded.add(model)
+                    nodata = ~np.isfinite(runfields.sky.decode(qw['wstar'], *build.ENC['wstar']))
+                    ca, cb = (runfields._running(qw, build.ENC, grid, nodata, native)[0] for native in (False, True))
+                    self.assertEqual(runfields._differ(ca, cb), ([], []), what)
+                    self.assertTrue(all((np.array_equal(ca[k], cb[k]) for k in ca)), what)
+                done += 1
+        self.assertTrue(done, 'no stored hour compared')
 if __name__ == '__main__':
     unittest.main()
