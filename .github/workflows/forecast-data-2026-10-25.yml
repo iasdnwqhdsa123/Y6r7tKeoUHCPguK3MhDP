@@ -193,7 +193,7 @@ jobs:
       matrix:
         model: ${{ fromJSON(needs.check.outputs.matrix) }}
     env:
-      WORKERS: ${{ matrix.model == 'ecmwf' && '3' || '2' }}
+      WORKERS: ${{ (matrix.model == 'ecmwf' || matrix.model == 'icon' || matrix.model == 'gfs') && '3' || '2' }}
       M: ${{ matrix.model }}
       HOUR_SHARDS: "3"
     steps:
