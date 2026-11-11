@@ -38,6 +38,7 @@ env:
   DATA_PATH_SECRET: ${{ secrets.DATA_PATH_SECRET }}
   DATA_ALIAS: live
   ALIAS_ONLY: "true"
+  ACC_CLASS: own
 
 permissions:
   contents: read
