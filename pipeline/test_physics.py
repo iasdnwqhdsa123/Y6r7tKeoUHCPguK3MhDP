@@ -3894,6 +3894,142 @@ class AltocumulusCastellanus(unittest.TestCase):
         self.assertEqual(build.ENC['accas'], (0, 100, None))
         self.assertIn('accas', build.POINT_FIELDS)
 
+class ElevatedParcels(unittest.TestCase):
+    LEVELS = np.array([1000, 950, 925, 900, 850, 800, 700, 600, 500, 400, 300], np.float32)
+
+    def column(self, rh_mid=95.0, lapse_mid=9.0, sfc=(16.0, 6.0), inv=6.0):
+        p = self.LEVELS.astype(np.float64)
+        z = np.zeros(len(p))
+        t = np.zeros(len(p))
+        z[0], t[0] = (111.0, sfc[0])
+        for k in range(1, len(p)):
+            lapse = lapse_mid if 500 <= p[k] <= 600 else 6.5
+            tk = t[k - 1]
+            for _ in range(3):
+                dz = P.RD * ((t[k - 1] + tk) / 2 + P.K0) / P.G * np.log(p[k - 1] / p[k])
+                tk = t[k - 1] + inv if k == 1 else t[k - 1] - lapse / 1000 * dz
+            z[k], t[k] = (z[k - 1] + dz, tk)
+        z, t = (z.astype(np.float32), t.astype(np.float32))
+        rh = np.full_like(z, 40.0)
+        rh[(self.LEVELS <= 700) & (self.LEVELS >= 600)] = rh_mid
+        td = P.dewpoint_from_rh(t, rh)
+        sh = lambda a: a[:, None, None].astype(np.float32)
+        one = lambda v: np.full((1, 1), v, np.float32)
+        return (sh(z), sh(t), sh(td), sh(rh), one(0), one(300), one(sfc[0]), one(sfc[0] - sfc[1]), one(1013.0))
+
+    def test_parcel_cape_against_a_fine_pseudo_adiabat(self):
+        z, t, td, rh, zs, zi, t2, td2, ps = self.column(rh_mid=100.0)
+        k = list(self.LEVELS).index(700)
+        cape, cin, zl, _ = P.parcel_cape(z[k, 0], t[k, 0], td[k, 0], np.float32(700), z[:, 0], t[:, 0], td[:, 0], self.LEVELS, (np.arange(len(z)) > k)[:, None])
+        zz = np.arange(float(z[k, 0, 0]), float(z[-1, 0, 0]), 10.0)
+        te = np.interp(zz, z[:, 0, 0], t[:, 0, 0])
+        tde = np.interp(zz, z[:, 0, 0], td[:, 0, 0])
+        p = np.exp(np.interp(zz, z[:, 0, 0], np.log(self.LEVELS)))
+        tv = lambda tt, dd, pp: (tt + P.K0) * (1 + 0.61 * float(P.mixing_ratio(np.float32(dd), np.float32(pp))))
+        the = P.theta_e(t[k, 0, 0], td[k, 0, 0], np.float32(700))
+        b = []
+        for i in range(len(zz)):
+            tp = float(P.t_saturated(the, float(p[i])))
+            b.append(P.G * (tv(tp, tp, p[i]) - tv(te[i], tde[i], p[i])) / tv(te[i], tde[i], p[i]))
+        b = np.array(b)
+        ref = float(np.sum(np.where(b > 0, b, 0)[1:] * 10.0))
+        self.assertGreater(ref, 50)
+        self.assertAlmostEqual(float(cape[0]), ref, delta=0.05 * ref)
+        self.assertGreater(float(cin[0]), -5)
+
+    def test_moist_unstable_layer_aloft_scores(self):
+        z, t, td, rh, zs, zi, t2, td2, ps = self.column()
+        ea = P.elevated_parcels(z, t, td, rh, self.LEVELS, zs, zi, t2, td2, ps)
+        self.assertGreater(float(ea['score'][0, 0]), 0.5)
+        self.assertTrue(2000 <= float(ea['base'][0, 0]) <= 7000, float(ea['base'][0, 0]))
+        self.assertGreater(float(ea['cape'][0, 0]), 10)
+
+    def test_dry_layer_needs_lift(self):
+        z, t, td, rh, zs, zi, t2, td2, ps = self.column(rh_mid=65.0)
+        self.assertEqual(float(P.elevated_parcels(z, t, td, rh, self.LEVELS, zs, zi, t2, td2, ps)['score'][0, 0]), 0)
+        w = np.full(z.shape, 0.1, np.float32)
+        self.assertGreater(float(P.elevated_parcels(z, t, td, rh, self.LEVELS, zs, zi, t2, td2, ps, w=w)['score'][0, 0]), 0.3)
+
+    def test_stable_layer_none(self):
+        z, t, td, rh, zs, zi, t2, td2, ps = self.column(lapse_mid=4.0)
+        self.assertEqual(float(P.elevated_parcels(z, t, td, rh, self.LEVELS, zs, zi, t2, td2, ps)['score'][0, 0]), 0)
+
+    def test_surface_parcel_free_too_is_no_castellanus(self):
+        z, t, td, rh, zs, zi, t2, td2, ps = self.column(sfc=(30.0, 2.0), inv=-6.0)
+        self.assertEqual(float(P.elevated_parcels(z, t, td, rh, self.LEVELS, zs, zi, t2, td2, ps)['score'][0, 0]), 0)
+
+    def test_levels_under_the_ground_left_out(self):
+        z, t, td, rh, zs, zi, t2, td2, ps = self.column()
+        high = np.full((1, 1), 2200.0, np.float32)
+        ea = P.elevated_parcels(z, t, td, rh, self.LEVELS, high, zi, t2, td2, np.full((1, 1), 780.0, np.float32))
+        self.assertTrue(np.isfinite(ea['score']).all())
+
+    def test_kinematic_w_from_convergence(self):
+        ny, nx, step = (9, 9, 0.125)
+        lat = np.full((ny, nx), 0.0)
+        x = (np.arange(nx) - nx // 2) * step * 111200.0
+        a = 1e-05
+        u = np.broadcast_to(-a * x[None, None, :], (len(self.LEVELS), ny, nx)).astype(np.float32)
+        v = np.zeros_like(u)
+        t = np.full_like(u, 0.0)
+        w = P.kinematic_w(u, v, t, self.LEVELS, np.full((ny, nx), 1013.0), step, lat, sigma_km=0)
+        k850, k500 = (list(self.LEVELS).index(850), list(self.LEVELS).index(500))
+        rho = 850 * 100 / (P.RD * P.K0)
+        self.assertAlmostEqual(float(w[k850, 4, 4]), a * (1013 - 850) * 100 / (rho * P.G), delta=0.02 * float(w[k850, 4, 4]))
+        self.assertGreater(float(w[k500, 4, 4]), float(w[k850, 4, 4]))
+        self.assertTrue(np.allclose(P.kinematic_w(np.zeros_like(u), v, t, self.LEVELS, np.full((ny, nx), 1013.0), step, lat), 0, atol=1e-06))
+
+    def test_the_job_stores_them_and_tiles_none(self):
+        import build
+        for f in ('acscore', 'acbase', 'accape', 'accin'):
+            self.assertIn(f, build.ENC)
+            self.assertIn(f, build.NOT_TILES)
+            self.assertNotIn(f, build.FREE_FIELDS)
+        z, t, td, rh, zs, zi, t2, td2, ps = self.column()
+        lv = {'z': z, 't': t, 'td': td, 'rh': rh, 'u': np.zeros_like(z), 'v': np.zeros_like(z)}
+        s = {'t2': t2, 'td2': td2, 'ps': ps}
+        out = build.castellanus(lv, self.LEVELS, zs, zi, s, 0.125, np.zeros((1, 1)))
+        self.assertGreater(float(out['acscore'][0, 0]), 50)
+        self.assertTrue(2000 <= float(out['acbase'][0, 0]) <= 7000)
+        was = build.EA_OWN_ONLY
+        try:
+            build.EA_OWN_ONLY = True
+            self.assertEqual(build.castellanus(lv, self.LEVELS, zs, zi, s, 0.125, np.zeros((1, 1))), {})
+            self.assertEqual(build.castellanus({**lv, 'w': np.zeros_like(z), 'w_wave_only': True}, self.LEVELS, zs, zi, s, 0.125, np.zeros((1, 1))), {})
+            own = build.castellanus({**lv, 'w': np.zeros_like(z)}, self.LEVELS, zs, zi, s, 0.125, np.zeros((1, 1)))
+            self.assertGreater(float(own['acscore'][0, 0]), 50)
+        finally:
+            build.EA_OWN_ONLY = was
+
+    def test_from_the_convection_scheme(self):
+        import build
+        z, t, td, rh, zs, zi, t2, td2, ps = self.column()
+        lv = {'z': z, 't': t, 'td': td, 'rh': rh, 'u': np.zeros_like(z), 'v': np.zeros_like(z)}
+        cases = [((3000, 4000), 500, 100), ((3000, 3200), 500, 0), ((1200, 3000), 0, 0), ((3000, 4000), 2500, 0), ((-500, -500), 0, 0)]
+        for (b, top), z_i, want in cases:
+            s = {'t2': t2, 'td2': td2, 'ps': ps, 'cvbase': np.full((1, 1), b, np.float32), 'cvtop': np.full((1, 1), top, np.float32)}
+            out = build.castellanus(lv, self.LEVELS, np.zeros((1, 1), np.float32), np.full((1, 1), z_i, np.float32), s, 0.125, np.full((1, 1), -25.0))
+            self.assertAlmostEqual(float(out['acscore'][0, 0]), want, delta=0.5, msg=(b, top, z_i))
+            self.assertEqual(np.isfinite(out['acbase'][0, 0]), want > 0)
+
+    def test_class_behind_its_switch(self):
+        import build
+        import sky
+        n = 1
+        base = {k: np.full((1, n), 0, np.uint8) for k in sky.INPUTS}
+        enc = build.ENC
+        q = {k: build.quantize(np.full((1, n), v, np.float32), *enc[k]) for k, v in {'wstar': 0.0, 'cudepth': 0.0, 'overdev': 0.0, 'rain': 0.0, 'refc': 0.0, 'showers': 0.0, 'sun': 1.0, 'cloud': 20.0, 'cloudlow': 0.0, 'cloudmid': 20.0, 'cloudhigh': 0.0, 'ceil': 6000.0, 'vis': 16000.0, 'accas': 0.0, 'depth': 0.0, 'zi': 300.0, 'cubase': np.nan, 'acscore': 80.0}.items()}
+        q.update({k: build.quantize(np.full((1, n), 0.0, np.float32), *enc[k]) for k in sky.CC_NAMES})
+        del base
+        was = sky.ACC_CLASS
+        try:
+            sky.ACC_CLASS = False
+            self.assertNotEqual(int(sky.cloud_overview(q, enc, False)['cuclass'][0, 0]), sky.CLASS_CODE0 + sky.ACC - sky.CB)
+            sky.ACC_CLASS = True
+            self.assertEqual(int(sky.cloud_overview(q, enc, False)['cuclass'][0, 0]), sky.CLASS_CODE0 + sky.ACC - sky.CB)
+        finally:
+            sky.ACC_CLASS = was
+
 class OwnSoundings(unittest.TestCase):
 
     def test_quantize_round_trips_and_marks_none(self):
