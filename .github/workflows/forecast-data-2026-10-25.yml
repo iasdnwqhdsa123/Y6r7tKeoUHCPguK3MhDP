@@ -639,6 +639,11 @@ jobs:
           path: /tmp/netlify-cli
           key: netlify-cli-17.38.1
 
+      - name: Make room
+        run: |
+          df -h /
+          nohup sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/share/swift > /dev/null 2>&1 &
+
       - name: Deploy the newest outputs
         env:
           GH_TOKEN: ${{ github.token }}
