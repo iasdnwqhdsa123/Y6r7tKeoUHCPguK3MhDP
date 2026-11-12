@@ -19,6 +19,10 @@ jobs:
       ARCHIVE_S3_BUCKET: ${{ secrets.ARCHIVE_S3_BUCKET }}
       ARCHIVE_S3_KEY: ${{ secrets.ARCHIVE_S3_KEY }}
       ARCHIVE_S3_SECRET: ${{ secrets.ARCHIVE_S3_SECRET }}
+      DATA_S3_BUCKET: ${{ secrets.DATA_S3_BUCKET }}
+      DATA_S3_ENDPOINT: ${{ secrets.DATA_S3_ENDPOINT || secrets.ARCHIVE_S3_ENDPOINT }}
+      DATA_S3_KEY: ${{ secrets.DATA_S3_KEY || secrets.ARCHIVE_S3_KEY }}
+      DATA_S3_SECRET: ${{ secrets.DATA_S3_SECRET || secrets.ARCHIVE_S3_SECRET }}
     steps:
       - name: Anything built?
         id: any
