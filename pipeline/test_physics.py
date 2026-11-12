@@ -1218,6 +1218,43 @@ class PruneStore(unittest.TestCase):
             build._prefetch, build._process_hour = (real_p, real_h)
         self.assertGreater(build.LANE_STAGGER_S, 0)
 
+    def test_spaced_lanes_start_hours_half_an_hour_apart(self):
+        import threading
+        import build
+
+        class V:
+
+            def __init__(self, v):
+                self.value = v
+        clock, slept = ([1000.0], [])
+        real_time, real_sleep = (build.time.time, build.time.sleep)
+        build.time.time = lambda: clock[0]
+        build.time.sleep = lambda s: (slept.append(s), clock.__setitem__(0, clock[0] + s))
+        try:
+            build._TURN = (threading.Lock(), V(0.0), V(build.TURN_FIRST_S))
+            build._turn_wait()
+            self.assertEqual(slept, [], 'the first start: at once')
+            build._turn_wait()
+            self.assertAlmostEqual(sum(slept), build.TURN_FIRST_S, delta=0.01)
+            build._turn_took(90.0)
+            self.assertEqual(build._TURN[2].value, 45.0)
+            slept.clear()
+            clock[0] += 50.0
+            build._turn_wait()
+            self.assertEqual(slept, [])
+            build._turn_took(10000)
+            slept.clear()
+            build._turn_wait()
+            self.assertLessEqual(sum(slept), build.TURN_MAX_S + 5, 'never longer than TURN_MAX_S')
+            build._TURN = None
+            slept.clear()
+            build._turn_wait()
+            self.assertEqual(slept, [], 'other models: no turns')
+        finally:
+            build._TURN = None
+            build.time.time, build.time.sleep = (real_time, real_sleep)
+        self.assertIn('hrrr', build.SPACED_LANES)
+
     def test_lanes_download_ahead_and_keep_order(self):
         import build
         seen = []
