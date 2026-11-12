@@ -24,7 +24,7 @@ jobs:
         id: any
         run: |
           n="$(gh api "repos/${{ github.repository }}/actions/runs/$FORECAST_RUN/artifacts?per_page=100" \
-            --jq '[.artifacts[] | select((.name | startswith("out-")) and .name != "out-mapdata" and .name != "out-ens" and (.expired | not))] | length')"
+            --jq '[.artifacts[] | select((.name | startswith("out-")) and .name != "out-mapdata" and (.expired | not))] | length')"
           echo "models=$n" >> "$GITHUB_OUTPUT"
           [ "$n" -gt 0 ] || echo "the run built no model: nothing to archive"
       - uses: actions/checkout@v7

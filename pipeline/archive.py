@@ -8,7 +8,6 @@ import sys
 from datetime import datetime, timedelta, timezone
 ARCHIVE_DAYS = 31
 RUN_BY = {'hrrr': 12, 'gfs': 6, 'ecmwf': 0, 'icon': 6, 'icond2': 6, 'arome': 6}
-SKIP = {'ens'}
 QUARTER_FIELDS = ('ceil', 'vis', 'refc', 'rain', 'ptype', 'u_sfc', 'v_sfc', 'gust', 't2', 'td2', 'ctop')
 QUARTER = re.compile('^q_(%s)\\.pack$' % '|'.join(QUARTER_FIELDS))
 DAY = re.compile('^\\d{8}$')
@@ -124,8 +123,6 @@ def _trim_packs(am: dict, rdir: str, dest_run: str, day: str):
             snd['days'][d] = {**e, 'stamps': [e['stamps'][k] for k in rows]}
 
 def stage(dist: str, model: str, out: str) -> tuple[str, str] | None:
-    if model in SKIP:
-        return None
     base = os.path.join(dist, model)
     try:
         with open(os.path.join(base, 'latest.json')) as f:

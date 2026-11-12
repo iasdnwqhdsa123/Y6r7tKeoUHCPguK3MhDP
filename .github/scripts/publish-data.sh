@@ -191,7 +191,7 @@ archive)
 archive-run)
   if [ -z "${ARCHIVE_S3_BUCKET:-}" ] || [ -z "${ARCHIVE_S3_ENDPOINT:-}" ]; then echo "archive: no bucket set"; exit 0; fi
   models="$(gh api "repos/$R/actions/runs/$RUN/artifacts?per_page=100" \
-    --jq '.artifacts[] | select((.name | startswith("out-")) and (.expired | not)) | .name | ltrimstr("out-")' | grep -vx 'mapdata\|ens' | sort -u || true)"
+    --jq '.artifacts[] | select((.name | startswith("out-")) and (.expired | not)) | .name | ltrimstr("out-")' | grep -vx 'mapdata' | sort -u || true)"
   [ -n "$models" ] || { echo "archive: no model built in this run"; exit 0; }
   mkdir -p /tmp/outs
   for m in $models; do

@@ -7,8 +7,6 @@ ALWAYS = ('t2', 'td2', 'u_sfc', 'v_sfc', 'cloud', 'mslp')
 def _missing_in(root: str, run_dir: str, days: dict, fields: list[str]) -> list[str]:
     out = []
     need = [f for f in fields if f != 'elevation' and (not f.startswith('q_'))]
-    if not need:
-        return []
     for day in days:
         folder = os.path.join(root, run_dir, day)
         if not os.path.isdir(folder):

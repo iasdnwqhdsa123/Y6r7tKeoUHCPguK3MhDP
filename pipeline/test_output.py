@@ -61,12 +61,6 @@ class OutputWhole(unittest.TestCase):
         os.remove(os.path.join(self.run, 'elevation.pack'))
         self.assertEqual(verify_output.check_manifest(self.root, 'gfs'), ['gfs/2026102812: no terrain'])
 
-    def test_points_only(self):
-        os.makedirs(os.path.join(self.root, 'ens'))
-        with open(os.path.join(self.root, 'ens', 'latest.json'), 'w') as f:
-            json.dump({'runId': '2026102800', 'days': {'20261028': []}, 'fields': {'t2': {'tiles': []}}}, f)
-        self.assertEqual(verify_output.check_manifest(self.root, 'ens'), [])
-
     def test_none_published(self):
         self.assertEqual(verify_output.check_manifest(self.root, 'icon'), [])
 if __name__ == '__main__':
