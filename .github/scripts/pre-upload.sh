@@ -14,6 +14,19 @@ if [ "${1:-}" = "--wait" ]; then
 fi
 m="$1"
 [ -d "dist-data/$m" ] || exit 0
+if [ -n "${DATA_S3_BUCKET:-}" ] && [ -n "${DATA_S3_ENDPOINT:-${ARCHIVE_S3_ENDPOINT:-}}" ] && command -v aws > /dev/null; then
+  B="$R/$m-r2.files"
+  rm -rf "$B"
+  if rsync -a --link-dest="$PWD/dist-data/$m/" --exclude '_hours/' --exclude '_quarters/' --exclude '*.building/' --exclude 'latest.json' --exclude '.*' "dist-data/$m/" "$B/"; then
+    setsid nohup env AWS_ACCESS_KEY_ID="${DATA_S3_KEY:-${ARCHIVE_S3_KEY:-}}" AWS_SECRET_ACCESS_KEY="${DATA_S3_SECRET:-${ARCHIVE_S3_SECRET:-}}" AWS_DEFAULT_REGION=auto AWS_MAX_ATTEMPTS=5 \
+      bash -c 'aws configure set default.s3.max_concurrent_requests 32; aws --endpoint-url "$1" s3 sync "$2/" "s3://$3/data/$4/" --only-show-errors --no-progress && echo "sent: $(du -sh "$2" | cut -f1)"; rm -rf "$2"' _ \
+      "${DATA_S3_ENDPOINT:-$ARCHIVE_S3_ENDPOINT}" "$B" "$DATA_S3_BUCKET" "$m" > "$R/$m-r2.log" 2>&1 < /dev/null &
+    echo $! > "$R/$m-r2.pid"
+    echo "pre-upload $m to the data host: started"
+  else
+    rm -rf "$B"
+  fi
+fi
 [ -n "${NETLIFY_AUTH_TOKEN:-}" ] && [ -n "${NETLIFY_SITE_ID:-}" ] || { echo "pre-upload $m: no Netlify token, skipped"; exit 0; }
 CLI="$(.github/scripts/netlify-cli.sh)" || exit 0
 P="${DATA_PATH_SECRET:+/$DATA_PATH_SECRET}"

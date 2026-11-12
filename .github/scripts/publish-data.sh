@@ -2,6 +2,16 @@
 set -euo pipefail
 R="${GITHUB_REPOSITORY:?}" RUN="${FORECAST_RUN:-${GITHUB_RUN_ID:?}}" ATTEMPT="${GITHUB_RUN_ATTEMPT:-1}"
 P="${DATA_PATH_SECRET:+/$DATA_PATH_SECRET}"
+r2_on() { [ -n "${DATA_S3_BUCKET:-}" ] && [ -n "${DATA_S3_ENDPOINT:-${ARCHIVE_S3_ENDPOINT:-}}" ]; }
+r2s3() {
+  AWS_ACCESS_KEY_ID="${DATA_S3_KEY:-${ARCHIVE_S3_KEY:-}}" AWS_SECRET_ACCESS_KEY="${DATA_S3_SECRET:-${ARCHIVE_S3_SECRET:-}}" AWS_DEFAULT_REGION=auto \
+    AWS_MAX_ATTEMPTS=5 aws --endpoint-url "${DATA_S3_ENDPOINT:-$ARCHIVE_S3_ENDPOINT}" "$@"
+}
+r2_outs() {
+  local t
+  t="$(r2s3 s3 cp "s3://$DATA_S3_BUCKET/data/_outs.json" - 2> /tmp/r2-outs.err)" || { grep -q "404\|NoSuchKey\|Not Found" /tmp/r2-outs.err && echo '{}'; return 0; }
+  jq -e 'type == "object"' <<<"$t" > /dev/null 2>&1 && echo "$t"
+}
 newest() {
   local n
   for n in "$@"; do
@@ -75,6 +85,11 @@ sync)
       live='{}'
     fi
     want="$(newest $names)"
+    live_r2='{}' new_r2=""
+    if r2_on && [ "${r2_fails:-0}" -lt 3 -o "$end" != true ]; then
+      live_r2="$(r2_outs)"
+      if [ -z "$live_r2" ]; then echo "the data host's _outs.json not read: taken as none"; live_r2='{}'; fi
+    fi
     have_all=true
     for n in $names; do
       if ! grep -q "^$n " <<<"$want"; then
@@ -90,10 +105,30 @@ sync)
     while read -r n id run; do
       [ -n "$n" ] || continue
       [ "$(jq -r --arg n "$n" '.[$n] // ""' <<<"$live" 2> /dev/null)" = "$id" ] || new="$new $n"
+      if r2_on && [ "${r2_fails:-0}" -lt 3 -o "$end" != true ]; then
+        [ "$(jq -r --arg n "$n" '.[$n] // ""' <<<"$live_r2" 2> /dev/null)" = "$id" ] || new_r2="$new_r2 $n"
+      fi
     done <<<"$want"
     if [ "$have_all" = true ] && [ -n "$new" ] && deploying; then
       echo "another deploy going out: waiting for it"
       sleep 20
+      continue
+    fi
+    if [ "$have_all" = true ] && [ -z "$new" ] && [ -n "$new_r2" ]; then
+      echo "::group::data host:$new_r2 (newer than its bucket's)"
+      ok=true
+      while read -r n id run; do
+        [ -n "$n" ] || continue
+        [ "$(cat "/tmp/outs/$n" 2> /dev/null)" = "$id" ] && continue
+        take "$n" "$id" "$run" || { echo "::warning::out-$n of run $run couldn't be fetched"; ok=false; }
+      done <<<"$want"
+      if [ "$ok" = true ]; then
+        jq -Rn '[inputs | split(" ") | {(.[0]): (.[1] | tonumber)}] | add' <<<"$want" > dist-data/_outs.json
+        "$0" r2 || ok=false
+      fi
+      if [ "$ok" = true ]; then r2_fails=0; else r2_fails=$((${r2_fails:-0} + 1)); echo "::warning::the data host's upload failed ($r2_fails)"; fi
+      echo "::endgroup::"
+      if [ "$ok" = true ]; then sleep 15; else sleep 60; fi
       continue
     fi
     if [ "$have_all" = true ] && [ -n "$new" ]; then
@@ -113,6 +148,9 @@ sync)
           continue
         fi
         { "$0" assemble && "$0" deploy "$(xargs <<<"$new")"; } || { echo "::warning::the deploy failed"; ok=false; }
+        if [ -n "$new_r2" ]; then
+          if "$0" r2; then r2_fails=0; else r2_fails=$((${r2_fails:-0} + 1)); echo "::warning::the data host's upload failed ($r2_fails)"; fi
+        fi
       fi
       echo "::endgroup::"
       if [ "$ok" = true ]; then sleep 15; else sleep 60; fi
@@ -145,6 +183,42 @@ assemble)
   printf "User-agent: *\nDisallow: /\n" > site/robots.txt
   printf '[build]\n  publish = "."\n' > site/netlify.toml
   du -sh site; find site -type f | wc -l
+  ;;
+r2)
+  r2_on || { echo "data host: no bucket set"; exit 0; }
+  KEEP_H=6
+  D="s3://$DATA_S3_BUCKET/data"
+  aws configure set default.s3.max_concurrent_requests 32
+  aws configure set default.s3.multipart_threshold 64MB
+  t0=$SECONDS
+  r2s3 s3 sync dist-data/ "$D/" --only-show-errors --no-progress \
+    --exclude '*_hours/*' --exclude '*_quarters/*' --exclude '*.building/*' --exclude '*.changed*' --exclude '.model-*' --exclude '.mapdata' \
+    --exclude '*latest.json' --exclude '_outs.json' || exit 1
+  sent=0 kept=0
+  while IFS= read -r f; do
+    rel="${f#dist-data/}"
+    mine="$(jq -r '.generated // ""' "$f" 2> /dev/null || true)"
+    there="$(r2s3 s3 cp "$D/$rel" - 2> /dev/null | jq -r '.generated // ""' 2> /dev/null || true)"
+    if [[ -n "$there" && "$there" > "$mine" ]]; then kept=$((kept + 1)); continue; fi
+    r2s3 s3 cp "$f" "$D/$rel" --only-show-errors --content-type application/json || exit 1
+    sent=$((sent + 1))
+  done < <(find dist-data -name latest.json -not -path '*/_hours/*' -not -path '*/_quarters/*' -not -path '*.building/*' | sort)
+  [ ! -f dist-data/_outs.json ] || r2s3 s3 cp dist-data/_outs.json "$D/_outs.json" --only-show-errors --content-type application/json || exit 1
+  echo "data host: sent in $((SECONDS - t0)) s, $sent manifests ($kept newer there kept)"
+  dirs() { r2s3 s3api list-objects-v2 --bucket "$DATA_S3_BUCKET" --prefix "$1" --delimiter / --query 'CommonPrefixes[].Prefix' --output text 2> /dev/null | tr '\t' '\n' | grep -v '^None$' | grep . || true; }
+  folders="$(dirs data/ | grep -vx 'data/free/\|data/airspace/'; dirs data/free/ | grep -vx 'data/free/now/'; dirs data/free/now/)"
+  for base in $folders; do
+    cur="$(r2s3 s3 cp "s3://$DATA_S3_BUCKET/${base}latest.json" - 2> /dev/null | jq -r '.runId // ""' 2> /dev/null || true)"
+    [[ "$cur" =~ ^20[0-9]{8} ]] || continue
+    cut="$(date -u -d "${cur:0:8} ${cur:8:2}:00 $KEEP_H hours ago" +%Y%m%d%H)"
+    while IFS= read -r r; do
+      [ -n "$r" ] || continue
+      t="$(sed -E 's#.*/(20[0-9]{8})[^/]*/$#\1#' <<<"$r")"
+      if [ "$t" \< "$cut" ] && [ "${r%/}" != "${base}$cur" ]; then
+        r2s3 s3 rm "s3://$DATA_S3_BUCKET/$r" --recursive --only-show-errors && echo "data host: ${r#data/} deleted"
+      fi
+    done < <(dirs "$base" | grep -E '/20[0-9]{8}[^/]*/$' || true)
+  done
   ;;
 deploy)
   cd site
@@ -180,7 +254,7 @@ archive)
   rm -rf "$A"
   keys=/tmp/archive-keys.txt
   s3 s3api list-objects-v2 --bucket "$ARCHIVE_S3_BUCKET" --prefix "${DATA_PATH_SECRET:+$DATA_PATH_SECRET/}" \
-    --query "Contents[?ends_with(Key, '/latest.json')].Key" --output text | tr '\t' '\n' > "$keys"
+    --query "Contents[?ends_with(Key, '/latest.json') && !contains(Key, '/req/')].Key" --output text | tr '\t' '\n' > "$keys"
   for day in $(python3 pipeline/archive.py old --keys "$keys"); do
     s3 s3 rm "$ROOT/$day/" --recursive --only-show-errors && echo "archive: $day deleted (past the month)"
   done
@@ -200,5 +274,5 @@ archive-run)
     rm -rf "dist-data/$m" "dist-data/free/$m" "dist-data/free/now/$m"
   done
   ;;
-*) echo "usage: publish-data.sh sync|assemble|deploy|archive|archive-run" >&2; exit 2 ;;
+*) echo "usage: publish-data.sh sync|assemble|deploy|r2|archive|archive-run" >&2; exit 2 ;;
 esac
