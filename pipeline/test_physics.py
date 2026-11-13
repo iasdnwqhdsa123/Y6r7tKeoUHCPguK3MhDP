@@ -2483,6 +2483,8 @@ class LowLevelWind(unittest.TestCase):
         self.assertTrue(7 < float(hub['u_g300'][1, 1]) < u925)
         for k in ('u_g100', 'v_g100', 'u_g300', 'v_g300'):
             self.assertEqual(build.ENC[k], build.WIND_ENC)
+            self.assertIn(k, build.FREE_FIELDS)
+        for k in ('u_g600', 'v_g600', 'u_g1000', 'v_g3000'):
             self.assertNotIn(k, build.FREE_FIELDS)
 
 class Bumpiness(unittest.TestCase):
