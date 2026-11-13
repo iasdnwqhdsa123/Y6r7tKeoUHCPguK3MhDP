@@ -2051,8 +2051,12 @@ class QuarterHours(unittest.TestCase):
             times = [datetime(2026, 9, 26, 18, m, tzinfo=timezone.utc) for m in (15, 30, 45)]
             for i, t in enumerate(times):
                 np.savez_compressed(os.path.join(qdir, f'{t:%Y%m%d%H%M}.npz'), t2=np.full((3, 4), 10 + i, np.uint8), vis=np.full((3, 4), 255, np.uint8))
-            days, present = build.write_quarters(out, qdir, times, tile=4)
+            days, present, lpresent = build.write_quarters(out, qdir, times, tile=4, levels=((2, 2),))
             self.assertEqual(days, {'20260926': ['202609261815', '202609261830', '202609261845']})
+            self.assertEqual(sorted(lpresent[2]), ['q_t2'])
+            lstrip = tile_img(os.path.join(out, 'o2', '20260926', 'q_t2'), '0_0')
+            self.assertEqual(lstrip.shape, (6, 2))
+            self.assertEqual(int(lstrip[2, 0]), 11)
             self.assertEqual(sorted(present), ['q_t2'])
             strip = tile_img(os.path.join(out, '20260926', 'q_t2'), '0_0')
             self.assertEqual(strip.shape, (12, 4))
