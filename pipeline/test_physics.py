@@ -3068,7 +3068,7 @@ class AromeSource(unittest.TestCase):
         self.assertEqual((len(lats), len(lons)), (AROME_GRID[3], AROME_GRID[4]))
         self.assertEqual(om.Grid(*AROME_GRID).window(build.REGIONS['arome']), (716, 0, 717, 1121))
         files = {'cape', 'cloud_cover', 'cloud_cover_high', 'cloud_cover_low', 'cloud_cover_mid', 'precipitation', 'pressure_msl', 'relative_humidity_2m', 'shortwave_radiation', 'snowfall_water_equivalent', 'temperature_2m', 'wind_gusts_10m', 'wind_u_component_10m', 'wind_v_component_10m', 'wind_u_component_100m', 'wind_v_component_100m', 'HSURF'}
-        files |= {f'{v}_{p}hPa' for p in (1000, 950, 925, 900, 850, 800, 750, 700, 650, 600, 550, 500, 450, 400, 350, 300, 275, 250, 225, 200, 175, 150) for v in ('temperature', 'relative_humidity', 'wind_u_component', 'wind_v_component', 'geopotential_height')}
+        files |= {f'{v}_{p}hPa' for p in (1000, 950, 925, 900, 850, 800, 750, 700, 650, 600, 550, 500, 450, 400, 350, 300, 275, 250, 225, 200, 175, 150, 125, 100) for v in ('temperature', 'relative_humidity', 'wind_u_component', 'wind_v_component', 'geopotential_height')}
         for canon, key in src.surface.items():
             if key[1] == 'mf':
                 self.assertIn(canon, src.mf_fields)
