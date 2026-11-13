@@ -2068,6 +2068,25 @@ class QuarterHours(unittest.TestCase):
             self.assertEqual(kept, times[1:])
             self.assertFalse(os.path.exists(os.path.join(qdir, '202609261815.npz')))
 
+class IconD2Quarters(unittest.TestCase):
+
+    def test_rain_snow_share_freezing_and_cape(self):
+        import build
+        z = np.zeros((1, 4), np.float32)
+        inside = np.array([[True, True, True, False]])
+        tp = [z + 1.0, z + 1.5, z + 2.0, z + 2.5]
+        sn = [z, z + np.array([[0, 0.5, 0.2, 0]]), z + np.array([[0, 1.0, 0.4, 0]]), z + np.array([[0, 1.5, 0.6, 0]])]
+        m = {'tot_prec': tp, 'snow_gsp': sn, 'cape_ml': [z + 100, z + 150, z + 200, z + 250]}
+        out = build.icond2_quarter_fields(m, 2, inside)
+        np.testing.assert_allclose(out['rain'][0, :3], 2.0)
+        self.assertTrue(np.isnan(out['rain'][0, 3]))
+        self.assertEqual(list(out['ptype'][0, :3]), [1, 2, 3])
+        self.assertEqual(float(out['cape'][0, 0]), 200)
+        fz = build.icond2_quarter_fields(m, 2, inside, [np.array([[5, 5, 0, 0]], np.float32)])
+        self.assertEqual(list(fz['ptype'][0, :3]), [5, 2, 3])
+        dry = build.icond2_quarter_fields({'tot_prec': [z + 1.0] * 4}, 1, inside)
+        self.assertEqual(float(dry['ptype'][0, 0]), 0)
+
 class PointPacks(unittest.TestCase):
 
     def test_layout_overlap_and_blocks_left_out(self):

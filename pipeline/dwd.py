@@ -10,6 +10,19 @@ def url(run, fh: int, name: str, p: int) -> str:
 def message(u: str) -> bytes:
     return bz2.decompress(grib.http_get(u, tries=4, timeout=60))
 
+def single_url(run, fh: int, name: str) -> str:
+    return f'{BASE}/{run:%H}/{name}/icon-d2_germany_regular-lat-lon_single-level_{run:%Y%m%d%H}_{fh:03d}_2d_{name}.grib2.bz2'
+
+def messages(u: str) -> list:
+    b, out, i = (message(u), [], 0)
+    while True:
+        j = b.find(b'GRIB', i)
+        if j < 0 or j + 16 > len(b):
+            return out
+        n = int.from_bytes(b[j + 8:j + 16], 'big')
+        out.append(b[j:j + n])
+        i = j + n
+
 class Field:
 
     def __init__(self, grid, msg: bytes):
