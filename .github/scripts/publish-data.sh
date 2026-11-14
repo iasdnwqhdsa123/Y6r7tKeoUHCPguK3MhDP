@@ -74,9 +74,10 @@ newest() {
 take() { # name id run
   local n="$1" t=/tmp/out-take f
   rm -rf "$t"
+  rm -rf site
   if [ "$n" = mapdata ]; then rm -rf dist-data/airspace; else rm -rf "dist-data/$n" "dist-data/free/$n" "dist-data/free/now/$n"; fi
   rm -f "/tmp/outs/$n"
-  .github/scripts/fetch-artifact.sh "out-$n" "$3" "$t" || return 1
+  .github/scripts/fetch-artifact.sh "out-$n" "$3" "$t" || { echo "out-$n not fetched: $(df -h --output=avail / | tail -1 | tr -d ' ') left on the disk"; rm -rf "$t"; return 1; }
   f="$(ls "$t"/*.tar* 2> /dev/null | head -1 || true)"
   [ -n "$f" ] || { echo "out-$n: no archive in it"; rm -rf "$t"; return 1; }
   mkdir -p dist-data
