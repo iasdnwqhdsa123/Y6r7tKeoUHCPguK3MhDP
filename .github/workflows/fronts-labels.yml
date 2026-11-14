@@ -1,0 +1,34 @@
+name: Fronts labels
+on:
+  schedule:
+    - cron: "41 */6 * * *"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: fronts-labels
+  cancel-in-progress: false
+jobs:
+  collect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      ARCHIVE_S3_ENDPOINT: ${{ secrets.ARCHIVE_S3_ENDPOINT }}
+      ARCHIVE_S3_BUCKET: ${{ secrets.ARCHIVE_S3_BUCKET }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.ARCHIVE_S3_KEY }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.ARCHIVE_S3_SECRET }}
+      AWS_DEFAULT_REGION: auto
+      AWS_MAX_ATTEMPTS: "5"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: pipeline/fronts_labels.py
+          sparse-checkout-cone-mode: false
+      - name: Collect
+        run: |
+          if [ -z "$ARCHIVE_S3_BUCKET" ] || [ -z "$ARCHIVE_S3_ENDPOINT" ]; then echo "no bucket: nothing to do"; exit 0; fi
+          aws --endpoint-url "$ARCHIVE_S3_ENDPOINT" s3 ls "s3://$ARCHIVE_S3_BUCKET/fronts-labels/" --recursive > have.txt || true
+          python3 pipeline/fronts_labels.py out have.txt
+          [ -d out ] || exit 0
+          aws --endpoint-url "$ARCHIVE_S3_ENDPOINT" s3 cp out "s3://$ARCHIVE_S3_BUCKET/fronts-labels/" --recursive --only-show-errors
+          echo "kept: $(wc -l < have.txt) before, $(find out -type f | wc -l) new"

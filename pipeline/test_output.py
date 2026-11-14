@@ -49,6 +49,19 @@ class DataEdge(unittest.TestCase):
         finally:
             shutil.rmtree(tmp)
 
+class FrontsLabels(unittest.TestCase):
+
+    def test_files_kept(self):
+        import fronts_labels as fl
+        feed = '<feed><entry><link href="https://www.data.jma.go.jp/developer/xml/data/20261114023831_0_VZSA60_010000.xml"/></entry><entry><link href="https://www.data.jma.go.jp/developer/xml/data/20261114050731_0_VZSA50_010000.xml"/></entry><entry><link href="https://www.data.jma.go.jp/developer/xml/data/20261114050731_0_VPWW53_010000.xml"/></entry></feed>'
+        self.assertEqual([k for _, k in fl.jma_wanted(feed)], ['jma/202611/20261114023831_0_VZSA60_010000.xml.gz', 'jma/202611/20261114050731_0_VZSA50_010000.xml.gz'])
+        listing = '<a href="Z__C_EDZW_20261113013630_tka01%2Cana_bwkman_dwdna_O_000000_000000_202611130000_WV12.png"><a href="Z__C_EDZW_20261113013630_tka01%2Cana_bwkman_dwdna_O_000000_000000_202611130000_WV12SW.png"><a href="Z__C_EDZW_20261201013630_tka01%2Cana_bwkman_dwdc_O_000000_000000_202612010000_WV12.png"><a href="Z__C_EDZW_20261113153600_nwv01%2Cico_hsy_NA_N_000000_300200_202611121200_WV1.png">'
+        got = fl.dwd_wanted(listing)
+        self.assertEqual([k for _, k in got], ['dwd/202611/Z__C_EDZW_20261113013630_tka01,ana_bwkman_dwdna_O_000000_000000_202611130000_WV12.png', 'dwd/202612/Z__C_EDZW_20261201013630_tka01,ana_bwkman_dwdc_O_000000_000000_202612010000_WV12.png'])
+        self.assertTrue(got[0][0].startswith(fl.DWD_DIR) and '%2C' in got[0][0])
+        have = fl.kept('2026-11-14 05:00:00     123 fronts-labels/jma/202611/a.xml.gz\n\n')
+        self.assertEqual(have, {'jma/202611/a.xml.gz'})
+
 class OutputWhole(unittest.TestCase):
 
     def setUp(self):
