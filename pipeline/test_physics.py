@@ -1007,6 +1007,31 @@ class Fronts(unittest.TestCase):
         self.assertEqual([x['south'] for x in st], [False, True])
         self.assertLess(float(np.abs(st[0]['p'] - res['state']['p']).max()), 0.003)
         self.assertEqual(st[0]['key'], fronts.unpack_states(fronts.pack_states([res['state']]))[0]['key'])
+        d0 = res['state']['dry'][0]
+        ok = np.isfinite(d0)
+        self.assertTrue(ok.any())
+        self.assertLess(float(np.nanmax(np.abs(st[0]['dry'][0][ok] - np.clip(d0[ok], -31.75, 31.75)))), 0.13)
+        self.assertTrue(np.array_equal(np.isfinite(st[0]['dry'][1]), np.isfinite(res['state']['dry'][1])))
+
+    def test_dry_cut(self):
+        import fronts
+        lats, lons = (np.arange(50.0, 30.0, -0.25), np.arange(-110.0, -80.0, 0.25))
+        g = fronts.Grid(lats, lons)
+        LON, LAT = np.meshgrid(lons, lats)
+        nx, ny = (np.zeros_like(LON), np.ones_like(LON))
+        line = (np.full(60, 1000.0), np.linspace(-105.0, -88.0, 60), np.full(60, 40.0), 0.5)
+        ramp = np.tanh((LAT - 40.0) / 1.0)
+        front = fronts.dry_maps(g, 290 + 4 * ramp, 5 + 4 * ramp, nx, ny)
+        self.assertEqual(len(fronts._dry_cut([line], g, front)), 1)
+        self.assertEqual(len(fronts._dry_cut([line], g, front)[0][1]), 60)
+        dryl = fronts.dry_maps(g, 290 - 4 * ramp, 5 + 0 * ramp, nx, ny)
+        self.assertEqual(fronts._dry_cut([line], g, dryl), [])
+        half = fronts.dry_maps(g, 290 - 4 * ramp * (LON > -96.5), 5 + 4 * ramp * (LON <= -96.5), nx, ny)
+        out = fronts._dry_cut([line], g, half)
+        self.assertEqual(len(out), 1)
+        self.assertLess(float(out[0][1].max()), -95.0)
+        nan8 = fronts.dry_maps(g, 290 - 4 * ramp, np.full_like(LAT, np.nan), nx, ny)
+        self.assertEqual(len(fronts._dry_cut([line], g, nan8)), 1)
 
     def test_steady_from_hour_to_hour(self):
         import fronts
