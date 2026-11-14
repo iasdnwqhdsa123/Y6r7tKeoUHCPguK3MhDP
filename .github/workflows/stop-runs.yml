@@ -2,6 +2,7 @@ name: Stop and clear runs
 on:
   push:
     branches: [main]
+    paths: [".github/request"]
 permissions:
   actions: write
 jobs:

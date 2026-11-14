@@ -4,6 +4,7 @@ run-name: ${{ inputs.source == 'timer' && 'Forecast data (on time)' || 'Forecast
 on:
   push:
     branches: [main]
+    paths: [".github/request"]
   schedule:
     - cron: "15 1 * * *"
     - cron: "0 2,8,14,20 * * *"
