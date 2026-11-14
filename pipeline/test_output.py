@@ -25,6 +25,30 @@ class StoredHoursOutlivingTheirFields(unittest.TestCase):
         finally:
             shutil.rmtree(tmp)
 
+class DataEdge(unittest.TestCase):
+
+    def test_edge_round_the_data(self):
+        tmp = tempfile.mkdtemp()
+        try:
+            t = datetime(2026, 11, 14, 12, tzinfo=timezone.utc)
+            el = np.full((40, 60), 255, np.uint8)
+            el[5:30, 10:50] = 100
+            el[30:35, 20:22] = 100
+            np.savez(os.path.join(tmp, f'{t:%Y%m%d%H}.npz'), elevation=el)
+            grid = {'west': -10.0, 'north': 50.0, 'step': 0.25}
+            edge = build.manifest_edge(tmp, [t], grid)
+            self.assertEqual(len(edge), 1)
+            line = np.array(edge[0])
+            self.assertEqual(line[0].tolist(), line[-1].tolist(), 'closed')
+            self.assertAlmostEqual(line[:, 0].max(), 50 - 5 * 0.25 + 0.125)
+            self.assertAlmostEqual(line[:, 0].min(), 50 - 34 * 0.25 - 0.125)
+            self.assertAlmostEqual(line[:, 1].min(), -10 + 10 * 0.25 - 0.125)
+            self.assertAlmostEqual(line[:, 1].max(), -10 + 49 * 0.25 + 0.125)
+            self.assertLess(len(line), 30, 'straight runs simplified')
+            self.assertIsNone(build.manifest_edge(tmp, [datetime(2026, 11, 14, 13, tzinfo=timezone.utc)], grid))
+        finally:
+            shutil.rmtree(tmp)
+
 class OutputWhole(unittest.TestCase):
 
     def setUp(self):
