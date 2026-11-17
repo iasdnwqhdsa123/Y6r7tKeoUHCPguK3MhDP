@@ -1,0 +1,45 @@
+name: Fronts labels
+on:
+  schedule:
+    - cron: "41 */6 * * *"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: fronts-labels
+  cancel-in-progress: false
+jobs:
+  collect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      DATA_S3_BUCKET: ${{ secrets.DATA_S3_BUCKET }}
+      DATA_S3_ENDPOINT: ${{ secrets.DATA_S3_ENDPOINT || secrets.ARCHIVE_S3_ENDPOINT }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.DATA_S3_KEY || secrets.ARCHIVE_S3_KEY }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.DATA_S3_SECRET || secrets.ARCHIVE_S3_SECRET }}
+      OLD_ENDPOINT: ${{ secrets.ARCHIVE_S3_ENDPOINT }}
+      OLD_BUCKET: ${{ secrets.ARCHIVE_S3_BUCKET }}
+      OLD_KEY: ${{ secrets.ARCHIVE_S3_KEY }}
+      OLD_SECRET: ${{ secrets.ARCHIVE_S3_SECRET }}
+      AWS_DEFAULT_REGION: auto
+      AWS_MAX_ATTEMPTS: "5"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: pipeline/fronts_labels.py
+          sparse-checkout-cone-mode: false
+      - name: The labels kept before
+        run: |
+          if [ -z "$DATA_S3_BUCKET" ] || [ -z "$DATA_S3_ENDPOINT" ] || [ -z "$OLD_BUCKET" ] || [ -z "$OLD_ENDPOINT" ]; then echo "nothing to copy"; exit 0; fi
+          AWS_ACCESS_KEY_ID="$OLD_KEY" AWS_SECRET_ACCESS_KEY="$OLD_SECRET" aws --endpoint-url "$OLD_ENDPOINT" s3 sync "s3://$OLD_BUCKET/fronts-labels/" /tmp/old/ --only-show-errors
+          [ -d /tmp/old ] || { echo "none in the old bucket"; exit 0; }
+          aws --endpoint-url "$DATA_S3_ENDPOINT" s3 sync /tmp/old/ "s3://$DATA_S3_BUCKET/fronts-labels/" --only-show-errors
+          echo "the old bucket's labels: $(find /tmp/old -type f | wc -l) files, in the data host's bucket"
+      - name: Collect
+        run: |
+          if [ -z "$DATA_S3_BUCKET" ] || [ -z "$DATA_S3_ENDPOINT" ]; then echo "no bucket: nothing to do"; exit 0; fi
+          aws --endpoint-url "$DATA_S3_ENDPOINT" s3 ls "s3://$DATA_S3_BUCKET/fronts-labels/" --recursive > have.txt || true
+          python3 pipeline/fronts_labels.py out have.txt
+          [ -d out ] || exit 0
+          aws --endpoint-url "$DATA_S3_ENDPOINT" s3 cp out "s3://$DATA_S3_BUCKET/fronts-labels/" --recursive --only-show-errors
+          echo "kept: $(wc -l < have.txt) before, $(find out -type f | wc -l) new"

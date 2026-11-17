@@ -1,0 +1,50 @@
+name: Stop and clear runs
+on:
+  push:
+    branches: [main]
+    paths: [".github/request"]
+permissions:
+  actions: write
+jobs:
+  runs:
+    if: contains(github.event.head_commit.message, 'runs stopped') || contains(github.event.head_commit.message, 'runs cleared')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      R: ${{ github.repository }}
+      MESSAGE: ${{ github.event.head_commit.message }}
+    steps:
+      - name: Stop the forecast runs
+        if: contains(github.event.head_commit.message, 'runs stopped')
+        run: |
+          runs() {
+            for st in in_progress queued waiting pending requested; do
+              gh api "repos/$R/actions/runs?status=$st&per_page=100" \
+                --jq '.workflow_runs[] | select(.name | startswith("Forecast data")) | "\(.id) #\(.run_number) \(.status)"' || true
+            done | sort -u
+          }
+          for pass in 1 2 3; do
+            list="$(runs)"
+            [ -n "$list" ] || { echo "no forecast runs left"; exit 0; }
+            echo "pass $pass:"; echo "$list"
+            while read -r id rest; do
+              if [ "$pass" = 1 ]; then gh api -X POST "repos/$R/actions/runs/$id/cancel" > /dev/null && echo "$rest: cancelled" || echo "$rest: cancel refused"
+              else gh api -X POST "repos/$R/actions/runs/$id/force-cancel" > /dev/null && echo "$rest: force-cancelled" || echo "$rest: force-cancel refused"; fi
+            done <<<"$list"
+            sleep 60
+          done
+          echo "left:"; runs
+      - name: Clear the finished runs
+        if: contains(github.event.head_commit.message, 'runs cleared')
+        run: |
+          ids="$(gh api --paginate "repos/$R/actions/runs?status=completed&per_page=100" --jq ".workflow_runs[] | select(.id != ${{ github.run_id }}) | .id")"
+          keep="$(gh api --paginate "repos/$R/actions/artifacts?per_page=100" \
+            --jq '.artifacts[] | select((.name | startswith("store-") or startswith("out-") or startswith("verify-")) and (.expired | not)) | .workflow_run.id')" ||
+            { echo "couldn't list the stores: nothing deleted"; exit 0; }
+          n=0
+          for id in $ids; do
+            if grep -qx "$id" <<<"$keep"; then echo "kept $id (a store or an output)"; continue; fi
+            gh api -X DELETE "repos/$R/actions/runs/$id" > /dev/null && n=$((n + 1))
+          done
+          echo "deleted $n runs"
