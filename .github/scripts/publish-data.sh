@@ -214,7 +214,20 @@ archive)
   if old_archive_on; then dests="old"; fi
   if r2_on; then dests="$dests data"; fi
   [ -n "$dests" ] || exit 0
+  keep=""
+  while read -r day m run when; do
+    [ -n "$m" ] || continue
+    if [ "$when" = early ] && r2_on && r2s3 s3api head-object --bucket "$DATA_S3_BUCKET" --key "archive/$day/$m/latest.json" > /dev/null 2>&1; then
+      echo "archive: $m $day kept as it is ($run: sent again only in the window's last hours)"
+      continue
+    fi
+    keep="$keep $m"
+  done < <(python3 pipeline/archive.py when --dist dist-data "$@")
+  [ -n "$keep" ] || exit 0
+  set -- $keep
   aws configure set default.s3.max_concurrent_requests 32
+  aws configure set default.s3.multipart_threshold 64MB
+  aws configure set default.s3.multipart_chunksize 64MB
   A=/tmp/archive
   rm -rf "$A"
   PY=/tmp/archive-venv/bin/python

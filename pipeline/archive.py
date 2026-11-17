@@ -8,6 +8,7 @@ import sys
 from datetime import datetime, timedelta, timezone
 ARCHIVE_DAYS = 31
 RUN_BY = {'hrrr': 12, 'gfs': 6, 'ecmwf': 0, 'icon': 6, 'icond2': 6, 'arome': 6}
+LATE_H = 3
 QUARTER_FIELDS = ('ceil', 'vis', 'refc', 'rain', 'ptype', 'u_sfc', 'v_sfc', 'gust', 't2', 'td2', 'ctop')
 QUARTER = re.compile('^q_(%s)\\.pack$' % '|'.join(QUARTER_FIELDS))
 DAY = re.compile('^\\d{8}$')
@@ -20,6 +21,10 @@ def day_for_run(model: str, run: datetime) -> str:
     t = run - timedelta(hours=RUN_BY.get(model, 6))
     d = t.date() if (t.hour, t.minute, t.second) == (0, 0, 0) else t.date() + timedelta(days=1)
     return f'{d:%Y%m%d}'
+
+def late(model: str, run: datetime) -> bool:
+    day = datetime.strptime(day_for_run(model, run), '%Y%m%d').replace(tzinfo=timezone.utc)
+    return day + timedelta(hours=RUN_BY.get(model, 6)) - run <= timedelta(hours=LATE_H)
 
 def trim_manifest(m: dict, day: str) -> dict:
     out = dict(m)
@@ -193,6 +198,9 @@ def main(argv=None):
     s.add_argument('--dist', default='dist-data')
     s.add_argument('--out', required=True)
     s.add_argument('models', nargs='+')
+    w = sub.add_parser('when')
+    w.add_argument('--dist', default='dist-data')
+    w.add_argument('models', nargs='+')
     for name in ('index', 'old'):
         p = sub.add_parser(name)
         p.add_argument('--keys', required=True)
@@ -203,6 +211,17 @@ def main(argv=None):
             r = stage(a.dist, model, a.out)
             if r:
                 print(f'{r[0]} {model} {r[1]}')
+        return 0
+    if a.cmd == 'when':
+        for model in a.models:
+            try:
+                with open(os.path.join(a.dist, model, 'latest.json')) as f:
+                    run_id = json.load(f).get('runId') or ''
+            except (FileNotFoundError, json.JSONDecodeError):
+                continue
+            if re.fullmatch('\\d{10}', run_id):
+                t = run_time(run_id)
+                print(f'{day_for_run(model, t)} {model} {run_id} {('late' if late(model, t) else 'early')}')
         return 0
     with open(a.keys) as f:
         keys = f.read().split()
