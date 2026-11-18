@@ -2,9 +2,11 @@ import json
 import os
 import tempfile
 import unittest
+from datetime import datetime, timezone
 import aviation as A
 import borders as B
-__all__ = ['AviationWorld', 'BordersWorld', 'IdentsKFallback', 'RunwayHeadings', 'OverviewHeading']
+import wmm
+__all__ = ['AviationWorld', 'BordersWorld', 'IdentsKFallback', 'RunwayHeadings', 'OverviewHeading', 'MagneticModel']
 
 def field(id_, lat, lon, ident, kind='small_airport', name='', icao='', local='', region='US-XX'):
     return {'id': id_, 'type': kind, 'name': name or f'Field {id_}', 'latitude_deg': str(lat), 'longitude_deg': str(lon), 'elevation_ft': '500', 'icao_code': icao, 'gps_code': icao or ident, 'local_code': local, 'ident': ident, 'iata_code': '', 'municipality': 'Town', 'iso_region': region}
@@ -31,19 +33,36 @@ def snapshot(airports, navaids, runways=()):
 
 class AviationWorld(unittest.TestCase):
 
-    def test_new_regions_kept_and_the_rest_of_the_world_not(self):
-        world = [field('gru', -23.43, -46.47, 'SBGR', 'large_airport', 'Guarulhos', 'SBGR', 'SP0002', 'BR-SP'), field('akl', -37.01, 174.79, 'NZAA', 'large_airport', 'Auckland', 'NZAA', '', 'NZ-AUK'), field('ivc', -46.41, 168.31, 'NZNV', 'medium_airport', 'Invercargill', 'NZNV', '', 'NZ-STL'), field('jnb', -26.14, 28.25, 'FAOR', 'large_airport', 'Tambo', 'FAOR', '', 'ZA-GT'), field('cmn', 33.37, -7.59, 'GMMN', 'large_airport', 'Casablanca', 'GMMN', '', 'MA-06'), field('hnd', 35.55, 139.79, 'RJTT', 'large_airport', 'Haneda', 'RJTT', '', 'JP-13'), field('fih', -4.39, 15.44, 'FZAA', 'large_airport', 'Kinshasa', 'FZAA', '', 'CD-KN'), field('ush', -54.84, -68.3, 'SAWH', 'medium_airport', 'Ushuaia', 'SAWH', '', 'AR-V'), field('ipc', -27.16, -109.42, 'SCIP', 'medium_airport', 'Mataveri', 'SCIP', '', 'CL-VS')]
-        out = snapshot(FILLERS + [KBIG] + world, US_NAVAIDS)
+    def test_every_forecast_area_kept_and_nothing_outside(self):
+        kept = [field('gru', -23.43, -46.47, 'SBGR', 'large_airport', 'Guarulhos', 'SBGR', 'SP0002', 'BR-SP'), field('akl', -37.01, 174.79, 'NZAA', 'large_airport', 'Auckland', 'NZAA', '', 'NZ-AUK'), field('ivc', -46.41, 168.31, 'NZNV', 'medium_airport', 'Invercargill', 'NZNV', '', 'NZ-STL'), field('jnb', -26.14, 28.25, 'FAOR', 'large_airport', 'Tambo', 'FAOR', '', 'ZA-GT'), field('cmn', 33.37, -7.59, 'GMMN', 'large_airport', 'Casablanca', 'GMMN', '', 'MA-06'), field('ush', -54.84, -68.3, 'SAWH', 'medium_airport', 'Ushuaia', 'SAWH', '', 'AR-V'), field('bla', -36.55, 146.01, 'YBLA', 'medium_airport', 'Benalla', 'YBLA', '', 'AU-VIC'), field('hnd', 35.55, 139.79, 'RJTT', 'large_airport', 'Haneda', 'RJTT', '', 'JP-13'), field('tki', 42.73, 143.22, 'RJCT', 'small_airport', 'Tokachi', 'RJCT', '', 'JP-01'), field('pek', 40.08, 116.58, 'ZBAA', 'large_airport', 'Beijing Capital', 'ZBAA', '', 'CN-11'), field('pkr', 28.2, 83.98, 'VNPK', 'medium_airport', 'Pokhara', 'VNPK', '', 'NP-P4')]
+        dropped = [field('fih', -4.39, 15.44, 'FZAA', 'large_airport', 'Kinshasa', 'FZAA', '', 'CD-KN'), field('ipc', -27.16, -109.42, 'SCIP', 'medium_airport', 'Mataveri', 'SCIP', '', 'CL-VS'), field('hnl', 21.32, -157.92, 'PHNL', 'large_airport', 'Honolulu', 'PHNL', 'HNL', 'US-HI'), field('sjo', 9.99, -84.2, 'MROC', 'large_airport', 'Juan Santamaría', 'MROC', '', 'CR-A'), field('mao', -3.04, -60.05, 'SBEG', 'large_airport', 'Eduardo Gomes', 'SBEG', '', 'BR-AM'), field('nop', 95.0, 10.0, 'XXXX', 'small_airport', 'Nowhere', '', '', 'XX-XX')]
+        out = snapshot(FILLERS + [KBIG] + kept + dropped, US_NAVAIDS + [navaid('BLA', -36.6, 146.0, 12.0, 'NDB'), navaid('HNL', 21.3, -157.9, 10.0, 'VORTAC')])
         ids, search = (out['idents'], {a[0] for a in out['airports']['a']})
-        for code in ('SBGR', 'NZAA', 'NZNV', 'FAOR', 'GMMN', 'KBIG', 'SAWH'):
+        for code in ('SBGR', 'NZAA', 'NZNV', 'FAOR', 'GMMN', 'KBIG', 'SAWH', 'YBLA', 'RJTT', 'RJCT', 'ZBAA', 'VNPK'):
             self.assertIn(code, ids)
             self.assertIn(code, search)
-        for code in ('RJTT', 'FZAA', 'SCIP'):
+        for code in ('FZAA', 'SCIP', 'PHNL', 'MROC', 'SBEG', 'XXXX', 'HNL'):
             self.assertNotIn(code, ids)
             self.assertNotIn(code, search)
-        self.assertEqual(out['kinds']['L'], 5)
+        self.assertEqual(out['kinds']['L'], 7)
         self.assertIn(A.cell_of(-23.43, -46.47), out['cells']['cells'])
         self.assertEqual(A.cell_of(-23.43, -46.47), '-10_-5')
+        self.assertIn(A.cell_of(-36.55, 146.01), out['cells']['cells'])
+        self.assertNotIn(A.cell_of(21.32, -157.92), out['cells']['cells'])
+        self.assertEqual(ids['BLA'][2:], ['N', 'BLA', 'NDB'])
+        self.assertIn('YBLA', {r[0] for r in out['overview']['a']})
+        self.assertEqual(A.region_of(-36.55, 146.01), len(A.REGIONS))
+        self.assertIsNone(A.region_of(None, 146.0))
+
+    def test_the_areas_are_the_forecasts_own(self):
+        areas = A.forecast_areas()
+        self.assertGreaterEqual(len(areas), 10)
+        self.assertIn((128.5, 30.0, 146.0, 46.0), areas)
+        self.assertTrue(A.in_forecast_area(-36.55, 146.0) and A.in_forecast_area(40.0, 116.4) and A.in_forecast_area(43.0, 141.4))
+        self.assertFalse(A.in_forecast_area(21.3, -157.9) or A.in_forecast_area(-4.4, 15.4))
+        self.assertTrue(A.in_forecast_area(-37.0, 180.5))
+        self.assertTrue(A.in_forecast_area(-37.0, -179.5))
+        self.assertFalse(A.in_forecast_area(-37.0, -177.0))
 
     def test_new_regions_never_take_an_existing_identifier(self):
         base = snapshot(FILLERS + [KBIG], US_NAVAIDS)['idents']
@@ -58,19 +77,44 @@ class AviationWorld(unittest.TestCase):
         self.assertEqual(ids['AR-0001'][:2], [-35.2, -59.1])
         self.assertEqual(list(ids)[:len(base)], list(base))
 
-    def test_magnetic_variation_in_the_south(self):
-        south = [navaid('AA', -37.0, 174.8, 19.3), navaid('BCO', -23.5, -46.6, -20.0), navaid('JSV', -26.1, 28.2, -17.5), navaid('ENO', -34.8, -58.5, -6.5)]
-        mv = snapshot(FILLERS, US_NAVAIDS + south)['magvar']
-        self.assertLessEqual(mv['south'], -48)
-        self.assertGreaterEqual(mv['west'] + (mv['nx'] - 1) * mv['step'], 179.9)
+    def test_magnetic_variation_in_every_forecast_area(self):
+        mv = snapshot(FILLERS, US_NAVAIDS)['magvar']
+        self.assertEqual((mv['west'], mv['step']), (-180.0, 2.0))
+        self.assertEqual(mv['west'] + (mv['nx'] - 1) * mv['step'], 180.0)
+        self.assertEqual(len(mv['values']), mv['ny'])
+        self.assertTrue(all((len(r) == mv['nx'] for r in mv['values'])))
+        self.assertEqual(mv['model'], 'WMM-2025')
 
         def at(lat, lon):
-            return mv['values'][round((lat - mv['south']) / mv['step'])][round((lon - mv['west']) / mv['step'])]
-        self.assertAlmostEqual(at(-37.0, 174.8), 19.3, delta=0.5)
-        self.assertAlmostEqual(at(-23.5, -46.6), -20.0, delta=0.5)
-        self.assertAlmostEqual(at(-26.1, 28.2), -17.5, delta=0.5)
+            return A.magvar_at(mv, lat, lon)
+        self.assertAlmostEqual(at(-36.55, 146.0), 11.9, delta=0.4)
+        self.assertAlmostEqual(at(-37.0, 174.8), 20.4, delta=0.4)
+        self.assertAlmostEqual(at(-23.5, -46.6), -21.9, delta=0.4)
+        self.assertAlmostEqual(at(-26.1, 28.2), -20.7, delta=0.4)
         self.assertGreater(at(40.0, -118.0), 5)
+        self.assertLess(at(40.0, -75.0), -5)
+        for lat, lon in ((35.7, 139.7), (43.0, 141.4), (40.0, 116.4), (31.2, 121.5), (27.7, 85.3), (-54.8, -68.3)):
+            self.assertIsNotNone(at(lat, lon), (lat, lon))
+        for w, s, e, n in A.forecast_areas():
+            for lat, lon in ((s - A.AREA_HALO, w - A.AREA_HALO), (n + A.AREA_HALO, e + A.AREA_HALO), ((s + n) / 2, (w + e) / 2)):
+                self.assertAlmostEqual(at(lat, lon), wmm.declination(lat, lon, mv['year']), delta=0.6, msg=(lat, lon))
         self.assertIsNone(at(-40.0, -120.0))
+        self.assertIsNone(at(21.3, -157.9))
+        self.assertAlmostEqual(at(-44.0, 180.5), at(-44.0, -179.5), delta=1e-09)
+
+class MagneticModel(unittest.TestCase):
+    VALUES = [(2025.0, 28, 89, -121, -99.77), (2025.0, 48, 80, -96, -29.91), (2025.0, 65, 43, 93, 0.5), (2025.0, 51, -33, 109, -5.49), (2025.0, 39, -59, -8, -15.75), (2025.5, 22, -37, 140, 9.28), (2025.5, 44, 33, -118, 11.1), (2026.0, 46, -24, -122, 14.01), (2026.5, 12, -79, 115, -137.58), (2027.0, 57, -43, 50, -48.27), (2027.5, 0, -13, -59, -17.49), (2028.0, 30, -36, -64, -4.65), (2028.5, 11, 34, 0, 1.57), (2029.0, 49, -50, -179, 32.11), (2029.5, 77, -18, 138, 4.45)]
+
+    def test_against_the_published_values(self):
+        for year, km, lat, lon, d in self.VALUES:
+            self.assertAlmostEqual(wmm.declination(lat, lon, year, km), d, delta=0.01, msg=(year, lat, lon))
+
+    def test_grid_matches_the_model(self):
+        g = wmm.grid(2026.5, step=10.0)
+        self.assertEqual((g['nx'], g['ny'], g['year']), (37, 18, 2026.5))
+        self.assertEqual(g['values'][0][0], g['values'][0][-1])
+        self.assertAlmostEqual(A.magvar_at(g, -38.0, 140.0), wmm.declination(-38.0, 140.0, 2026.5), delta=0.05)
+        self.assertAlmostEqual(wmm.decimal_year(datetime(2026, 7, 2, 12, tzinfo=timezone.utc)), 2026.5, delta=0.001)
 
 class BordersWorld(unittest.TestCase):
 
@@ -106,7 +150,8 @@ class IdentsKFallback(unittest.TestCase):
 class RunwayHeadings(unittest.TestCase):
 
     def setUp(self):
-        self.grid = A.magvar_grid([(40, -118, 14.0), (40, -75, -11.0)])
+        row = [14.0 if -180 + i * 2 < -100 else -11.0 for i in range(181)]
+        self.grid = {'west': -180.0, 'south': -88.0, 'step': 2.0, 'nx': 181, 'ny': 89, 'values': [row] * 89}
 
     def rw(self, le='', heading='', ends=None):
         r = {'le_ident': le, 'le_heading_degT': heading}

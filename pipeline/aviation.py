@@ -1,5 +1,6 @@
 from __future__ import annotations
 import argparse
+import ast
 import csv
 import io
 import json
@@ -12,15 +13,16 @@ import urllib.parse
 import urllib.request
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
+import wmm
 from airspace import west_pacific
-VERSION = 11
+VERSION = 12
 UA = {'User-Agent': 'wx-pipeline/1.0'}
 OURAIRPORTS = ('https://davidmegginson.github.io/ourairports-data', 'https://ourairports.com/data')
 REGIONS = ((-180.0, 5.0, -50.0, 75.0), (-32.0, 26.0, 60.0, 72.0), (-82.0, -56.0, -32.0, 5.0), (9.0, -36.0, 38.0, -14.0), (165.0, -48.0, 179.9, -33.0))
-REGION_NAMES = ('North America', 'Europe', 'South America', 'southern Africa', 'New Zealand')
+REGION_NAMES = ('North America', 'Europe', 'South America', 'southern Africa', 'New Zealand', 'the other forecast areas')
 IDENTS_FIRST = 2
-REGION = (-180.0, -56.0, 180.0, 75.0)
 BORDER_REGION = REGIONS[0]
+AREA_HALO = 1.0
 CELL = 5.0
 TYPES = {'large_airport': 'L', 'medium_airport': 'M', 'small_airport': 'S', 'heliport': 'H', 'seaplane_base': 'W'}
 NAVAID_TYPES = {'VOR', 'VORTAC', 'VOR-DME', 'TACAN', 'NDB', 'NDB-DME', 'DME'}
@@ -72,11 +74,26 @@ def num(x, nd=None):
     if not math.isfinite(v):
         return None
     return round(v, nd) if nd is not None else v
+_AREAS = None
+
+def forecast_areas() -> tuple:
+    global _AREAS
+    if _AREAS is None:
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'build.py'), encoding='utf-8') as f:
+            tree = ast.parse(f.read())
+        keep = next((ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign) and any((isinstance(t, ast.Name) and t.id == 'KEEP' for t in n.targets))), None)
+        if not keep or not keep.get('gfs'):
+            raise RuntimeError('no forecast areas (KEEP) in build.py')
+        _AREAS = tuple((tuple((float(v) for v in b)) for b in keep['gfs']))
+    return _AREAS
+
+def in_forecast_area(lat: float, lon: float, halo: float=AREA_HALO) -> bool:
+    return any((s - halo <= lat <= n + halo and any((w - halo <= x <= e + halo for x in (lon, lon - 360, lon + 360))) for w, s, e, n in forecast_areas()))
 
 def region_of(lat, lon) -> int | None:
-    if lat is None or lon is None:
+    if lat is None or lon is None or (not (-90 <= lat <= 90 and -180 <= lon <= 180)) or (not in_forecast_area(lat, lon)):
         return None
-    return next((i for i, (w, s, e, n) in enumerate(REGIONS) if s <= lat <= n and w <= lon <= e), None)
+    return next((i for i, (w, s, e, n) in enumerate(REGIONS) if s <= lat <= n and w <= lon <= e), len(REGIONS))
 
 def cell_of(lat: float, lon: float) -> str:
     return f'{math.floor(lon / CELL)}_{math.floor(lat / CELL)}'
@@ -99,13 +116,7 @@ def build_airports(d: str) -> dict:
     runways = ourairports('runways.csv')
     freqs = ourairports('airport-frequencies.csv')
     navaids = ourairports('navaids.csv')
-    vars_ = []
-    for n in navaids:
-        lat, lon = (num(n.get('latitude_deg'), 5), num(n.get('longitude_deg'), 5))
-        mv = num(n.get('magnetic_variation_deg'), 1)
-        if (n.get('type') or '').upper() in NAVAID_TYPES and region_of(lat, lon) is not None and (mv is not None):
-            vars_.append((lat, lon, mv))
-    grid = magvar_grid(vars_)
+    grid = magvar_grid()
     where = {a['id']: (num(a.get('latitude_deg')), num(a.get('longitude_deg'))) for a in airports}
     rw_by = defaultdict(list)
     for r in runways:
@@ -188,6 +199,8 @@ def main_runway_heading(rws):
 COMPASS = {'N': 0, 'NNE': 22.5, 'NE': 45, 'ENE': 67.5, 'E': 90, 'ESE': 112.5, 'SE': 135, 'SSE': 157.5, 'S': 180, 'SSW': 202.5, 'SW': 225, 'WSW': 247.5, 'W': 270, 'WNW': 292.5, 'NW': 315, 'NNW': 337.5}
 
 def magvar_at(grid: dict, lat: float, lon: float):
+    if (grid['nx'] - 1) * grid['step'] >= 360:
+        lon = (lon - grid['west']) % 360 + grid['west']
     fx, fy = ((lon - grid['west']) / grid['step'], (lat - grid['south']) / grid['step'])
     x0, y0 = (math.floor(fx), math.floor(fy))
     sw = sv = 0.0
@@ -219,35 +232,15 @@ def runway_heading(r: dict, at, grid: dict):
     mv = magvar_at(grid, *at) if at and None not in at else None
     return round(int(m.group(1)) * 10 + (mv or 0)) % 360
 
-def magvar_grid(samples, step: float=2.0) -> dict:
-    west = [v for lat, lon, v in samples if 30 < lat < 50 and -125 < lon < -110]
-    sign = -1.0 if west and sorted(west)[len(west) // 2] < 0 else 1.0
-    print(f'magvar: {len(samples)} samples, west-US median {(sorted(west)[len(west) // 2] if west else '-')} → sign {sign:+.0f}')
-    w, s, e, n = REGION
-    nx, ny = (int((e - w) / step) + 1, int((n - s) / step) + 1)
-    buckets = defaultdict(list)
-    for lat, lon, v in samples:
-        buckets[int((lon - w) / 10), int((lat - s) / 10)].append((lat, lon, sign * v))
-    vals = []
-    for j in range(ny):
-        lat = s + j * step
-        row = []
-        for i in range(nx):
-            lon = w + i * step
-            cx, cy = (int((lon - w) / 10), int((lat - s) / 10))
-            near = [p for dx in (-1, 0, 1) for dy in (-1, 0, 1) for p in buckets.get((cx + dx, cy + dy), [])]
-            if not near:
-                row.append(None)
-                continue
-            acc = wsum = 0.0
-            for plat, plon, v in near:
-                dd = (plat - lat) ** 2 + ((plon - lon) * math.cos(math.radians(lat))) ** 2
-                wt = 1 / (dd + 0.25) ** 2
-                acc += wt * v
-                wsum += wt
-            row.append(round(acc / wsum, 1))
-        vals.append(row)
-    return {'west': w, 'south': s, 'step': step, 'nx': nx, 'ny': ny, 'values': vals, 'eastPositive': True}
+def magvar_grid(year: float | None=None, step: float=2.0) -> dict:
+    areas = forecast_areas()
+    pad = AREA_HALO + step
+    south = max(-88.0, math.floor((min((a[1] for a in areas)) - pad) / step) * step)
+    north = min(88.0, math.ceil((max((a[3] for a in areas)) + pad) / step) * step)
+    g = wmm.grid(year, step, south, north, keep=lambda lat, lon: in_forecast_area(lat, lon, pad))
+    kept = sum((v is not None for row in g['values'] for v in row))
+    print(f'magvar: {g['model']} at {g['year']}, {g['nx']} x {g['ny']} every {step:g}°, {kept} nodes in the forecast areas', flush=True)
+    return g
 
 def arcgis_json(url: str, params: dict | None=None, tries: int=10) -> dict:
     full = f'{url}?{urllib.parse.urlencode(params)}' if params else url
