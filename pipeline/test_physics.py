@@ -3687,6 +3687,31 @@ class IconOpenMeteo(unittest.TestCase):
         self.assertEqual((r, max(fhs)), (run, 120))
         self.assertIn(src.idx_url(run, 120), seen)
 
+    def test_a_run_still_landing_takes_the_hours_not_out_yet_from_the_run_before(self):
+        from datetime import datetime, timedelta, timezone
+        import build
+        from sources import SOURCES
+        src = SOURCES['icon']
+        run = datetime(2026, 10, 12, 12, tzinfo=timezone.utc)
+        r0 = run - timedelta(hours=12)
+        fhs = [1, 2, 117, 120, 123, 180]
+        results = {1: run + timedelta(hours=1), 2: None, 117: run + timedelta(hours=117), 120: None, 123: None, 180: None}
+        seen = []
+        orig = build.compute_jobs
+        build.compute_jobs = lambda s, jobs, w: seen.append(list(jobs)) or {j: None if j[1] == 135 else j[0] + timedelta(hours=j[1]) for j in jobs}
+        try:
+            got = build.fill_from_earlier(src, run, fhs, results, 2)
+        finally:
+            build.compute_jobs = orig
+        r6 = run - timedelta(hours=6)
+        self.assertEqual(seen, [[(r6, 8), (r0, 132), (r0, 135)]])
+        self.assertEqual(got, [(run + timedelta(hours=2), r6), (run + timedelta(hours=120), r0)])
+        build.compute_jobs = lambda *a: self.fail('nothing to compute')
+        try:
+            self.assertEqual(build.fill_from_earlier(src, run, [1], {1: run + timedelta(hours=1)}, 2), [])
+        finally:
+            build.compute_jobs = orig
+
     def test_grid_is_on_the_files_lines_and_kept_like_gfs(self):
         import build
         import om
