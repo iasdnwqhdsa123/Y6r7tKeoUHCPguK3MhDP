@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 import aviation as A
 import borders as B
 import wmm
-__all__ = ['AviationWorld', 'BordersWorld', 'IdentsKFallback', 'RunwayHeadings', 'OverviewHeading', 'MagneticModel']
+__all__ = ['AviationWorld', 'BordersWorld', 'IdentsKFallback', 'RunwayHeadings', 'OverviewHeading', 'MagneticModel', 'SpecialUseLimits']
 
 def field(id_, lat, lon, ident, kind='small_airport', name='', icao='', local='', region='US-XX'):
     return {'id': id_, 'type': kind, 'name': name or f'Field {id_}', 'latitude_deg': str(lat), 'longitude_deg': str(lon), 'elevation_ft': '500', 'icao_code': icao, 'gps_code': icao or ident, 'local_code': local, 'ident': ident, 'iata_code': '', 'municipality': 'Town', 'iso_region': region}
@@ -197,3 +197,23 @@ class OverviewHeading(unittest.TestCase):
         self.assertEqual(A.main_runway_heading([rw(5000, 'GRS', None), rw(2000, 'GRS', 10)]), 10)
         self.assertIsNone(A.main_runway_heading([rw(5000, 'ASP', None)]))
         self.assertIsNone(A.main_runway_heading([]))
+
+class SpecialUseLimits(unittest.TestCase):
+    MOA = {'NAME': 'WARRIOR 2 LOW MOA', 'TYPE_CODE': 'MOA', 'LOWER_VAL': '100', 'LOWER_UOM': 'FT', 'LOWER_CODE': 'SFC', 'UPPER_VAL': '10000', 'UPPER_UOM': 'FT', 'UPPER_CODE': 'MSL', 'EXCLUSION': '0', 'TIMESOFUSE': '0700 - 2200, MON - FRI; OTHER TIMES BY NOTAM', 'CONT_AGENT': 'FAA, HOUSTON ARTCC'}
+
+    def test_heights_over_the_ground_coded_sfc(self):
+        self.assertEqual(A.limit('100', 'FT', 'SFC'), '100 ft AGL')
+        self.assertEqual(A.limit('1500', 'FT', 'SFC'), '1,500 ft AGL')
+        self.assertEqual(A.limit('0', 'FT', 'SFC'), 'SFC')
+        self.assertEqual(A.limit(None, None, 'SFC'), 'SFC')
+        self.assertEqual(A.limit('10000', 'FT', 'MSL'), '10,000 ft')
+        self.assertEqual(A.limit('700', 'FT', 'AGL'), '700 ft AGL')
+        self.assertEqual(A.limit('180', 'FL', 'STD'), 'FL180')
+        self.assertEqual(A.limit('-9998', None, 'UNLTD'), '-9998')
+
+    def test_exclusions_marked(self):
+        area = A.sua_props(self.MOA, 'MOA')
+        self.assertEqual((area['lo'], area['hi']), ('100 ft AGL', '10,000 ft'))
+        self.assertNotIn('x', area)
+        excl = A.sua_props({**self.MOA, 'LOWER_VAL': '1500', 'EXCLUSION': '1', 'REMARKS': 'EXCLUDES AT AND BELOW 1500 FT AGL'}, 'MOA')
+        self.assertEqual((excl['n'], excl['lo'], excl['x']), ('WARRIOR 2 LOW MOA', '1,500 ft AGL', 1))

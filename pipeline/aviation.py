@@ -15,7 +15,7 @@ from collections import Counter, defaultdict
 from datetime import datetime, timezone
 import wmm
 from airspace import west_pacific
-VERSION = 12
+VERSION = 13
 UA = {'User-Agent': 'wx-pipeline/1.0'}
 OURAIRPORTS = ('https://davidmegginson.github.io/ourairports-data', 'https://ourairports.com/data')
 REGIONS = ((-180.0, 5.0, -50.0, 75.0), (-32.0, 26.0, 60.0, 72.0), (-82.0, -56.0, -32.0, 5.0), (9.0, -36.0, 38.0, -14.0), (165.0, -48.0, 179.9, -33.0))
@@ -259,13 +259,13 @@ def arcgis_json(url: str, params: dict | None=None, tries: int=10) -> dict:
 def limit(val, uom, code) -> str:
     v = num(val)
     code = str(code or '').upper()
-    if code == 'SFC' or v == 0:
+    if v == 0 or (code == 'SFC' and v is None):
         return 'SFC'
     if v is None or v < 0:
         return str(val or '?')
     if str(uom or '').upper() == 'FL':
         return f'FL{round(v)}'
-    return f'{round(v):,} ft{(' AGL' if code == 'AGL' else '')}'
+    return f'{round(v):,} ft{(' AGL' if code in ('AGL', 'SFC') else '')}'
 
 def pick(p: dict, *names):
     for n in names:
@@ -273,6 +273,12 @@ def pick(p: dict, *names):
             if p.get(k) not in (None, ''):
                 return p[k]
     return None
+
+def sua_props(p: dict, kind: str) -> dict:
+    out = {'t': kind[:12], 'n': str(pick(p, 'NAME', 'IDENT') or '')[:60], 'lo': limit(pick(p, 'LOWER_VAL'), pick(p, 'LOWER_UOM'), pick(p, 'LOWER_CODE')), 'hi': limit(pick(p, 'UPPER_VAL'), pick(p, 'UPPER_UOM'), pick(p, 'UPPER_CODE')), 'time': str(pick(p, 'TIMESOFUSE', 'TIMES_OF_USE', 'WORKHR_CODE', 'SCHEDULE') or '')[:80], 'ctl': str(pick(p, 'CONT_AGENT', 'CONTROLLING_AGENCY', 'CONTAGENT') or '')[:60]}
+    if str(pick(p, 'EXCLUSION') or '') == '1':
+        out['x'] = 1
+    return out
 
 def build_sua(d: str) -> int:
     services = arcgis_json(FAA_SERVICES, {'f': 'json'}).get('services', [])
@@ -302,11 +308,11 @@ def build_sua(d: str) -> int:
         if not g or west_pacific(g):
             continue
         kind = str(pick(p, 'TYPE_CODE', 'TYPE', 'LOCAL_TYPE', 'SUA_TYPE') or '').upper()
-        out.append({'type': 'Feature', 'geometry': g, 'properties': {'t': kind[:12], 'n': str(pick(p, 'NAME', 'IDENT') or '')[:60], 'lo': limit(pick(p, 'LOWER_VAL'), pick(p, 'LOWER_UOM'), pick(p, 'LOWER_CODE')), 'hi': limit(pick(p, 'UPPER_VAL'), pick(p, 'UPPER_UOM'), pick(p, 'UPPER_CODE')), 'time': str(pick(p, 'TIMESOFUSE', 'TIMES_OF_USE', 'WORKHR_CODE', 'SCHEDULE') or '')[:80], 'ctl': str(pick(p, 'CONT_AGENT', 'CONTROLLING_AGENCY', 'CONTAGENT') or '')[:60]}})
-    print('SUA kept:', Counter((f['properties']['t'] for f in out)).most_common(12), flush=True)
+        out.append({'type': 'Feature', 'geometry': g, 'properties': sua_props(p, kind)})
+    print('SUA kept:', Counter((f['properties']['t'] for f in out)).most_common(12), '| exclusions:', sum((1 for f in out if f['properties'].get('x'))), flush=True)
     if len(out) < 50:
         raise RuntimeError(f'only {len(out)} SUA features')
-    size = write(os.path.join(d, 'sua.json'), {'type': 'FeatureCollection', 'features': out})
+    size = write(os.path.join(d, 'sua.json'), {'type': 'FeatureCollection', 'exclusions': 'x', 'features': out})
     print(f'SUA: {len(out)} features, {size / 1000000.0:.1f} MB', flush=True)
     return len(out)
 
