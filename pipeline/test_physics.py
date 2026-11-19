@@ -3968,7 +3968,8 @@ class IconDwd(unittest.TestCase):
         theirs = lambda urls, static, grid, keys, workers=8: {k: 'om' for k in keys}
         got = []
         mine = lambda run, fh, prev, keys, cache_dir=None: got.append((fh, prev)) or {k: 'dwd' for k in keys}
-        with mock.patch.object(dwdicon, 'fetch_step', mine), mock.patch.object(om, 'fetch_hour', theirs), mock.patch.dict(os.environ, {'ICON_DWD': '1'}):
+        out_om = []
+        with mock.patch.object(dwdicon, 'fetch_step', mine), mock.patch.object(om, 'fetch_hour', theirs), mock.patch.dict(os.environ, {'ICON_DWD': '1'}), mock.patch.object(sources.grib, 'exists', lambda u: any((u.endswith(f'{run + timedelta(hours=h):%Y-%m-%dT%H%M}{x}.om') for h in out_om for x in ('', '_model-level')))):
             out = src.fetch(run, 81, keys)
             self.assertEqual(got, [(81, 78)])
             self.assertEqual(out.pop(sources.VIA), 'dwd')
@@ -3979,10 +3980,16 @@ class IconDwd(unittest.TestCase):
             with mock.patch.dict(os.environ, {'ICON_DWD': '0'}):
                 out = src.fetch(run, 5, keys)
             self.assertEqual((out.pop(sources.VIA), len(got)), ('om', 1))
+            out_om.append(12)
+            out = src.fetch(run, 12, keys)
+            self.assertEqual((out.pop(sources.VIA), len(got)), ('om', 1))
+            with mock.patch.object(sources, 'ICON_DWD_FIRST', True):
+                out = src.fetch(run, 12, keys)
+            self.assertEqual((out.pop(sources.VIA), len(got)), ('dwd', 2))
 
         def fails(*a, **k):
             raise IOError('HTTP Error 404: Not Found')
-        with mock.patch.object(dwdicon, 'fetch_step', fails), mock.patch.object(om, 'fetch_hour', theirs), redirect_stdout(io.StringIO()) as log:
+        with mock.patch.object(dwdicon, 'fetch_step', fails), mock.patch.object(om, 'fetch_hour', theirs), redirect_stdout(io.StringIO()) as log, mock.patch.object(sources.grib, 'exists', lambda u: False), mock.patch.dict(os.environ, {'ICON_DWD': '1'}):
             out = src.fetch(run, 5, keys)
         self.assertEqual(out.pop(sources.VIA), 'om')
         self.assertEqual(set(out.values()), {'om'})
