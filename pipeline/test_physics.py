@@ -4250,6 +4250,16 @@ class AltocumulusCastellanus(unittest.TestCase):
         self.assertEqual(build.ENC['accas'], (0, 100, None))
         self.assertIn('accas', build.POINT_FIELDS)
 
+class CoreShapeFields(unittest.TestCase):
+
+    def test_published_where_the_usable_top_is_read(self):
+        import build
+        for f in ('core8', 'core10'):
+            self.assertEqual(build.ENC[f], (0, P.CORE_MAX, None))
+            self.assertIn(f, build.POINT_FIELDS)
+            self.assertIn(f, build.FREE_FIELDS)
+            self.assertIn(f, build.NOW_FIELDS)
+
 class ElevatedParcels(unittest.TestCase):
     LEVELS = np.array([1000, 950, 925, 900, 850, 800, 700, 600, 500, 400, 300], np.float32)
 

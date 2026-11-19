@@ -2,6 +2,8 @@ import ctypes
 import os
 import shutil
 import unittest
+from contextlib import nullcontext
+from unittest import mock
 import numpy as np
 import physics as P
 import physics_native as N
@@ -186,11 +188,12 @@ class NativeConvection(unittest.TestCase):
     def test_exp_is_numpys(self):
         mode = N._np_exp_mode()
         self.assertIsNotNone(mode)
-        x = np.concatenate([np.linspace(-15, 8, 400001, dtype=np.float32), np.float32([np.nan, np.inf, -np.inf, 0, 100, -120])])
+        x = np.concatenate([np.linspace(-15, 8, 400001, dtype=np.float32), np.float32([np.nan, np.inf, -np.inf, 0, 100, -120]), np.float32([88.72283, 88.72284, 88.7, -87.3, -103.98, -110])])
         out = np.empty_like(x)
-        N.cfunc('cx_np_exp', [ctypes.c_int64, N._F, ctypes.c_int32, N._F])(x.size, N.ptr(x), mode, N.ptr(out))
-        with np.errstate(over='ignore'):
-            self.assertTrue(same(np.exp(x), out))
+        for m in (mode, 2) if mode == 1 else (mode,):
+            N.cfunc('cx_np_exp', [ctypes.c_int64, N._F, ctypes.c_int32, N._F])(x.size, N.ptr(x), m, N.ptr(out))
+            with np.errstate(over='ignore', under='ignore'):
+                self.assertTrue(same(np.exp(x), out), m)
 
     def check_layer(self, py, cx, zb, zt, names, **kw):
         a, b = (P.layer_mean(py, zb, zt, names, **kw), N.layer_mean(cx, zb, zt, names, **kw))
@@ -228,6 +231,197 @@ class NativeConvection(unittest.TestCase):
         self.check_layer(py, cx, zs + 2, 1000.0, ['t'])
         with self.assertRaises(ZeroDivisionError):
             N.layer_mean(cx, zs + 2, zs + 1000, ['u'], n=1)
+
+def core_columns(kind, ny=13, nx=17, seed=0, nan_cells=True):
+    rng = np.random.default_rng(seed)
+    shape = (ny, nx)
+    f = lambda a: np.asarray(a, np.float32)
+    p = np.array((1000, 975, 950, 925, 900, 875, 850, 825, 800, 775, 750, 700, 650, 600, 550, 500, 400, 300), np.float32)
+    zs = f(rng.random(shape) * 1500)
+    ps = f(1013.25 * (1 - zs / 44330) ** 5.255)
+    zl = f(44330 * (1 - (p[:, None, None] / 1013.25) ** (1 / 5.255)) + rng.normal(0, 15, (len(p),) + shape))
+    zi = f(rng.uniform(300, 3000, shape))
+    t2 = f(rng.uniform(8, 38, shape))
+    h = zl - zs[None]
+    if kind == 'gradual':
+        t = t2 - rng.uniform(4, 7, shape) * h / 1000
+    else:
+        jump, above = (rng.uniform(1, 4, shape), rng.uniform(2, 6, shape)) if kind == 'lid' else (0, rng.uniform(6.5, 8.5, shape))
+        t = np.where(h < zi, t2 - 9.8 * h / 1000, t2 - 9.8 * zi / 1000 + jump - above * (h - zi) / 1000)
+    spread = rng.uniform(1.5, 6, shape) if kind == 'moist' else rng.uniform(12, 25, shape)
+    td2 = t2 - spread
+    td = np.where(h < zi, td2 - 1.8 * h / 1000, t - (rng.uniform(0.5, 4, shape) if kind == 'moist' else 20))
+    ang = f(rng.random(shape) * 2 * np.pi)
+    spd = f(3 + zl / 500 + rng.random(zl.shape) * 3)
+    u, v = (f(spd * np.cos(ang)), f(spd * np.sin(ang)))
+    c = dict(zs=zs, ps=ps, t2=t2, td2=f(td2), u10=f(u[0] * 0.4), v10=f(v[0] * 0.4), z=zl, p=p, t=f(t), td=f(td), u=u, v=v, uh=f(u[0] * 0.7), vh=f(v[0] * 0.7))
+    if nan_cells:
+        for a in (zs, ps, c['t2'], c['td2']):
+            a[0, :2] = np.nan
+        for a in (zl, c['t'], c['td']):
+            a[:, 1, 3:5] = np.nan
+        c['t'][4, 2, 2] = np.nan
+    return (c, zi)
+
+def core_args(c, py, zi, seed):
+    rng = np.random.default_rng(seed + 500)
+    shape = zi.shape
+    depth = (zi * rng.uniform(0.7, 1.2, shape)).astype(np.float32)
+    depth.flat[3::11] = rng.uniform(0, 99, depth.flat[3::11].shape)
+    depth.flat[5::29] = np.nan
+    depth.flat[7::37] = 0
+    depth.flat[31:32] = np.inf
+    twidth = np.where(rng.random(shape) < 0.2, np.nan, rng.uniform(100, 4000, shape))
+    active = rng.random(shape) < 0.8
+    zs = c['zs']
+    thm = np.zeros_like(zs)
+    for i in range(8):
+        t, p = py.at(zs + 2 + zi * i / 7, 't', 'lnp')
+        thm += P.theta(t, p)
+    return (depth, twidth, active, thm / 8)
+
+@unittest.skipUnless(N.available(), f'C++ physics not available: {N.error}')
+class TestCoreShape(unittest.TestCase):
+
+    def check(self, py, cx, depth, twidth, active, th_ml=None, native=True, msg=''):
+        for with_top in (False, True):
+            a = P.core_shape(py, depth, twidth, active, th_ml=th_ml, with_top=with_top)
+            with mock.patch.object(P, 'core_shape', side_effect=AssertionError('fell back')) if native else nullcontext():
+                b = N.core_shape(cx, depth, twidth, active, th_ml=th_ml, with_top=with_top)
+            a, b = (list(a[0]) + [a[1]], list(b[0]) + [b[1]]) if with_top else (a, b)
+            self.assertEqual(len(a), len(b))
+            for i, (x, y) in enumerate(zip(a, b)):
+                self.assertTrue(same(x, y), f'{msg} output {i}, with_top {with_top}: {np.sum(~((x == y) | np.isnan(x) & np.isnan(y)))} cells differ')
+        return a
+
+    def test_kinds(self):
+        for kind in ('lid', 'gradual', 'moist'):
+            for seed in range(3):
+                c, zi = core_columns(kind, seed=seed)
+                py, cx = profiles(c, hub=seed != 1)
+                self.assertTrue(cx.native)
+                depth, twidth, active, thm = core_args(c, py, zi, seed)
+                for th_ml in (None, thm):
+                    self.check(py, cx, depth, twidth, active, th_ml, msg=f'{kind} seed {seed} th_ml {th_ml is not None}')
+
+    def test_the_cases_are_there(self):
+
+        def shape(kind, th_ml=True, dry=False):
+            c, zi = core_columns(kind, ny=21, nx=23, seed=4, nan_cells=False)
+            if dry:
+                c = dict(c, td2=c['td2'] - 20, td=c['td'] - 20)
+            py, _ = profiles(c)
+            _, twidth, active, thm = core_args(c, py, zi, 4)
+            (_, c10), top = P.core_shape(py, zi, twidth, active, th_ml=thm if th_ml else None, with_top=True)
+            self.assertTrue(np.isnan(c10[~active]).all() and np.isnan(top[~active]).all())
+            return (c10, top, active)
+        c10, top, active = shape('lid')
+        ok = np.isfinite(c10)
+        self.assertTrue((ok == active).all())
+        self.assertGreater((np.isfinite(top[ok]) & (top[ok] < P.CORE_END)).mean(), 0.8)
+        self.assertLess(np.median(c10[ok]), 1)
+        c10, top, active = shape('gradual', th_ml=False)
+        self.assertTrue((active & np.isnan(c10)).any())
+        c10, top, active = shape('moist')
+        ok = np.isfinite(c10)
+        self.assertTrue((ok & np.isnan(top)).any() and (c10[ok] > 1.2).any())
+        d10, _, _ = shape('moist', dry=True)
+        self.assertGreater((np.abs(d10 - c10)[ok] > 0.05).mean(), 0.3)
+
+    def test_whole_blocks(self):
+        for kind in ('moist', 'lid'):
+            c, zi = core_columns(kind, ny=8, nx=24, seed=9, nan_cells=False)
+            h = c['z'] - c['zs'][None]
+            if kind == 'moist':
+                c['td2'] = (c['t2'] - 1).astype(np.float32)
+                c['td'] = np.where(h < zi, c['td2'] - 1.8 * h / 1000, c['t'] - 0.5).astype(np.float32)
+            else:
+                zi = np.minimum(zi, 1500)
+                c['t'] = np.where(h < zi, c['t2'] - 9.8 * h / 1000, c['t2'] - 9.8 * zi / 1000 + 5 - 6 * (h - zi) / 1000).astype(np.float32)
+            py, cx = profiles(c)
+            active = np.ones(zi.shape, bool)
+            twidth = np.full(zi.shape, np.nan)
+            thm = core_args(c, py, zi, 9)[3]
+            _, c10, top = self.check(py, cx, zi, twidth, active, thm)
+            if kind == 'lid':
+                self.assertTrue(np.isfinite(top).all() and (top < P.CORE_END).all())
+            else:
+                dry = dict(c, td2=c['td2'] - 20, td=c['td'] - 20)
+                (_, d10), _ = P.core_shape(profiles(dry)[0], zi, twidth, active, th_ml=thm, with_top=True)
+                self.assertTrue((np.abs(d10 - c10) > 0.01).mean() > 0.9)
+
+    def test_smoothing_edges(self):
+        D = np.float32(1000.0)
+        f32 = np.float32
+        dx = P.CORE_END / P.CORE_STEPS
+        widths = []
+        for k in range(1, P.CORE_STEPS + 1):
+            for at in P.CORE_AT:
+                d = abs(k * dx - at)
+                R = f32(d)
+                if not P.CORE_SMOOTH[0] < d < P.CORE_SMOOTH[1] or float(R) >= d:
+                    continue
+                h0 = f32(R - f32(1e-06))
+                for h in (h0, np.nextafter(h0, f32(np.inf)), np.nextafter(h0, f32(-np.inf))):
+                    if f32(h + f32(1e-06)) != R:
+                        continue
+                    for r in (f32(2 * D * h), np.nextafter(f32(2 * D * h), f32(np.inf)), np.nextafter(f32(2 * D * h), f32(0))):
+                        if f32(f32(0.5) * r / D) == h:
+                            widths.append(float(r))
+        self.assertGreater(len(widths), 3)
+        c, zi = core_columns('lid', ny=1, nx=len(widths), seed=10, nan_cells=False)
+        py, cx = profiles(c)
+        half = P.core_inputs(np.full(zi.shape, D), np.array([widths], np.float64), True)[2]
+        self.assertTrue(np.isin(half + f32(1e-06), [f32(abs(k * dx - at)) for k in range(P.CORE_STEPS + 1) for at in P.CORE_AT]).all())
+        self.check(py, cx, np.full(zi.shape, D), np.array([widths]), np.ones(zi.shape, bool), core_args(c, py, zi, 10)[3])
+
+    def test_random_columns(self):
+        for seed in range(4):
+            c = columns(seed=seed, shuffle=seed % 2 == 1)
+            if seed >= 2:
+                c['z'][[5, 6], 2:9] = c['z'][[6, 5], 2:9]
+                c['z'][9, 10:14] -= 2500
+            py, cx = profiles(c, seed % 2 == 0)
+            zi = np.random.default_rng(seed).uniform(200, 4000, c['zs'].shape).astype(np.float32)
+            depth, twidth, active, thm = core_args(c, py, zi, seed)
+            for th_ml in (None, thm):
+                self.check(py, cx, depth, twidth, active, th_ml, msg=f'seed {seed}')
+            if seed >= 2:
+                self.assertTrue((np.diff(py.z, axis=0) < 0).any())
+
+    def test_inputs(self):
+        c, zi = core_columns('lid', seed=7)
+        py, cx = profiles(c)
+        depth, twidth, active, thm = core_args(c, py, zi, 7)
+        shape = depth.shape
+        for args, th_ml in (((depth, twidth.astype(np.float32), active), thm), ((depth.astype(np.float64), twidth, active), thm), ((depth, np.full(shape, np.nan), active), None), ((depth, twidth, np.zeros(shape, bool)), thm), ((depth, twidth, active[:1]), thm[:1]), ((depth, twidth, True), np.float32(301.5)), ((depth, 800.0, active), 300.0), ((depth, twidth, active.astype(np.float32)), thm.astype(np.float64))):
+            self.check(py, cx, *args, th_ml=th_ml)
+
+    def test_tiny_grids(self):
+        for ny, nx in ((1, 1), (2, 3)):
+            for seed in range(3):
+                c, zi = core_columns(('lid', 'gradual', 'moist')[seed], ny=ny, nx=nx, seed=seed, nan_cells=False)
+                py, cx = profiles(c, seed % 2 == 0)
+                depth, twidth, _, thm = core_args(c, py, zi, seed)
+                for th_ml in (None, thm):
+                    self.check(py, cx, depth, twidth, np.ones((ny, nx), bool), th_ml)
+
+    def test_falls_back(self):
+        c, zi = core_columns('gradual', seed=8)
+        py, cx = profiles(c)
+        depth, twidth, active, thm = core_args(c, py, zi, 8)
+        self.check(py, cx, depth[:, :1], twidth, active, thm, native=False)
+        self.check(py, cx, depth, twidth, active, np.broadcast_to(thm, (2,) + thm.shape), native=False)
+        c64 = {k: v.astype(np.float64) for k, v in c.items()}
+        py, cx = profiles(c64)
+        self.assertFalse(cx.native)
+        self.check(py, cx, depth, twidth, active, thm, native=False)
+
+    def test_exner(self):
+        lnp = np.log(np.linspace(150, 1080, 100001, dtype=np.float32))
+        a, b = (P.exner(lnp), (np.exp(lnp) / 1000.0) ** P.KAPPA)
+        self.assertEqual(a.dtype, np.float32)
+        self.assertTrue((np.abs(a.astype(np.float64) / b - 1) < 3e-07).all())
 
 def sink_inputs(c, seed):
     rng = np.random.default_rng(1000 + seed)
