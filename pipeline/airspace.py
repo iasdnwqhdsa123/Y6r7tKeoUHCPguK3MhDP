@@ -22,7 +22,11 @@ SERVICE = 'https://services6.arcgis.com/ssFJjBXIUyZDrSYZ/arcgis/rest/services/Cl
 ITEM = 'c6a62360338e408cb1512366ad61559e'
 EXPORT = f'https://hub.arcgis.com/api/download/v1/items/{ITEM}/geojson?redirect=true&layers=0'
 UA = {'User-Agent': 'wx-pipeline/1.0'}
-VERSION = 8
+VERSION = 9
+FOREIGN = {'C': ('ca', 'CA')}
+FOREIGN_COVERED = 0.9
+LIMIT_SLACK_FT = 300
+CANADA_B_FT = 12500
 
 def get_json(url: str, params: dict | None=None, tries: int=12) -> dict:
     full = f'{url}?{urllib.parse.urlencode(params)}' if params else url
@@ -123,6 +127,96 @@ def airspace_class(p: dict) -> str | None:
             return k
     return None
 
+def foreign_area(p: dict) -> tuple | None:
+    if str(p.get('TYPE_CODE') or 'CLASS').strip().upper() == 'CLASS':
+        return None
+    ident = str(p.get('IDENT') or '').strip().upper()
+    return next((v for k, v in FOREIGN.items() if ident.startswith(k)), None)
+
+def limit_ft(lim) -> tuple | None:
+    s = str(lim or '').strip().upper()
+    if s in ('SFC', 'GND'):
+        return (0.0, True)
+    if s.startswith('FL'):
+        try:
+            return (float(s[2:]) * 100, False)
+        except ValueError:
+            return None
+    try:
+        return (float(s.split()[0].replace(',', '')), 'AGL' in s)
+    except (ValueError, IndexError):
+        return None
+
+def same_limit(a, b) -> bool:
+    a, b = (limit_ft(a), limit_ft(b))
+    return a is not None and b is not None and (a[1] == b[1]) and (abs(a[0] - b[0]) <= LIMIT_SLACK_FT)
+
+def _polys(geom) -> list:
+    g = geom or {}
+    if g.get('type') == 'Polygon':
+        return [g.get('coordinates') or []]
+    return g.get('coordinates') or [] if g.get('type') == 'MultiPolygon' else []
+
+def _in_ring(ring, x, y) -> bool:
+    inside, j = (False, len(ring) - 1)
+    for i in range(len(ring)):
+        xi, yi = (ring[i][0], ring[i][1])
+        xj, yj = (ring[j][0], ring[j][1])
+        if (yi > y) != (yj > y) and x < (xj - xi) * (y - yi) / (yj - yi or 1e-12) + xi:
+            inside = not inside
+        j = i
+    return inside
+
+def contains(geom, x, y) -> bool:
+    return any((p and _in_ring(p[0], x, y) and (not any((_in_ring(h, x, y) for h in p[1:]))) for p in _polys(geom)))
+
+def bbox(geom) -> tuple:
+    xs = [q[0] for p in _polys(geom) for q in (p[0] if p else ())]
+    ys = [q[1] for p in _polys(geom) for q in (p[0] if p else ())]
+    return (min(xs), min(ys), max(xs), max(ys)) if xs else (0.0, 0.0, -1.0, -1.0)
+
+def sample(geom) -> list:
+    x0, y0, x1, y1 = bbox(geom)
+    for n in (12, 30):
+        pts = [(x0 + (x1 - x0) * (i + 0.5) / n, y0 + (y1 - y0) * (j + 0.5) / n) for i in range(n) for j in range(n)]
+        pts = [p for p in pts if contains(geom, *p)]
+        if len(pts) >= 8:
+            return pts
+    return pts
+
+def covered(f: dict, cc: str, theirs: list) -> bool:
+    p = f['properties']
+    lo = limit_ft(p['lo'])
+    split_b = cc == 'CA' and p['c'] == 'B' and (lo is not None) and (lo[0] <= CANADA_B_FT + LIMIT_SLACK_FT)
+
+    def like(q):
+        if q['c'] != p['c'] or not same_limit(q['hi'], p['hi']):
+            return False
+        return same_limit(q['lo'], p['lo']) or (split_b and same_limit(q['lo'], f'{CANADA_B_FT} ft'))
+    near = [(g, b) for g, b in theirs if like(g['properties'])]
+    pts = sample(f['geometry'])
+    if not pts or not near:
+        return False
+    hit = sum((any((b[0] <= x <= b[2] and b[1] <= y <= b[3] and contains(g['geometry'], x, y) for g, b in near)) for x, y in pts))
+    return hit >= FOREIGN_COVERED * len(pts)
+
+def drop_foreign_copies(out: list, foreign: dict, out_dir: str) -> list:
+    if not foreign:
+        return out
+    own = {}
+    for area, cc in set(foreign.values()):
+        try:
+            with open(os.path.join(out_dir, 'airspace', f'{area}.json')) as fh:
+                feats = json.load(fh).get('features') or []
+        except (OSError, ValueError, AttributeError):
+            feats = []
+        own[area, cc] = [(g, bbox(g['geometry'])) for g in feats if (g.get('properties') or {}).get('cc') == cc and g.get('geometry')]
+    gone = {i for i, key in foreign.items() if own.get(key) and covered(out[i], key[1], own[key])}
+    for (area, cc), theirs in own.items():
+        mine = [i for i, k in foreign.items() if k == (area, cc)]
+        print(f"FAA's copies of {cc}'s airspace: {sum((i in gone for i in mine))} of {len(mine)} left out ({area}.json has them: {len(theirs)} of {cc}'s)" if theirs else f"FAA's copies of {cc}'s airspace: all {len(mine)} kept (no {area}.json with {cc}'s)", flush=True)
+    return [f for i, f in enumerate(out) if i not in gone]
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--out', default='dist-data')
@@ -146,13 +240,16 @@ def main():
         feats = from_service()
     print('CLASS values:', Counter((str(f['properties'].get('CLASS')) for f in feats)).most_common(12))
     print('LOCAL_TYPE values:', Counter((str(f['properties'].get('LOCAL_TYPE')) for f in feats)).most_common(12))
-    out = []
+    out, foreign = ([], {})
     for f in feats:
         p = f.get('properties') or {}
         c = airspace_class(p)
         if not c or not f.get('geometry') or west_pacific(f['geometry']):
             continue
+        if foreign_area(p):
+            foreign[len(out)] = foreign_area(p)
         out.append({'type': 'Feature', 'geometry': rounded(f['geometry']), 'properties': {'c': c, 'n': p.get('NAME') or '', 'lo': limit(p.get('LOWER_VAL'), p.get('LOWER_UOM'), p.get('LOWER_CODE')), 'hi': limit(p.get('UPPER_VAL'), p.get('UPPER_UOM'), p.get('UPPER_CODE'))}})
+    out = drop_foreign_copies(out, foreign, args.out)
     print('kept:', Counter((f['properties']['c'] for f in out)))
     if not out:
         raise SystemExit('no Class B/C/D features found; not overwriting the published file')

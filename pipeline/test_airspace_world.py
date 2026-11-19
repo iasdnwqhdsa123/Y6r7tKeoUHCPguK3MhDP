@@ -245,6 +245,28 @@ class ControlledKinds(unittest.TestCase):
         self.assertEqual([f['properties']['t'] for f in sua], ['R'])
         self.assertEqual(kinds, Counter({'TMZ': 1, 'CLASS': 1, 'RAS': 1, 'CTR': 1, 'TMA': 1, 'R': 1}))
 
+    def test_faa_copies_of_canadas_airspace_left_out_where_ca_json_has_them(self):
+        import airspace as A
+        self.assertEqual(A.foreign_area({'TYPE_CODE': 'TMA-P', 'IDENT': 'CZUL'}), ('ca', 'CA'))
+        self.assertIsNone(A.foreign_area({'TYPE_CODE': 'CLASS', 'IDENT': 'CLE'}))
+        self.assertIsNone(A.foreign_area({'IDENT': 'CZUL'}))
+        self.assertIsNone(A.foreign_area({'TYPE_CODE': 'TMA', 'IDENT': 'MMTJ'}))
+        self.assertTrue(A.same_limit('4,999 ft', '5,000 ft') and A.same_limit('17,999 ft', 'FL180'))
+        self.assertFalse(A.same_limit('SFC', '700 ft AGL') or A.same_limit('2,500 ft', '3,000 ft'))
+        sq = lambda x, y, d=0.2: _square(x, y, d)
+        feat = lambda c, lo, hi, g, **p: {'type': 'Feature', 'geometry': g, 'properties': {'c': c, 'lo': lo, 'hi': hi, 'n': '', **p}}
+        mtl, far = ((-73.6, 45.5), (-63.5, 44.9))
+        ca = [feat('C', '3,000 ft', '5,000 ft', sq(*mtl), cc='CA'), feat('B', '12,500 ft', '18,000 ft', sq(*mtl, 2.0), cc='CA')]
+        out = [feat('B', 'SFC', '10,000 ft', sq(-71.0, 42.4)), feat('C', '3,000 ft', '4,999 ft', sq(*mtl)), feat('B', '6,000 ft', '17,999 ft', sq(*mtl, 1.0)), feat('D', 'SFC', '3,500 ft', sq(*far)), feat('C', '3,000 ft', '4,999 ft', sq(mtl[0] + 0.3, mtl[1])), feat('C', 'SFC', '2,000 ft', sq(*mtl, 0.1))]
+        foreign = {i: ('ca', 'CA') for i in range(1, 6)}
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(len(A.drop_foreign_copies(out, foreign, tmp)), 6)
+            _write(tmp, 'ca', ca, [])
+            with contextlib.redirect_stdout(io.StringIO()) as log:
+                kept = A.drop_foreign_copies(out, foreign, tmp)
+        self.assertEqual(kept, [out[0], out[3], out[4], out[5]])
+        self.assertIn('2 of 5 left out', log.getvalue())
+
     def test_faa_features_out_in_the_western_pacific_dropped(self):
         from airspace import west_pacific
         box = lambda w, e: {'type': 'Polygon', 'coordinates': [[[w, 13.0], [e, 13.0], [e, 14.0], [w, 13.0]]]}
