@@ -3730,6 +3730,296 @@ class IconOpenMeteo(unittest.TestCase):
         self.assertIn('icon', build.FREE_MODELS)
         self.assertEqual(build.free_ahead('icon'), build.free_ahead('gfs'))
 
+def icosahedron_centres(levels=2):
+    t = (1 + 5 ** 0.5) / 2
+    v = [np.array(p, float) / np.linalg.norm(p) for p in [(-1, t, 0), (1, t, 0), (-1, -t, 0), (1, -t, 0), (0, -1, t), (0, 1, t), (0, -1, -t), (0, 1, -t), (t, 0, -1), (t, 0, 1), (-t, 0, -1), (-t, 0, 1)]]
+    tris = [(v[a], v[b], v[c]) for a, b, c in [(0, 11, 5), (0, 5, 1), (0, 1, 7), (0, 7, 10), (0, 10, 11), (1, 5, 9), (5, 11, 4), (11, 10, 2), (10, 7, 6), (7, 1, 8), (3, 9, 4), (3, 4, 2), (3, 2, 6), (3, 6, 8), (3, 8, 9), (4, 9, 5), (2, 4, 11), (6, 2, 10), (8, 6, 7), (9, 8, 1)]]
+    unit = lambda p: p / np.linalg.norm(p)
+    for _ in range(levels):
+        tris = [s for a, b, c in tris for ab, bc, ca in [(unit(a + b), unit(b + c), unit(c + a))] for s in ((a, ab, ca), (ab, b, bc), (ca, bc, c), (ab, bc, ca))]
+    c = np.array([unit(a + b + c) for a, b, c in tris])
+    return (np.degrees(np.arcsin(c[:, 2])), np.degrees(np.arctan2(c[:, 1], c[:, 0])))
+
+class IconDwd(unittest.TestCase):
+
+    def setUp(self):
+        self.env = os.environ.get('ICON_DWD')
+        os.environ['ICON_DWD'] = '1'
+
+    def tearDown(self):
+        if self.env is None:
+            os.environ.pop('ICON_DWD', None)
+        else:
+            os.environ['ICON_DWD'] = self.env
+
+    def test_the_files_addresses_and_every_key_from_one(self):
+        from datetime import datetime, timezone
+        import dwdicon
+        from sources import SOURCES
+        run = datetime(2026, 11, 19, 0, tzinfo=timezone.utc)
+        base = 'https://opendata.dwd.de/weather/nwp/icon/grib/00'
+        self.assertEqual(dwdicon.url(run, 12, 't_2m'), f'{base}/t_2m/icon_global_icosahedral_single-level_2026111900_012_T_2M.grib2.bz2')
+        self.assertEqual(dwdicon.url(run, 81, 'relhum', 'pressure-level', 850), f'{base}/relhum/icon_global_icosahedral_pressure-level_2026111900_081_850_RELHUM.grib2.bz2')
+        self.assertEqual(dwdicon.url(run, 1, 'u', 'model-level', 118), f'{base}/u/icon_global_icosahedral_model-level_2026111900_001_118_U.grib2.bz2')
+        self.assertEqual(dwdicon.url(run, 5, 'w_so', 'soil-level', 3), f'{base}/w_so/icon_global_icosahedral_soil-level_2026111900_005_3_W_SO.grib2.bz2')
+        self.assertEqual(dwdicon.static_url(run, 'clat'), f'{base}/clat/icon_global_icosahedral_time-invariant_2026111900_CLAT.grib2.bz2')
+        src = SOURCES['icon']
+        files = {}
+        for key in src.wanted():
+            parts, _ = dwdicon.recipe(key)
+            files[key] = [p[:3] for p in parts]
+        self.assertEqual(files['temperature', '250 mb'], [('pressure-level', 't', 250)])
+        self.assertEqual(files['geopotential_height', '100 mb'], [('pressure-level', 'fi', 100)])
+        self.assertEqual(files['wind_u_component_80m', ''], [('model-level', 'u', 118)])
+        self.assertEqual(files['soil_moisture_3_to_9cm', ''], [('soil-level', 'w_so', 3)])
+        self.assertEqual(files['zs', ''], [('time-invariant', 'hsurf', None)])
+        self.assertEqual(files['showers', ''], [('single-level', 'rain_con', None), ('single-level', 'snow_con', None)])
+        with self.assertRaises(KeyError):
+            dwdicon.recipe(('visibility', ''))
+        kinds = {k: {p[3] for p in dwdicon.recipe(k)[0]} for k in src.wanted()}
+        self.assertEqual({k[0] for k, h in kinds.items() if h & {dwdicon.ACC, dwdicon.AVG}}, {'precipitation', 'showers', 'ptype', 'sw', 'shf'})
+        _, z = dwdicon.recipe(('geopotential_height', '500 mb'))
+        self.assertAlmostEqual(float(z([np.float32(55000.0)])), 55000 / 9.80665, places=2)
+        _, w = dwdicon.recipe(('soil_moisture_3_to_9cm', ''))
+        self.assertAlmostEqual(float(w([np.float32(18.0)])), 0.3)
+
+    def test_the_index_is_the_nearest_cell_centre(self):
+        import dwdicon
+        lat, lon = icosahedron_centres(2)
+        grid = (-90.0, -180.0, 7.5, 25, 48)
+        idx = dwdicon.index_from_cells(lat, lon, grid)
+        self.assertEqual(idx.shape, (25, 48))
+        la, lo = np.meshgrid(-90 + np.arange(25) * 7.5, -180 + np.arange(48) * 7.5, indexing='ij')
+        p1, p2, dl = (np.radians(la.reshape(-1, 1)), np.radians(lat[None]), np.radians(lo.reshape(-1, 1) - lon[None]))
+        arc = np.arccos(np.clip(np.sin(p1) * np.sin(p2) + np.cos(p1) * np.cos(p2) * np.cos(dl), -1, 1))
+        best = arc.min(1)
+        np.testing.assert_allclose(arc[np.arange(arc.shape[0]), idx.ravel()], best, atol=1e-09)
+        idx = dwdicon.index_from_cells(np.array([0.0, 0.0, 60.0]), np.array([-179.5, 90.0, 0.0]), (-0.5, 178.0, 1.0, 2, 2))
+        self.assertTrue((idx[:, 1] == 0).all())
+
+    def write_links(self, path, src, dst, method=b'Nearest neighbor', nw=1, ncells=None, ndst=None):
+        from scipy.io import netcdf_file
+        with netcdf_file(path, 'w') as f:
+            f.title, f.map_method = (b'SCRIP remapping with CDO', method)
+            f.createDimension('src_grid_size', ncells)
+            f.createDimension('dst_grid_size', ndst)
+            f.createDimension('num_links', len(src))
+            f.createDimension('num_wgts', nw)
+            for name, a in (('src_address', src), ('dst_address', dst)):
+                v = f.createVariable(name, 'i', ('num_links',))
+                v[:] = np.asarray(a, np.int32)
+            w = f.createVariable('remap_matrix', 'd', ('num_links', 'num_wgts'))
+            w[:] = 1.0
+
+    def test_the_index_from_dwds_links(self):
+        import tarfile
+        import tempfile
+        import dwdicon
+        rng = np.random.default_rng(3)
+        world = rng.integers(0, 7, (3, 4))
+        order = rng.permutation(12)
+        with tempfile.TemporaryDirectory() as d:
+            nc = os.path.join(d, 'weights_icogl2world.nc')
+            self.write_links(nc, world.ravel()[order] + 1, order + 1, ncells=7, ndst=12)
+            np.testing.assert_array_equal(dwdicon.index_from_links(nc, shape=(3, 4), cells=7), world)
+            pkg = os.path.join(d, 'EASY.tar.bz2')
+            with tarfile.open(pkg, 'w:bz2') as tar:
+                tar.add(nc, arcname='EASY/weights_icogl2world.nc')
+            np.testing.assert_array_equal(dwdicon.index_from_package(pkg, shape=(3, 4), cells=7), world)
+            self.write_links(nc, world.ravel()[order] + 1, order + 1, method=b'Bilinear', ncells=7, ndst=12)
+            with self.assertRaises(ValueError):
+                dwdicon.index_from_links(nc, shape=(3, 4), cells=7)
+            self.write_links(nc, world.ravel()[order] + 1, order + 1, ncells=7, ndst=12)
+            with self.assertRaises(ValueError):
+                dwdicon.index_from_links(nc, shape=(3, 4), cells=8)
+            self.write_links(nc, world.ravel()[order][:-1] + 1, order[:-1] + 1, ncells=7, ndst=12)
+            with self.assertRaises(ValueError):
+                dwdicon.index_from_links(nc, shape=(3, 4), cells=7)
+        from sources import SOURCES
+        self.assertEqual(dwdicon.WORLD, SOURCES['icon'].grid_def)
+
+    def test_the_index_is_stored_and_read_back(self):
+        import tempfile
+        from unittest import mock
+        import dwdicon
+        world = (np.arange(1441 * 2879, dtype=np.int64) % dwdicon.CELLS).astype(np.int32).reshape(1441, 2879)
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(dwdicon, '_INDEX', None):
+            with mock.patch('om.download', lambda u, workers=8: open(os.path.join(d, 'pkg'), 'w').close() or os.path.join(d, 'pkg')), mock.patch.object(dwdicon, 'index_from_package', lambda p: world):
+                idx = dwdicon.index(d, log=lambda *a: None)
+            self.assertTrue(os.path.exists(os.path.join(d, dwdicon.INDEX_FILE)))
+            self.assertEqual(idx.how, "DWD's nearest-neighbour links")
+            region = (-170.0, -54.875, 179.75, 70.0, 0.125)
+            w = idx.window(region)
+            self.assertEqual(w.shape, (1000, 2799))
+            self.assertEqual(w[0, 0], world[(70 + 90) * 8, (-170 + 180) * 8])
+            self.assertEqual(w[-1, -1], world[int((-54.875 + 90) * 8), int((179.75 + 180) * 8)])
+            dwdicon._INDEX = None
+            with mock.patch('om.download', lambda *a, **k: self.fail('read from the store')):
+                self.assertEqual(dwdicon.index(d, log=lambda *a: None).how, "DWD's nearest-neighbour links (stored)")
+            dwdicon._INDEX = None
+            os.remove(os.path.join(d, dwdicon.INDEX_FILE))
+
+            def gone(*a, **k):
+                raise IOError('404')
+            from datetime import datetime, timezone
+            with mock.patch('om.download', gone), mock.patch.object(dwdicon, '_static', lambda run, var: {'clat': np.array([0.0]), 'clon': np.array([0.0])}[var]), mock.patch.object(dwdicon, 'index_from_cells', lambda la, lo: np.zeros((1441, 2879), np.int32)):
+                idx = dwdicon.index(d, run=datetime(2026, 11, 19, tzinfo=timezone.utc), log=lambda *a: None)
+            self.assertEqual(idx.how, 'the nearest of the cell centres')
+            self.assertFalse(os.path.exists(os.path.join(d, dwdicon.INDEX_FILE)))
+            dwdicon._INDEX = None
+
+    def test_a_message_on_another_grid_is_refused(self):
+        import eccodes
+        import dwdicon
+        g = eccodes.codes_grib_new_from_samples('regular_ll_sfc_grib2')
+        for k, v in (('Ni', 4), ('Nj', 3), ('latitudeOfFirstGridPointInDegrees', 0.0), ('latitudeOfLastGridPointInDegrees', 2.0), ('longitudeOfFirstGridPointInDegrees', 10.0), ('longitudeOfLastGridPointInDegrees', 13.0), ('iDirectionIncrementInDegrees', 1.0), ('jDirectionIncrementInDegrees', 1.0)):
+            eccodes.codes_set(g, k, v)
+        eccodes.codes_set_values(g, np.arange(12, dtype=np.float64))
+        msg = eccodes.codes_get_message(g)
+        eccodes.codes_release(g)
+        np.testing.assert_allclose(dwdicon.values(msg, cells=12), np.arange(12), atol=0.001)
+        with self.assertRaises(ValueError):
+            dwdicon.values(msg)
+
+    def step(self, keys, fh=12, prev=11, files=None):
+        from datetime import datetime, timezone
+        from unittest import mock
+        import dwdicon
+        run = datetime(2026, 11, 19, tzinfo=timezone.utc)
+        asked = []
+
+        def message(u):
+            asked.append(u)
+            return np.asarray(files(u), np.float32).tobytes()
+        world = np.arange(6, dtype=np.int32).reshape(2, 3)
+        with mock.patch.object(dwdicon, 'message', message), mock.patch.object(dwdicon, 'values', lambda b, cells=6: np.frombuffer(b, np.float32).copy()), mock.patch.object(dwdicon, 'index', lambda *a, **k: dwdicon.Index(world, 'test')), mock.patch.object(dwdicon, 'WORLD', (0.0, 10.0, 1.0, 2, 3)), mock.patch.object(dwdicon, '_STATIC', {}):
+            out = dwdicon.fetch_step(run, fh, prev, keys)
+            region = (10.0, 0.0, 12.0, 1.0, 1.0)
+            vals = {k: f.read(region) for k, f in out.items()}
+            boxed = {k: f.read(region, boxes=[(0, 1, 0, 2)]) for k, f in out.items()}
+        return (vals, boxed, asked, out)
+
+    def test_a_steps_fields_are_the_steps_own(self):
+        import dwdicon
+        tri = np.arange(6, dtype=np.float32)
+
+        def files(u):
+            name = u.rsplit('/', 1)[1]
+            step = int(name.split('_')[5]) if 'time-invariant' not in name else None
+            if 'TOT_PREC' in name:
+                return tri + step
+            if 'ASWDIR_S' in name:
+                return np.full(6, 100.0 * step)
+            if 'ASWDIFD_S' in name:
+                return np.full(6, 50.0)
+            if 'T_2M' in name:
+                return tri + 280
+            if 'FR_LAND' in name:
+                return np.array([0, 0.4, 0.5, 0.6, 1, 1])
+            if 'HSURF' in name:
+                return tri * 100
+            raise AssertionError(name)
+        keys = [('precipitation', ''), ('sw', ''), ('temperature_2m', ''), ('lsm', ''), ('zs', '')]
+        vals, boxed, asked, out = self.step(keys, files=files)
+        np.testing.assert_allclose(vals['temperature_2m', ''], [[283, 284, 285], [280, 281, 282]])
+        np.testing.assert_allclose(vals['precipitation', ''], np.ones((2, 3)))
+        np.testing.assert_allclose(vals['sw', ''], np.full((2, 3), 2350.0))
+        np.testing.assert_array_equal(vals['lsm', ''], [[1, 1, 1], [0, 0, 1]])
+        np.testing.assert_allclose(vals['zs', ''], [[300, 400, 500], [0, 100, 200]])
+        b = boxed['temperature_2m', '']
+        self.assertTrue(np.isnan(b[1]).all() and np.isnan(b[0, 2]))
+        np.testing.assert_allclose(b[0, :2], [283, 284])
+        parts = [u.rsplit('/', 1)[1].split('.')[0].split('_') for u in asked if 'time-invariant' not in u]
+        self.assertEqual(sorted((f'{p[5]} {'_'.join(p[6:])}' for p in parts)), ['011 ASWDIFD_S', '011 ASWDIR_S', '011 TOT_PREC', '012 ASWDIFD_S', '012 ASWDIR_S', '012 TOT_PREC', '012 T_2M'])
+        self.assertEqual(sum(('time-invariant' in u for u in asked)), 2)
+        self.assertTrue(all((f.threads for f in out.values())))
+        vals, _, asked, _ = self.step([('precipitation', ''), ('sw', '')], fh=1, prev=0, files=files)
+        np.testing.assert_allclose(vals['precipitation', ''], [[4, 5, 6], [1, 2, 3]])
+        np.testing.assert_allclose(vals['sw', ''], np.full((2, 3), 150.0))
+        self.assertFalse([u for u in asked if '_000_' in u])
+        vals, _, _, _ = self.step([('sw', '')], fh=81, prev=78, files=files)
+        np.testing.assert_allclose(vals['sw', ''], np.full((2, 3), (81 * 8100 - 78 * 7800) / 3 + 50))
+
+    def test_a_file_not_out_stops_the_step(self):
+        import dwdicon
+
+        def files(u):
+            if 'RELHUM' in u:
+                raise IOError('HTTP Error 404: Not Found')
+            return np.zeros(6)
+        with self.assertRaises(IOError):
+            self.step([('temperature', '850 mb'), ('relative_humidity', '850 mb')], files=files)
+        with self.assertRaises(KeyError):
+            dwdicon.recipe(('cape', '850 mb'))
+
+    def test_dwds_files_else_open_meteos_copy(self):
+        from contextlib import redirect_stdout
+        from datetime import datetime, timedelta, timezone
+        import io
+        from unittest import mock
+        import dwdicon
+        import om
+        import sources
+        src = sources.SOURCES['icon']
+        self.assertIsInstance(src, sources.ICON)
+        now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+        run = now - timedelta(hours=now.hour % 6 + 6)
+        keys = src.wanted()
+        theirs = lambda urls, static, grid, keys, workers=8: {k: 'om' for k in keys}
+        got = []
+        mine = lambda run, fh, prev, keys, cache_dir=None: got.append((fh, prev)) or {k: 'dwd' for k in keys}
+        with mock.patch.object(dwdicon, 'fetch_step', mine), mock.patch.object(om, 'fetch_hour', theirs), mock.patch.dict(os.environ, {'ICON_DWD': '1'}):
+            out = src.fetch(run, 81, keys)
+            self.assertEqual(got, [(81, 78)])
+            self.assertEqual(out.pop(sources.VIA), 'dwd')
+            self.assertEqual(set(out.values()), {'dwd'})
+            old = run - timedelta(days=2)
+            out = src.fetch(old, 5, keys)
+            self.assertEqual((out.pop(sources.VIA), len(got)), ('om', 1))
+            with mock.patch.dict(os.environ, {'ICON_DWD': '0'}):
+                out = src.fetch(run, 5, keys)
+            self.assertEqual((out.pop(sources.VIA), len(got)), ('om', 1))
+
+        def fails(*a, **k):
+            raise IOError('HTTP Error 404: Not Found')
+        with mock.patch.object(dwdicon, 'fetch_step', fails), mock.patch.object(om, 'fetch_hour', theirs), redirect_stdout(io.StringIO()) as log:
+            out = src.fetch(run, 5, keys)
+        self.assertEqual(out.pop(sources.VIA), 'om')
+        self.assertEqual(set(out.values()), {'om'})
+        self.assertIn("DWD's files not read", log.getvalue())
+        seen = []
+        with mock.patch.object(sources.grib, 'exists', lambda u: seen.append(u) or 'opendata.dwd.de' in u):
+            self.assertTrue(src.landed(run, 120))
+        self.assertEqual(seen, [dwdicon.url(run, 120, 'u', 'model-level', 118), dwdicon.url(run, 120, 'v', 'model-level', 118)])
+        with mock.patch.object(sources.grib, 'exists', lambda u: seen.append(u) or 'openmeteo' in u):
+            self.assertTrue(src.landed(run, 120))
+        self.assertIn(src.idx_url(run, 120), seen)
+        with mock.patch.object(sources.grib, 'exists', lambda u: False):
+            self.assertFalse(src.landed(run, 120))
+
+    def test_the_hours_copies_in_their_stamps_and_the_notes(self):
+        import tempfile
+        import build
+        from sources import SOURCES
+        with tempfile.TemporaryDirectory() as d:
+            for name, text in (('a', '2026111900 dwd'), ('b', '2026111900'), ('c', '')):
+                with open(os.path.join(d, name), 'w') as f:
+                    f.write(text)
+            self.assertEqual(build.stamp_of(os.path.join(d, 'a')), ('2026111900', 'dwd'))
+            self.assertEqual(build.stamp_of(os.path.join(d, 'b')), ('2026111900', None))
+            self.assertEqual(build.stamp_of(os.path.join(d, 'c')), ('', None))
+            self.assertEqual(build.stamp_of(os.path.join(d, 'none')), ('', None))
+        src = SOURCES['icon']
+        dwd, om_only, both = (src.notes_for({'dwd'}), src.notes_for({'om'}), src.notes_for({'dwd', None}))
+        self.assertIn('Deutscher Wetterdienst', dwd[0])
+        self.assertNotIn('Open-Meteo', dwd[0])
+        self.assertIn('by Open-Meteo', om_only[0])
+        self.assertNotIn('Deutscher Wetterdienst', om_only[0])
+        self.assertIn('Deutscher Wetterdienst', both[0])
+        self.assertIn("Open-Meteo's copy", both[0])
+        self.assertEqual(dwd[1:], om_only[1:])
+        self.assertEqual(src.notes_for({None}), om_only)
+
 class EuropeAirspace(unittest.TestCase):
     XML = b'<?xml version="1.0"?><OFMX-Snapshot version="0.1" origin="test">\n    <Ase><AseUid region="LF"><codeType>TMA</codeType><codeId>T1</codeId></AseUid><txtName>STRASBOURG 9</txtName><codeClass>D</codeClass>\n      <codeDistVerUpper>STD</codeDistVerUpper><valDistVerUpper>145</valDistVerUpper><uomDistVerUpper>FL</uomDistVerUpper>\n      <codeDistVerLower>ALT</codeDistVerLower><valDistVerLower>4500</valDistVerLower><uomDistVerLower>FT</uomDistVerLower></Ase>\n    <Abd><AbdUid><AseUid region="LF"><codeType>TMA</codeType><codeId>T1</codeId></AseUid></AbdUid>\n      <Avx><codeType>GRC</codeType><geoLat>49.00000000N</geoLat><geoLong>008.00000000E</geoLong></Avx>\n      <Avx><codeType>CWA</codeType><geoLat>49.00000000N</geoLat><geoLong>008.50000000E</geoLong><geoLatArc>48.75000000N</geoLatArc><geoLongArc>008.50000000E</geoLongArc></Avx>\n      <Avx><codeType>GRC</codeType><geoLat>48.50000000N</geoLat><geoLong>008.50000000E</geoLong></Avx>\n      <Avx><codeType>FNT</codeType><geoLat>48.50000000N</geoLat><geoLong>008.00000000E</geoLong></Avx></Abd>\n    <Ase><AseUid region="LF"><codeType>CLASS</codeType><codeId>T1_D</codeId></AseUid><codeClass>D</codeClass>\n      <codeDistVerUpper>STD</codeDistVerUpper><valDistVerUpper>145</valDistVerUpper><uomDistVerUpper>FL</uomDistVerUpper>\n      <codeDistVerLower>ALT</codeDistVerLower><valDistVerLower>4500</valDistVerLower><uomDistVerLower>FT</uomDistVerLower></Ase>\n    <Adg><AdgUid><AseUid region="LF"><codeType>CLASS</codeType><codeId>T1_D</codeId></AseUid></AdgUid>\n      <AseUidSameExtent region="LF"><codeType>TMA</codeType><codeId>T1</codeId></AseUidSameExtent></Adg>\n    <Ase><AseUid region="LF"><codeType>R</codeType><codeId>R1</codeId></AseUid><txtName>LF-R 1</txtName>\n      <codeDistVerUpper>HEI</codeDistVerUpper><valDistVerUpper>300</valDistVerUpper><uomDistVerUpper>M</uomDistVerUpper>\n      <codeDistVerLower>HEI</codeDistVerLower><valDistVerLower>0</valDistVerLower><uomDistVerLower>FT</uomDistVerLower><Att><codeWorkHr>H24</codeWorkHr></Att></Ase>\n    <Abd><AbdUid><AseUid region="LF"><codeType>R</codeType><codeId>R1</codeId></AseUid></AbdUid>\n      <Circle><geoLatCen>48.00000000N</geoLatCen><geoLongCen>007.00000000E</geoLongCen><valRadius>2</valRadius><uomRadius>NM</uomRadius></Circle></Abd>\n    <Ase><AseUid region="LF"><codeType>FIR</codeType><codeId>F</codeId></AseUid><codeClass>G</codeClass></Ase>\n    </OFMX-Snapshot>'
 
