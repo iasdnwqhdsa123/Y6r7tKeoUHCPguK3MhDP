@@ -986,6 +986,19 @@ class Fronts(unittest.TestCase):
         self.assertAlmostEqual(c[3], float(p.min()), places=3)
         self.assertLess(abs(c[2] - 45), 0.3)
 
+    def test_no_centres_along_where_the_model_has_no_data(self):
+        import fronts
+        g = fronts.Grid(np.arange(60, 29.99, -0.25), np.arange(-20, 30.01, 0.25))
+        la, lo = np.meshgrid(g.lats, g.lons, indexing='ij')
+        p = 1013 + 0.3 * (la - 45) + 3 * np.sin(np.radians(lo * 20))
+        self.assertEqual(fronts.centres(g, p), [])
+        gap = np.where((la < 40) | (lo > 15) & (la > 52), np.nan, p)
+        self.assertEqual(fronts.centres(g, gap), [])
+        low = gap - 20 * np.exp(-((la - 48) ** 2 + ((lo - 5) * 0.7) ** 2) / 2)
+        c, = fronts.centres(g, low)
+        self.assertEqual(c[0], 'L')
+        self.assertLess(abs(c[1] - 5) + abs(c[2] - 48), 0.6)
+
     def test_network_weights_inputs_and_layers(self):
         import fronts
         W = fronts._weights()
@@ -1356,6 +1369,12 @@ class CumulusOrBlue(unittest.TestCase):
         self.assertFalse(far[0], 'LCL 600 m over the thermals: blue (zi + max(0.5 zi, CU_OVERSHOOT_MIN))')
         one = lambda v: np.full(1, float(v))
         self.assertTrue(build.cumulus_forms(one(0.57), one(331), one(772), one(6))[0])
+        self.assertFalse(build.cumulus_forms(one(0.57), one(331), one(772), one(6), 10.0)[0])
+        self.assertTrue(build.cumulus_forms(one(0.57), one(331), one(772), one(12), 10.0)[0])
+        self.assertTrue(build.cumulus_forms(one(2.0), one(1500), one(1200), one(6), 10.0)[0])
+        import sources
+        self.assertEqual(sources.SOURCES['hrrr'].cu_flat_min_cloud, 10.0)
+        self.assertIsNone(sources.SOURCES['gfs'].cu_flat_min_cloud)
         import sky
         self.assertAlmostEqual(float(sky.cu_reach(one(331), one(772))[0]), 1 - 441 / 500, places=6)
         self.assertEqual(float(sky.cu_reach(one(1500), one(1200))[0]), 1.0)
