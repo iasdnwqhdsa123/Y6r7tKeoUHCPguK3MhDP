@@ -1696,6 +1696,39 @@ class WaveCloud(unittest.TestCase):
         dec['dpd_g600'][:] = 9
         self.assertIsNone(wb.cloud(D, own, {'north': 41.0, 'step': 0.03}), 'nothing gains: None')
 
+    def test_bars_need_a_deck_and_no_deep_cloud_in_its_place(self):
+        import sky
+        import wavebars as wb
+        ny, nx = (11, 8)
+        full = lambda v: np.full((ny, nx), float(v))
+        dec = {'wtrap': full(100), 'wlam': full(7000), 'u_wl': full(12), 'v_wl': full(-6), 'cloudlow': full(70), 'zi': full(700), 'wstar': full(0.5), 'rain': full(0), 'cloudmid': full(10), 'cloudhigh': full(0), 'dpd_g3000': full(8), 'dpd_g600': full(9)}
+        own = full(0.8)
+        dec['cloudlow'][1, :] = 100
+        dec['cloudlow'][2, :] = 30
+        dec['cloudlow'][3, :], dec['dpd_g600'][3, :] = (16, 3.5)
+        dec['cloudlow'][4, :], dec['dpd_g600'][4, :] = (6, 3.5)
+        dec['rain'][5, :] = 0.4
+        dec['cloudmid'][6, :], dec['cloudhigh'][6, :] = (70, 60)
+        dec['cloudmid'][7, :], dec['dpd_g3000'][7, :] = (90, 0.5)
+        dec['cloudmid'][8, :] = 90
+        for n in ('rain', 'cloudmid', 'cloudhigh', 'dpd_g3000'):
+            dec[n][9, :] = np.nan
+        dec['cloudlow'][10, :], dec['dpd_g600'][10, :] = (16, np.nan)
+        D = type('D', (), {'get': lambda self, n, default=None: dec.get(n, default)})()
+        codes = np.full((ny, nx), 100, np.uint8)
+        got = wb.apply(codes, D, own, {'north': 41.0, 'step': 0.03}, False) == wb.CODE
+        want = [True, True, False, True, False, False, False, False, True, True, False]
+        np.testing.assert_array_equal(got.all(axis=1), want)
+        np.testing.assert_array_equal(got.any(axis=1), want)
+        got = wb.apply(codes, D, full(0.25), {'north': 41.0, 'step': 0.03}, False) == wb.CODE
+        self.assertFalse(got[3].any())
+        self.assertTrue(got[0].all())
+        for n in ('rain', 'cloudmid', 'cloudhigh', 'dpd_g3000', 'dpd_g600'):
+            del dec[n]
+        got = wb.apply(codes, D, own, {'north': 41.0, 'step': 0.03}, False) == wb.CODE
+        np.testing.assert_array_equal(got.all(axis=1), [True, True, False, False, False, True, True, True, True, True, False])
+        self.assertEqual(wb.CODE, sky.WB_CODE)
+
     def test_the_cloud_layers_again_only_round_the_change(self):
         import build
         import runfields
