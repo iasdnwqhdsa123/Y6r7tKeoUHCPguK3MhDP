@@ -120,5 +120,71 @@ class OutputWhole(unittest.TestCase):
 
     def test_none_published(self):
         self.assertEqual(verify_output.check_manifest(self.root, 'icon'), [])
+
+class AirCorrections(unittest.TestCase):
+    FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'calib', 'fixtures', 'corrections_fixture.json')
+
+    @unittest.skipUnless(os.path.exists(FIXTURE), "the calibration's fixture (not in the forecast job's copy)")
+    def test_the_calibration_twins_numbers(self):
+        import aircorr
+        with open(self.FIXTURE) as f:
+            fx = json.load(f)
+        F, meta, corr = (fx['fields'], fx['meta'], aircorr.prepare(fx['corr']))
+        names, nx, ny, nh = (F['names'], F['nx'], F['ny'], F['nh'])
+        A = np.array([np.nan if x is None else x for x in F['data']], np.float64).reshape(nh, len(names), ny, nx)
+        E = np.array([np.nan if x is None else x for x in fx['expected']], np.float64).reshape(nh, len(names), ny, nx)
+        g = F['grid']
+        lat = np.repeat((g['north'] - np.arange(ny) * g['step'])[:, None], nx, 1)
+        lon = np.repeat((g['west'] + np.arange(nx) * g['step'])[None, :], ny, 0)
+        for h in range(nh):
+            out = aircorr.apply({n: A[h, i] for i, n in enumerate(names)}, lat, lon, meta['stampUtc'][F['stamps'][h]], meta['day'], meta.get('modelIndex', meta['model']), g['step'], corr)
+            self.assertEqual(set(out), {'wstar', 'zi', 'depth', 'cubase', 'cudepth'})
+            for k, a in out.items():
+                e = E[h, names.index(k)]
+                self.assertTrue(np.array_equal(np.isnan(a), np.isnan(e)), k)
+                self.assertTrue(np.allclose(np.nan_to_num(a), np.nan_to_num(e), rtol=0.0001, atol=0.001), k)
+
+    def test_the_cpp_trees_are_numpys(self):
+        import aircorr
+        if aircorr._native() is None:
+            self.skipTest('no C++ library here')
+        corr = aircorr.prepare(aircorr.load())
+        rng = np.random.default_rng(3)
+        for k, m in corr['fields'].items():
+            X = rng.uniform(-50, 4000, (len(m['features']), 5000))
+            X[rng.uniform(0, 1, X.shape) < 0.15] = np.nan
+            self.assertTrue(np.array_equal(aircorr.predict(m, X), aircorr.predict(m, X, native=False)), k)
+
+    def test_codes_corrected_where_there_are_thermals_and_masked_cells_kept(self):
+        import aircorr
+        leaf = lambda v: {'features': ['wstar'], 'base': v, 'trees': []}
+        corr = aircorr.prepare({'version': 't', 'features': ['wstar'], 'model_ids': {'hrrr': 0}, 'clamps': aircorr.CLAMPS, 'cu_depth': 300, 'fields': {'ws': leaf(0.25), 'top': leaf(-0.1), 'zi': leaf(-0.1), 'cb': leaf(120.0), 'cu': leaf(0.0)}})
+        shape = (2, 3)
+        ws = np.array([[2.0, 3.0, np.nan], [1.0, 2.5, 4.0]])
+        q = {'wstar': build.quantize(ws, *build.ENC['wstar']), 'zi': build.quantize(np.full(shape, 1500.0), *build.ENC['zi']), 'depth': build.quantize(np.full(shape, 1200.0), *build.ENC['depth']), 'cubase': build.quantize(np.array([[1400.0, np.nan, np.nan], [900.0, np.nan, 1600.0]]), *build.ENC['cubase']), 'cudepth': build.quantize(np.array([[500.0, np.nan, np.nan], [400.0, np.nan, 900.0]]), *build.ENC['cudepth']), 'u_blavg': build.quantize(np.zeros(shape), *build.ENC['u_blavg']), 'v_blavg': build.quantize(np.zeros(shape), *build.ENC['v_blavg'])}
+        lat, lon = (np.full(shape, 40.0), np.full(shape, -100.0))
+        out = aircorr.correct_codes(q, build.ENC, build.quantize, lat, lon, datetime(2026, 7, 1, 18), 'hrrr', 0.03, corr)
+        dec = lambda k: aircorr._decode(out[k], *build.ENC[k])
+        w = dec('wstar')
+        self.assertAlmostEqual(w[0, 0], aircorr._decode(q['wstar'], *build.ENC['wstar'])[0, 0] * np.exp(0.25), delta=0.03)
+        self.assertEqual(out['wstar'][0, 2], 255, 'no W*: no thermals there, nothing corrected')
+        self.assertAlmostEqual(dec('zi')[0, 0], 1500 * np.exp(-0.1), delta=30)
+        self.assertEqual(out['zi'][0, 2], q['zi'][0, 2], "the layer where there's no W* as it was")
+        self.assertAlmostEqual(dec('cubase')[1, 0], 900 + 120, delta=30)
+        self.assertEqual(out['cubase'][0, 1], 255, 'blue stays blue at p 0.5')
+        for k in out:
+            self.assertEqual(out[k].dtype, q[k].dtype)
+
+    def test_off_unless_switched_on(self):
+        import aircorr
+        old = os.environ.pop('AIR_CORRECTIONS', None)
+        try:
+            self.assertFalse(aircorr.on())
+            os.environ['AIR_CORRECTIONS'] = '1'
+            self.assertTrue(aircorr.on())
+        finally:
+            os.environ.pop('AIR_CORRECTIONS', None)
+            if old is not None:
+                os.environ['AIR_CORRECTIONS'] = old
 if __name__ == '__main__':
     unittest.main()

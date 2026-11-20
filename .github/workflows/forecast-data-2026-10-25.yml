@@ -38,6 +38,7 @@ env:
   DATA_S3_KEY: ${{ secrets.DATA_S3_KEY || secrets.ARCHIVE_S3_KEY }}
   DATA_S3_SECRET: ${{ secrets.DATA_S3_SECRET || secrets.ARCHIVE_S3_SECRET }}
   ACC_CLASS: own
+  AIR_CORRECTIONS: "0"
 
 permissions:
   contents: read
