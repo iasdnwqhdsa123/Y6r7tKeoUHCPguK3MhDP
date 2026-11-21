@@ -1729,6 +1729,31 @@ class WaveCloud(unittest.TestCase):
         np.testing.assert_array_equal(got.all(axis=1), [True, True, False, False, False, True, True, True, True, True, False])
         self.assertEqual(wb.CODE, sky.WB_CODE)
 
+    def test_bars_the_model_resolves_itself(self):
+        import wavebars as wb
+        ny, nx, north, step = (64, 110, 37.4, 0.03)
+        iy, ix = np.mgrid[0:ny, 0:nx]
+        lat, lon = (north - iy * step, -110 + ix * step)
+        x, y = ((lon + 108.35) * 111.32 * np.cos(np.radians(lat)), (lat - 36.45) * 111.32)
+        u, v = (15.0, 5.5)
+        along, across = ((x * u + y * v) / np.hypot(u, v), (-x * v + y * u) / np.hypot(u, v))
+        inside = (np.abs(along) < 40) & (np.abs(across) < 30)
+        full = lambda val: np.full((ny, nx), float(val))
+        for kind, wave in (('bars', np.cos(2 * np.pi * along / 15)), ('streets', np.cos(2 * np.pi * across / 12))):
+            low = np.where(inside, 50 + 45 * wave, 12.0)
+            dec = {'wtrap': full(0), 'wlam': full(20000), 'u_wl': full(u), 'v_wl': full(v), 'cloudlow': low, 'zi': full(2200), 'wstar': full(2.4)}
+            D = type('D', (), {'get': lambda self, n, default=None, dec=dec: dec.get(n, default)})()
+            codes = np.full((ny, nx), 100, np.uint8)
+            out = wb.apply(codes, D, full(np.nan), {'north': north, 'step': step}, False)
+            got = np.zeros((ny, nx), bool) if out is None else out == wb.CODE
+            if kind == 'bars':
+                self.assertGreater(int(got.sum()), 150)
+                self.assertTrue(np.all(low[got] >= wb.DECK), 'the crests alone')
+                coarse = wb.apply(codes, D, full(np.nan), {'north': north, 'step': 0.1}, False)
+                self.assertIsNone(coarse, "a coarse grid can't hold them")
+            else:
+                self.assertFalse(got.any(), "streets aren't bars")
+
     def test_the_cloud_layers_again_only_round_the_change(self):
         import build
         import runfields
