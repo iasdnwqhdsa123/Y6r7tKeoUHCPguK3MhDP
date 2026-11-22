@@ -25,6 +25,50 @@ def pt_img(rdir, m, key):
     from PIL import Image
     return np.array(Image.open(io.BytesIO(pack.read_entry(os.path.join(rdir, 'pt.pack'), m['tiles'].index(key)))))
 
+class ProfileRefine(unittest.TestCase):
+
+    def _prof(self):
+        one = lambda v: np.full((2, 3), v, np.float32)
+        levels = np.array([1000, 900, 800, 700], np.float32)
+        z = np.stack([one(110), one(1000), one(1950), one(3000)])
+        t = np.stack([one(24), one(16), one(10), one(2)])
+        return (P.Profile(one(0), one(1013.25), one(25), one(12), one(3), one(0), z, levels, t, t - 8, np.zeros_like(z), np.zeros_like(z)), one)
+
+    def test_levels_go_in_by_height(self):
+        prof, one = self._prof()
+        before = prof.at(one(1500), 't').copy()
+        z = np.stack([one(1400), one(1600), one(-50)])
+        p = np.stack([one(858), one(838), one(1020)])
+        t = np.stack([one(12), one(15), one(30)])
+        n0 = prof.z.shape[0]
+        prof.refine(z, p, t, t - 8, np.stack([one(5), one(6), one(0)]), np.stack([one(0), one(0), one(0)]))
+        self.assertEqual(prof.z.shape[0], n0 + 3)
+        self.assertTrue((np.diff(prof.z, axis=0) > 0).all() and (np.diff(prof.lnp, axis=0) <= 0).all())
+        self.assertTrue((np.diff(prof.zw, axis=0) > 0).all())
+        np.testing.assert_allclose(prof.at(one(1400), 't'), 12, atol=0.001)
+        np.testing.assert_allclose(prof.at(one(1500), 't'), 13.5, atol=0.001)
+        self.assertTrue((np.abs(before - 13.5) > 0.5).all(), 'the pressure levels alone had no inversion there')
+        np.testing.assert_allclose(prof.at(one(1500), 'u'), 5.5, atol=0.001)
+        np.testing.assert_allclose(prof.at(one(3000), 't'), 2, atol=0.001)
+        np.testing.assert_allclose(prof.at(one(2), 't'), 25, atol=0.001)
+        np.testing.assert_array_equal(prof.ztop, prof.z[-1])
+
+    def test_missing_in_a_column_and_too_many(self):
+        prof, one = self._prof()
+        z, t = (np.stack([one(1400)]), np.stack([one(12)]))
+        z[0, 0, 0] = np.nan
+        ref = self._prof()[0].at(one(1400), 't')
+        prof.refine(z, np.stack([one(858)]), t, t - 8)
+        got = prof.at(one(1400), 't')
+        self.assertAlmostEqual(float(got[0, 0]), float(ref[0, 0]), places=3)
+        self.assertAlmostEqual(float(got[1, 1]), 12, places=3)
+        prof, one = self._prof()
+        k = 80
+        z = np.stack([one(200 + 30 * i) for i in range(k)])
+        prof.refine(z, np.stack([one(990 - 3 * i) for i in range(k)]), np.stack([one(23 - 0.2 * i) for i in range(k)]), np.stack([one(10) for _ in range(k)]), most=40)
+        self.assertLessEqual(prof.z.shape[0], 40)
+        np.testing.assert_allclose(prof.at(one(200), 't'), 23, atol=0.001)
+
 class PhysicsTest(unittest.TestCase):
 
     def test_wstar_textbook(self):
