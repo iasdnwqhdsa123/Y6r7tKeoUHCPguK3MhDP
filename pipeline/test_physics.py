@@ -4343,6 +4343,9 @@ class CoreShapeFields(unittest.TestCase):
             self.assertIn(f, build.POINT_FIELDS)
             self.assertIn(f, build.FREE_FIELDS)
             self.assertIn(f, build.NOW_FIELDS)
+        self.assertEqual(build.ENC['coretop'], (0, P.CORE_END, None))
+        self.assertIn('coretop', build.FREE_FIELDS)
+        self.assertIn('coretop', build.NOW_FIELDS)
 
 class ElevatedParcels(unittest.TestCase):
     LEVELS = np.array([1000, 950, 925, 900, 850, 800, 700, 600, 500, 400, 300], np.float32)
