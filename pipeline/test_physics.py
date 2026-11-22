@@ -25,6 +25,80 @@ def pt_img(rdir, m, key):
     from PIL import Image
     return np.array(Image.open(io.BytesIO(pack.read_entry(os.path.join(rdir, 'pt.pack'), m['tiles'].index(key)))))
 
+class NativeLevels(unittest.TestCase):
+
+    def setUp(self):
+        import sources
+        self.S, self.was = (sources, set(sources.NATIVE_LEVELS))
+        from datetime import datetime, timezone
+        from unittest import mock
+        import build
+        self.datetime, self.timezone, self.mock, self.build = (datetime, timezone, mock, build)
+
+    def tearDown(self):
+        self.S.NATIVE_LEVELS.clear()
+        self.S.NATIVE_LEVELS.update(self.was)
+
+    def test_off_unless_named(self):
+        S = self.S
+        S.NATIVE_LEVELS.clear()
+        base = {m: list(S.SOURCES[m].wanted()) for m in ('hrrr', 'icon', 'icond2', 'gfs')}
+        self.assertFalse(any((k[1].endswith((' hybrid level', ' ml')) for ks in base.values() for k in ks)))
+        S.NATIVE_LEVELS.update(('hrrr', 'icon', 'icond2', 'gfs'))
+        for m, extra in (('hrrr', 7 * 6), ('icon', 17 * 4), ('icond2', 16 * 6), ('gfs', 0)):
+            w = S.SOURCES[m].wanted()
+            self.assertEqual(len(w) - len(base[m]), extra, m)
+            self.assertEqual(w[:len(base[m])], base[m], m)
+        self.assertIn(('SPFH', '2 hybrid level'), S.SOURCES['hrrr'].wanted())
+        self.assertIn(('hhl', '64 ml'), S.SOURCES['icond2'].wanted(sounding=False))
+
+    def test_hrrr_reads_its_second_file(self):
+        S = self.S
+        S.NATIVE_LEVELS.add('hrrr')
+        src, run = (S.SOURCES['hrrr'], self.datetime(2026, 11, 22, 18, tzinfo=self.timezone.utc))
+        prs = '1:0:d=2026112218:TMP:2 m above ground:2 hour fcst:\n2:100:d=2026112218:TMP:850 mb:2 hour fcst:\n3:200:d=2026112218:HGT:surface:2 hour fcst:\n'
+        nat = ''.join((f'{j + 1}:{1000 * j}:d=2026112218:{v}:{k} hybrid level:2 hour fcst:\n' for j, (k, v) in enumerate(((k, v) for k in src.native for v in src.native_vars.values()))))
+        asked = []
+
+        def get(url, *a, **kw):
+            asked.append(url)
+            return (nat if 'wrfnatf' in url else prs).encode()
+        want = [('TMP', '850 mb'), *src.native_keys()]
+        with self.mock.patch.object(S.grib, 'http_get', get):
+            sel = src.inventory(run, 2, want)
+        self.assertEqual(len(sel), len(want))
+        self.assertEqual(sel['TMP', '850 mb'].get('part', 'prs'), 'prs')
+        self.assertEqual(sel['PRES', '2 hybrid level']['part'], 'nat')
+        self.assertTrue(any(('wrfnatf02' in u for u in asked)) and any(('wrfprsf02' in u for u in asked)))
+
+        def broken(url, *a, **kw):
+            if 'wrfnatf' in url:
+                raise OSError('404')
+            return prs.encode()
+        with self.mock.patch.object(S.grib, 'http_get', broken), self.mock.patch('builtins.print'):
+            sel = src.inventory(run, 2, want)
+        self.assertEqual(list(sel), [('TMP', '850 mb')])
+
+    def test_dwd_files_and_units(self):
+        import dwd
+        import dwdicon
+        run = self.datetime(2026, 11, 22, 15, tzinfo=self.timezone.utc)
+        self.assertTrue(dwd.level_url(run, 21, 'qv', 60).endswith('/15/qv/icon-d2_germany_regular-lat-lon_model-level_2026112215_021_60_qv.grib2.bz2'))
+        self.assertTrue(dwd.half_level_url(run, 61).endswith('/15/hhl/icon-d2_germany_regular-lat-lon_time-invariant_2026112215_000_61_hhl.grib2.bz2'))
+        parts, combine = dwdicon.recipe(('hhl', '110 ml'))
+        self.assertEqual([p[:3] for p in parts], [('time-invariant', 'hhl', 110), ('time-invariant', 'hhl', 111)])
+        self.assertEqual(float(combine([np.float32(1000), np.float32(1200)])), 1100.0)
+        self.assertEqual(dwdicon.recipe(('qv', '110 ml'))[0], (('model-level', 'qv', 110, dwdicon.NOW),))
+        self.assertTrue(dwdicon.static_url(run, 'hhl', 111).endswith('_2026112215_111_HHL.grib2.bz2'))
+        self.assertTrue(dwdicon.static_url(run, 'hsurf').endswith('_2026112215_HSURF.grib2.bz2'))
+        t, p = (np.full((1, 2, 2), 283.15, np.float32), np.full((1, 2, 2), 90000.0, np.float32))
+        ws = P.mixing_ratio(np.float32(10.0), np.float32(900.0))
+        out = self.build.native_levels({'t': t, 'p': p, 'q': np.full((1, 2, 2), ws / (1 + ws), np.float32), 'z': np.full((1, 2, 2), 1000.0, np.float32)}, np.zeros((2, 2)), None)
+        np.testing.assert_allclose(out['t'], 10.0, atol=0.001)
+        np.testing.assert_allclose(out['p'], 900.0)
+        np.testing.assert_allclose(out['td'], 10.0, atol=0.05)
+        self.assertIsNone(out['u'])
+
 class ProfileRefine(unittest.TestCase):
 
     def _prof(self):
