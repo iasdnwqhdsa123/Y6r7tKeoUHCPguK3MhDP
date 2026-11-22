@@ -3854,7 +3854,7 @@ class IconDwd(unittest.TestCase):
         with self.assertRaises(KeyError):
             dwdicon.recipe(('visibility', ''))
         kinds = {k: {p[3] for p in dwdicon.recipe(k)[0]} for k in src.wanted()}
-        self.assertEqual({k[0] for k, h in kinds.items() if h & {dwdicon.ACC, dwdicon.AVG}}, {'precipitation', 'showers', 'ptype', 'sw', 'shf'})
+        self.assertEqual({k[0] for k, h in kinds.items() if h & {dwdicon.ACC, dwdicon.AVG}}, {'precipitation', 'showers', 'ptype', 'sw', 'shf', 'lhf'})
         _, z = dwdicon.recipe(('geopotential_height', '500 mb'))
         self.assertAlmostEqual(float(z([np.float32(55000.0)])), 55000 / 9.80665, places=2)
         _, w = dwdicon.recipe(('soil_moisture_3_to_9cm', ''))
@@ -4861,3 +4861,83 @@ class HourToHour(unittest.TestCase):
         out = sky.hour_class(q, None, None, enc, False)
         self.assertEqual(int(out['cuclass'][1, 1]), sky.WB_CODE)
         self.assertNotEqual(int(out['cuclass'][0, 0]), sky.WB_CODE)
+
+class MoistWstar(unittest.TestCase):
+
+    def test_buoyancy_flux(self):
+        heat, t = (np.array([100.0, 100.0, 300.0, -40.0, 20.0], np.float32), np.array([25.0] * 5, np.float32))
+        latent = np.array([0.0, 200.0, 100.0, 50.0, 5000.0], np.float32)
+        b = P.buoyancy_flux(heat, latent, t)
+        k = 0.61 * P.CP * (25 + P.K0) / P.LV
+        self.assertAlmostEqual(k, 0.0735, places=3)
+        self.assertAlmostEqual(float(b[0]), 100.0, places=3)
+        self.assertAlmostEqual(float(b[1]), 100 + k * 200, places=2)
+        self.assertAlmostEqual(float(b[3]), -40.0, places=3)
+        self.assertAlmostEqual(float(b[4]), 40.0, places=3)
+        self.assertIs(P.buoyancy_flux(heat, None, t), heat)
+        w0, w1 = (P.wstar(np.float32(100), 1500.0, 25.0, 950.0), P.wstar(P.buoyancy_flux(np.float32(100), np.float32(200), 25.0), 1500.0, 25.0, 950.0))
+        self.assertAlmostEqual(float(w1 / w0), (1 + 2 * k) ** (1 / 3), places=4)
+
+    def test_latent_from_sunshine(self):
+        import build
+        le = build.latent_from_sunshine(np.array([800.0, 800.0, 800.0]), np.array([72.0, 330.0, 600.0]), np.array([1.0, 1.0, 0.0]))
+        self.assertAlmostEqual(float(le[0]), 0.55 * 800 - 72, places=2)
+        self.assertAlmostEqual(float(le[1]), 0.55 * 800 - 330, places=2)
+        self.assertEqual(float(le[2]), 0.0)
+
+class CloudCore(unittest.TestCase):
+    LEVELS = np.array([1000, 950, 900, 850, 800, 750, 700, 650, 600, 550, 500, 400, 300], np.float32)
+
+    def profile(self, lapse_cloud=6.5, rh_cloud=90.0, lid=None):
+        p = self.LEVELS.astype(np.float64)
+        z, t = (np.zeros(len(p)), np.zeros(len(p)))
+        z[0], t[0] = (111.0, 28.0)
+        for k in range(1, len(p)):
+            tk = t[k - 1]
+            for _ in range(3):
+                dz = P.RD * ((t[k - 1] + tk) / 2 + P.K0) / P.G * np.log(p[k - 1] / p[k])
+                lapse = 9.8 if z[k - 1] < 1500 else lapse_cloud
+                tk = t[k - 1] - lapse / 1000 * dz
+            z[k], t[k] = (z[k - 1] + dz, tk)
+        if lid:
+            t = np.where(z >= lid[0], t + lid[1], t)
+        rh = np.where(z < 1500, 45.0, rh_cloud)
+        td = P.dewpoint_from_rh(t.astype(np.float32), rh.astype(np.float32))
+        sh = lambda a: np.asarray(a, np.float32)[:, None, None]
+        one = lambda v: np.full((1, 1), v, np.float32)
+        zero = np.zeros((len(p), 1, 1), np.float32)
+        return P.Profile(one(111.0), one(1000.0), one(28.0), one(float(td[0])), one(0), one(0), sh(z), self.LEVELS, sh(t), sh(td), zero, zero)
+
+    def core(self, prof, depth=2000.0, w=3.0, width=1000.0):
+        one = lambda v: np.full((1, 1), v, np.float32)
+        c5, c10 = P.cloud_core(prof, one(1400.0), one(depth), one(w), one(width), np.ones((1, 1), bool))
+        return (float(c5[0, 0]), float(c10[0, 0]))
+
+    def test_unstable_cloud_layer_keeps_it_going_a_lid_stops_it_dry_air_slows_it(self):
+        moist = self.core(self.profile(lapse_cloud=6.0, rh_cloud=85))
+        self.assertGreater(moist[0], 1.0)
+        self.assertLess(moist[1], moist[0] + 0.5)
+        lid = self.core(self.profile(lapse_cloud=6.0, rh_cloud=85, lid=(2300.0, 4.0)))
+        self.assertEqual(lid[1], 0.0)
+        dry = self.core(self.profile(lapse_cloud=6.0, rh_cloud=60))
+        self.assertLess(dry[0], 0.7 * moist[0])
+        self.assertLess(self.core(self.profile(lapse_cloud=5.0, rh_cloud=95))[0], moist[0])
+        self.assertGreater(self.core(self.profile(lapse_cloud=7.0, rh_cloud=90))[0], 1.6)
+        self.assertLess(self.core(self.profile(lapse_cloud=6.0, rh_cloud=85), width=300.0)[0], self.core(self.profile(lapse_cloud=6.0, rh_cloud=85), width=1200.0)[0])
+
+    def test_only_where_active_shares_bounded(self):
+        prof = self.profile(lapse_cloud=8.5, rh_cloud=95)
+        one = lambda v: np.full((1, 1), v, np.float32)
+        c5, c10 = P.cloud_core(prof, one(1400.0), one(2000.0), one(3.0), one(1000.0), np.zeros((1, 1), bool))
+        self.assertTrue(np.isnan(c5[0, 0]) and np.isnan(c10[0, 0]))
+        c5, c10 = P.cloud_core(prof, one(1400.0), one(50.0), one(3.0), one(1000.0), np.ones((1, 1), bool))
+        self.assertTrue(np.isnan(c5[0, 0]))
+        for v in self.core(prof):
+            self.assertTrue(0 <= v <= P.CLOUD_MAX)
+
+    def test_published(self):
+        import build
+        for f in ('cloud5', 'cloud10'):
+            self.assertEqual(build.ENC[f], (0, P.CLOUD_MAX, None))
+            self.assertIn(f, build.FREE_FIELDS)
+            self.assertIn(f, build.NOW_FIELDS)
