@@ -40,6 +40,11 @@ env:
   ACC_CLASS: own
   AIR_CORRECTIONS: "0"
   NATIVE_LEVELS: "icond2,hrrr"
+  OPS_LAKE: "1"
+  OPS_S3_BUCKET: ${{ secrets.OPS_S3_BUCKET }}
+  OPS_S3_ENDPOINT: ${{ secrets.OPS_S3_ENDPOINT }}
+  OPS_S3_KEY: ${{ secrets.OPS_S3_KEY }}
+  OPS_S3_SECRET: ${{ secrets.OPS_S3_SECRET }}
 
 permissions:
   contents: read
@@ -231,7 +236,7 @@ jobs:
           cache: pip
           cache-dependency-path: pipeline/requirements.txt
 
-      - run: pip install -r pipeline/requirements.txt && cd pipeline && python -m unittest test_physics test_output
+      - run: pip install -r pipeline/requirements.txt && cd pipeline && python -m unittest test_physics test_output test_opslake
         if: steps.need.outputs.go == 'true'
 
       - name: Make room
@@ -413,7 +418,9 @@ jobs:
         id: send
         if: steps.hand.outputs.whole == 'true'
         continue-on-error: true
-        run: .github/scripts/publish-data.sh model "$M"
+        run: |
+          .github/scripts/publish-data.sh model "$M"
+          date -u +%Y-%m-%dT%H:%M:%SZ > "$RUNNER_TEMP/sent-$M" || true
 
       - name: Pack ${{ matrix.model }}'s output
         id: packout
@@ -484,6 +491,17 @@ jobs:
           while read -r id key; do
             gh api -X DELETE "repos/${{ github.repository }}/actions/caches/$id" > /dev/null && echo "deleted cache $key"
           done
+
+      - name: Record ${{ matrix.model }}'s run for scoring
+        if: steps.build.outcome == 'success' && env.OPS_LAKE != '0' && env.OPS_S3_BUCKET != ''
+        continue-on-error: true
+        timeout-minutes: 15
+        env:
+          PUBLISHED: ${{ steps.send.outcome == 'success' && 'true' || '' }}
+          FORCE: ${{ inputs.force && 'true' || '' }}
+        run: |
+          run="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['runId'])" "dist-data/$M/latest.json" 2>/dev/null || true)"
+          .github/scripts/publish-data.sh ops "$M" "$run"
 
   mapdata:
     needs: check

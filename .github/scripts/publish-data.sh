@@ -21,6 +21,11 @@ arch_s3() {
       AWS_MAX_ATTEMPTS=5 aws --endpoint-url "$ARCHIVE_S3_ENDPOINT" "$@"
   fi
 }
+ops_on() { [ -n "${OPS_S3_BUCKET:-}" ] && [ -n "${OPS_S3_ENDPOINT:-}" ] && [ -n "${OPS_S3_KEY:-}" ] && [ -n "${OPS_S3_SECRET:-}" ]; }
+opss3() {
+  AWS_ACCESS_KEY_ID="$OPS_S3_KEY" AWS_SECRET_ACCESS_KEY="$OPS_S3_SECRET" AWS_DEFAULT_REGION=auto \
+    AWS_MAX_ATTEMPTS=5 aws --endpoint-url "$OPS_S3_ENDPOINT" "$@"
+}
 arch_bucket() { if [ "$1" = data ]; then echo "$DATA_S3_BUCKET"; else echo "$ARCHIVE_S3_BUCKET"; fi; }
 arch_prefix() { if [ "$1" = data ]; then echo "archive/"; else echo "${DATA_PATH_SECRET:+$DATA_PATH_SECRET/}"; fi; }
 archive_send() {
@@ -256,5 +261,50 @@ archive-run)
     rm -rf "dist-data/$m" "dist-data/free/$m" "dist-data/free/now/$m"
   done
   ;;
-*) echo "usage: publish-data.sh model|record|sync|r2|archive|archive-run" >&2; exit 2 ;;
+ops)
+  m="${2:?model}" run="${3:-}"
+  ops_on || { echo "ops: no bucket set"; exit 0; }
+  [[ "$run" =~ ^[0-9]{10}$ ]] || { echo "::warning::ops: $m: no run ($run)"; exit 0; }
+  day="${run:0:8}" hh="${run:8:2}" O="${RUNNER_TEMP:-/tmp}/ops"
+  if [ "${FORCE:-}" != true ]; then
+    if there="$(opss3 s3api list-objects-v2 --bucket "$OPS_S3_BUCKET" --prefix "ops/$m/$day/$hh/" --query "Contents[?ends_with(Key, '/done.json')].Key" --output text 2> /tmp/ops-ls.err)"; then
+      for k in $there; do
+        [ "$k" != None ] || continue
+        if opss3 s3 cp "s3://$OPS_S3_BUCKET/$k" - 2> /dev/null | jq -e '.complete != false' > /dev/null 2>&1; then
+          echo "ops: $m $run recorded already ($k)"; exit 0
+        fi
+      done
+    else
+      echo "::warning::ops: $m $run: the bucket not listed, recorded again: $(head -c 300 /tmp/ops-ls.err)"
+    fi
+  fi
+  grids=""
+  if opss3 s3api head-object --bucket "$OPS_S3_BUCKET" --key "ops/$m/grids/$day.json" > /dev/null 2> /tmp/ops-head.err; then grids=--day-has-grids
+  elif ! grep -q "404\|NoSuchKey\|Not Found" /tmp/ops-head.err; then
+    echo "::warning::ops: $m $run: the day's grids marker not read, the grids left out: $(head -c 300 /tmp/ops-head.err)"; grids=--day-has-grids
+  fi
+  sent="$(cat "${RUNNER_TEMP:-/tmp}/sent-$m" 2> /dev/null || true)"
+  rm -rf "$O"
+  python3 pipeline/opslake.py write "dist-data/$m/_hours" "$run" "$O" --model "$m" --build "$RUN-$ATTEMPT" \
+    ${PUBLISHED:+--published} ${sent:+--published-t "$sent"} $grids || { echo "::warning::ops: $m $run not written"; rm -rf "$O"; exit 0; }
+  put() { # key, file: written once
+    local err
+    if err="$(opss3 s3api put-object --bucket "$OPS_S3_BUCKET" --key "$1" --body "$2" --if-none-match '*' 2>&1 > /dev/null)"; then return 0; fi
+    if grep -q "PreconditionFailed\|ConditionalRequestConflict\|(412)\|(409)" <<<"$err"; then echo "ops: $1 there already"; return 0; fi
+    echo "::warning::ops: $1 not sent: $err"
+    return 1
+  }
+  t0=$SECONDS ok=true
+  while IFS= read -r f; do put "${f#"$O"/}" "$f" || ok=false; done < <(find "$O" -type f -not -name done.json -not -path "*/grids/*" | sort)
+  if [ "$ok" = true ]; then
+    while IFS= read -r f; do put "${f#"$O"/}" "$f" || ok=false; done < <(find "$O" -type f -name done.json | sort)
+  fi
+  if [ "$ok" = true ]; then
+    while IFS= read -r f; do put "${f#"$O"/}" "$f" || ok=false; done < <(find "$O" -type f -path "*/grids/*" | sort)
+  fi
+  echo "ops: $m $run: $(du -sh "$O" | cut -f1) in $((SECONDS - t0)) s"
+  rm -rf "$O"
+  [ "$ok" = true ] || exit 1
+  ;;
+*) echo "usage: publish-data.sh model|record|sync|r2|archive|archive-run|ops" >&2; exit 2 ;;
 esac
