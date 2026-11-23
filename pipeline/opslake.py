@@ -143,7 +143,7 @@ def _read_hour(v):
                     bl[j] = h[name][y0:y1, x0:x1]
     return (elev, st, slim, bl)
 
-def write(hours_dir, run, out, model=None, build_id=None, published=False, day_has_grids=False, region=None, stations=None, blend_in=None, workers=None, published_t=None, complete=None):
+def write(hours_dir, run, out, model=None, build_id=None, published=False, day_has_grids=False, region=None, stations=None, blend_in=None, workers=None, published_t=None, complete=None, cells=None):
     t0 = time.time()
     model = model or os.path.basename(os.path.dirname(os.path.abspath(hours_dir)))
     region = region or build.REGIONS[model]
@@ -174,7 +174,7 @@ def write(hours_dir, run, out, model=None, build_id=None, published=False, day_h
     slim_hours = [(v, ld) for v, ld in hours if ld in SLIM_LEADS] if grids_due(model, run, day_has_grids) else []
     win = conus_window(region) if blend_in and complete and (model != BLEND_BASE) else None
     bl_hours = [(v, ld) for v, ld in hours if ld in BLEND_LEADS] if win else []
-    idx, iy, ix = verify.station_cells(model, stations, region)
+    idx, iy, ix = cells if cells is not None else verify.station_cells(model, stations, region)
     r_nb = verify.near_cells(step)
     st_codes = np.full((len(st_hours), len(idx), len(STATION_FIELDS)), 255, np.uint8)
     slim = None
