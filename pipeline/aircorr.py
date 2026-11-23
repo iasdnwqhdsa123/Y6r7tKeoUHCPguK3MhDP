@@ -83,8 +83,8 @@ def prepare(corr: dict) -> dict:
         m['_flat'] = _flatten_all(m['trees'])
     return corr
 
-def relief_grid(elev: np.ndarray, step: float) -> np.ndarray:
-    r = int(round(RELIEF_DEG / step))
+def relief_grid(elev: np.ndarray, step: float, deg: float=RELIEF_DEG) -> np.ndarray:
+    r = int(round(deg / step))
     size = 2 * r + 1
     known = np.isfinite(elev)
     hi = maximum_filter(np.where(known, elev, -np.inf), size=size, mode='constant', cval=-np.inf)
