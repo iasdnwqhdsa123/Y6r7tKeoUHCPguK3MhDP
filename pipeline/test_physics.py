@@ -3511,8 +3511,11 @@ class IconD2Omega(unittest.TestCase):
         def theirs(urls, static, grid, keys, workers=8):
             asked.append(list(keys))
             return {k: f'om:{k[0]}' for k in keys}
-        with mock.patch.object(om, 'fetch_hour', theirs), mock.patch.object(dwd, 'message', lambda u: got.append(u) or u):
-            out = src.fetch(run, 9, wanted)
+        import sources
+        with mock.patch.object(sources, 'NATIVE_LEVELS', set()):
+            wanted = src.wanted()
+            with mock.patch.object(om, 'fetch_hour', theirs), mock.patch.object(dwd, 'message', lambda u: got.append(u) or u):
+                out = src.fetch(run, 9, wanted)
         self.assertFalse([k for k in asked[0] if k[0] == 'omega'])
         self.assertEqual(len(got), len(src.levels))
         self.assertIsInstance(out['omega', '700 mb'], dwd.Field)
@@ -3521,7 +3524,7 @@ class IconD2Omega(unittest.TestCase):
 
         def gone(u):
             raise IOError('404')
-        with mock.patch.object(om, 'fetch_hour', theirs), mock.patch.object(dwd, 'message', gone), redirect_stdout(io.StringIO()) as log:
+        with mock.patch.object(sources, 'NATIVE_LEVELS', set()), mock.patch.object(om, 'fetch_hour', theirs), mock.patch.object(dwd, 'message', gone), redirect_stdout(io.StringIO()) as log:
             out = src.fetch(run, 9, wanted)
         self.assertFalse([k for k in out if k[0] == 'omega'])
         self.assertEqual(out['temperature', '700 mb'], 'om:temperature')
