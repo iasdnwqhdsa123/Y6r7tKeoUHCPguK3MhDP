@@ -41,7 +41,7 @@ env:
   AIR_CORRECTIONS: "0"
   NATIVE_LEVELS: "icond2,hrrr"
   OPS_LAKE: "1"
-  OPS_S3_BUCKET: ${{ secrets.OPS_S3_BUCKET }}
+  OPS_S3_BUCKET: ${{ secrets.OPS_S3_BUCKET || 'ops' }}
   OPS_S3_ENDPOINT: ${{ secrets.R2_ENDPOINT || secrets.DATA_S3_ENDPOINT }}
   OPS_S3_KEY: ${{ secrets.OPS_S3_KEY }}
   OPS_S3_SECRET: ${{ secrets.OPS_S3_SECRET }}
@@ -493,7 +493,7 @@ jobs:
           done
 
       - name: Record ${{ matrix.model }}'s run for scoring
-        if: steps.build.outcome == 'success' && env.OPS_LAKE != '0' && env.OPS_S3_BUCKET != ''
+        if: steps.build.outcome == 'success' && env.OPS_LAKE != '0' && env.OPS_S3_KEY != ''
         continue-on-error: true
         timeout-minutes: 15
         env:
