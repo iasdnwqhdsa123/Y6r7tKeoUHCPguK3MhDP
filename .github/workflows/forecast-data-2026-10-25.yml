@@ -42,7 +42,7 @@ env:
   NATIVE_LEVELS: "icond2,hrrr"
   OPS_LAKE: "1"
   OPS_S3_BUCKET: ${{ secrets.OPS_S3_BUCKET }}
-  OPS_S3_ENDPOINT: ${{ secrets.OPS_S3_ENDPOINT }}
+  OPS_S3_ENDPOINT: ${{ secrets.R2_ENDPOINT || secrets.DATA_S3_ENDPOINT }}
   OPS_S3_KEY: ${{ secrets.OPS_S3_KEY }}
   OPS_S3_SECRET: ${{ secrets.OPS_S3_SECRET }}
 
