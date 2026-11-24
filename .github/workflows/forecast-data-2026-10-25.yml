@@ -39,7 +39,7 @@ env:
   DATA_S3_SECRET: ${{ secrets.DATA_S3_SECRET || secrets.ARCHIVE_S3_SECRET }}
   ACC_CLASS: own
   AIR_CORRECTIONS: "0"
-  NATIVE_LEVELS: "icond2,hrrr"
+  NATIVE_LEVELS: "icond2,icon,hrrr"
   OPS_LAKE: "1"
   OPS_S3_BUCKET: ${{ secrets.OPS_S3_BUCKET || 'ops' }}
   OPS_S3_ENDPOINT: ${{ secrets.R2_ENDPOINT || secrets.DATA_S3_ENDPOINT }}

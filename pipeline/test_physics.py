@@ -45,12 +45,15 @@ class NativeLevels(unittest.TestCase):
         base = {m: list(S.SOURCES[m].wanted()) for m in ('hrrr', 'icon', 'icond2', 'gfs')}
         self.assertFalse(any((k[1].endswith((' hybrid level', ' ml')) for ks in base.values() for k in ks)))
         S.NATIVE_LEVELS.update(('hrrr', 'icon', 'icond2', 'gfs'))
-        for m, extra in (('hrrr', 7 * 6), ('icon', 17 * 4), ('icond2', 16 * 6), ('gfs', 0)):
+        for m, extra in (('hrrr', 7 * 6), ('icon', 11 * 4), ('icond2', 12 * 6), ('gfs', 0)):
             w = S.SOURCES[m].wanted()
             self.assertEqual(len(w) - len(base[m]), extra, m)
             self.assertEqual(w[:len(base[m])], base[m], m)
         self.assertIn(('SPFH', '2 hybrid level'), S.SOURCES['hrrr'].wanted())
         self.assertIn(('hhl', '64 ml'), S.SOURCES['icond2'].wanted(sounding=False))
+        icon = S.SOURCES['icon']
+        self.assertTrue(icon.native_on(icon.native_to) and (not icon.native_on(icon.native_to + 3)) and icon.native_on())
+        self.assertTrue(S.SOURCES['hrrr'].native_on(48))
 
     def test_hrrr_reads_its_second_file(self):
         S = self.S
@@ -4150,6 +4153,30 @@ class IconDwd(unittest.TestCase):
         with self.assertRaises(KeyError):
             dwdicon.recipe(('cape', '850 mb'))
 
+    def test_own_levels_from_dwd(self):
+        from datetime import datetime, timedelta, timezone
+        from unittest import mock
+        import dwdicon
+        import om
+        import sources
+        src = sources.SOURCES['icon']
+        now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+        run = now - timedelta(hours=now.hour % 6 + 6)
+        asked = []
+        mine = lambda run, fh, prev, keys, cache_dir=None: asked.append((fh, sorted(keys))) or {k: 'dwd' for k in keys}
+        theirs = lambda urls, static, grid, keys, workers=8: {k: 'om' for k in keys}
+        with mock.patch.object(sources, 'NATIVE_LEVELS', {'icon'}), mock.patch.object(dwdicon, 'fetch_step', mine), mock.patch.object(dwdicon, 'has_run', lambda r: True), mock.patch.object(om, 'fetch_hour', theirs), mock.patch.dict(os.environ, {'ICON_DWD': '0'}):
+            keys = src.wanted()
+            own = sorted((k for k in keys if k[1].endswith(src.native_label)))
+            self.assertEqual(len(own), len(src.native) * len(src.native_vars))
+            out = src.fetch(run, 5, keys)
+            self.assertEqual(asked, [(5, own)])
+            self.assertEqual({out[k] for k in own}, {'dwd'})
+            asked.clear()
+            out = src.fetch(run, src.native_to + 3, keys)
+            self.assertEqual(asked, [])
+            self.assertFalse(any((k in out for k in own)))
+
     def test_dwds_files_else_open_meteos_copy(self):
         from contextlib import redirect_stdout
         from datetime import datetime, timedelta, timezone
@@ -4167,7 +4194,8 @@ class IconDwd(unittest.TestCase):
         got = []
         mine = lambda run, fh, prev, keys, cache_dir=None: got.append((fh, prev)) or {k: 'dwd' for k in keys}
         out_om = []
-        with mock.patch.object(dwdicon, 'fetch_step', mine), mock.patch.object(om, 'fetch_hour', theirs), mock.patch.dict(os.environ, {'ICON_DWD': '1'}), mock.patch.object(sources.grib, 'exists', lambda u: any((u.endswith(f'{run + timedelta(hours=h):%Y-%m-%dT%H%M}{x}.om') for h in out_om for x in ('', '_model-level')))):
+        with mock.patch.object(dwdicon, 'fetch_step', mine), mock.patch.object(om, 'fetch_hour', theirs), mock.patch.dict(os.environ, {'ICON_DWD': '1'}), mock.patch.object(sources, 'NATIVE_LEVELS', set()), mock.patch.object(sources.grib, 'exists', lambda u: any((u.endswith(f'{run + timedelta(hours=h):%Y-%m-%dT%H%M}{x}.om') for h in out_om for x in ('', '_model-level')))):
+            keys = src.wanted()
             out = src.fetch(run, 81, keys)
             self.assertEqual(got, [(81, 78)])
             self.assertEqual(out.pop(sources.VIA), 'dwd')
