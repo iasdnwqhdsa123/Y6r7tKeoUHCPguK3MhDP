@@ -1939,7 +1939,7 @@ class LeeWaveFields(unittest.TestCase):
             t = out[f't{ft}']
             lo, hi, _ = build.ENC[f't{ft}']
             self.assertTrue((t > lo).all() and (t < hi).all(), (ft, t))
-            self.assertIn(f't{ft}', build.NOW_FIELDS)
+            self.assertNotIn(f't{ft}', build.NOW_FIELDS)
         self.assertTrue((out['t24000'] < out['t8000'] - 20).all())
         s, lv, levels, _ = grid_column(n=3, shear=3.0, lapse=0.0098)
         s.update(ps=one(1013.25), sw=one(0), shf=one(0), hpbl=one(200))
@@ -1949,7 +1949,7 @@ class LeeWaveFields(unittest.TestCase):
         self.assertTrue((sp > 10).all() and (sp < 30).all(), sp)
         self.assertTrue(np.isnan(neutral['u_wl']).all() and np.isnan(neutral['v_wl']).all())
         self.assertEqual(build.ENC['u_wl'], (-60, 60, None))
-        self.assertIn('u_wl', build.NOW_FIELDS)
+        self.assertNotIn('u_wl', build.NOW_FIELDS)
         sp = [float(np.hypot(out[f'u_g{m}'], out[f'v_g{m}'])[1, 1]) for m in build.COL_AGL_M]
         self.assertEqual(sp, sorted(sp))
         self.assertTrue(10 < sp[0] < sp[-1] < 30, sp)
@@ -1964,11 +1964,13 @@ class LeeWaveFields(unittest.TestCase):
             n = out[name]
             self.assertTrue(((n > 0.005) & (n < 0.02)).all(), (name, n))
             self.assertTrue(np.isnan(neutral[name]).all())
-            self.assertIn(name, build.NOW_FIELDS)
+            self.assertNotIn(name, build.NOW_FIELDS)
         self.assertEqual(build.ENC['wtrap'], (0, 100, None))
         self.assertEqual(build.ENC['wlam'], (0, 60000, None))
         for f in ('wtrap', 'wlam'):
             self.assertNotIn(f, build.FREE_FIELDS)
+        self.assertFalse((build.FREE_FIELDS | build.NOW_FIELDS) & build.WAVE_PRO_FIELDS)
+        self.assertTrue({'wtrap', 'wlam', 'u_wl', 't8000', 'wv12000', *build.STAB_NAMES} <= build.WAVE_PRO_FIELDS)
 
 class NightStorms(unittest.TestCase):
 
