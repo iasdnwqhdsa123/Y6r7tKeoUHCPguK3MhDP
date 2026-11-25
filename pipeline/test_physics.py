@@ -295,6 +295,33 @@ class WaterTemperature(unittest.TestCase):
 
 class EcmwfNineKm(unittest.TestCase):
 
+    def test_a_run_out_on_any_mirror(self):
+        from datetime import datetime, timezone
+        from unittest import mock
+        import grib
+        from sources import IFS, SOURCES
+        src, run = (SOURCES['ecmwf'], datetime(2026, 11, 21, 0, tzinfo=timezone.utc))
+        self.assertEqual(IFS.MIRRORS[0], 'https://storage.googleapis.com/ecmwf-open-data')
+        asked = []
+
+        def exists(url):
+            asked.append(url)
+            return url.startswith('https://ecmwf-forecasts')
+        was = IFS.mirror
+        try:
+            IFS.mirror = 0
+            with mock.patch.object(grib, 'exists', exists):
+                self.assertTrue(src.landed(run, 12))
+                self.assertEqual(IFS.mirror, 1)
+                self.assertEqual(asked[0], 'https://storage.googleapis.com/ecmwf-open-data/20261121/00z/ifs/0p1/oper/20261121000000-12h-oper-fc-pl.index')
+                asked.clear()
+                self.assertTrue(src.landed(run, 12))
+                self.assertEqual(len(asked), 1)
+            with mock.patch.object(grib, 'exists', lambda url: False):
+                self.assertFalse(src.landed(run, 12))
+        finally:
+            IFS.mirror = was
+
     def test_regular_grid_maps_as_the_kd_tree_does(self):
         import build
         lat1, lon1 = (np.arange(90, -90.5, -1.0), np.arange(-180, 180, 1.0))
