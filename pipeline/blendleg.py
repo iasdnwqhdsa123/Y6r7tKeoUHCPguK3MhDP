@@ -188,6 +188,9 @@ def blend_run(hours_dir: str, run: str, bundle: dict, member_paths: list, region
             json.dump(done, f, separators=(',', ':'))
     return done
 
+def turned_off(text: str) -> list[str]:
+    return [f for f in (t.strip() for t in (text or '').split(',')) if f in blend.FIELDS]
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest='cmd', required=True)
@@ -212,6 +215,7 @@ def main(argv=None) -> int:
     r.add_argument('--issued')
     r.add_argument('--workers', type=int, default=3)
     r.add_argument('--build')
+    r.add_argument('--off', default='', help='the fields the pointer turns off for this region (its fields_off), comma-separated')
     x = ap.parse_args(argv)
     if x.cmd == 'base':
         runs = runs_whole(x.hours, x.region) if os.path.isdir(x.hours) else []
@@ -229,6 +233,11 @@ def main(argv=None) -> int:
         for k in plan(bundle, listing, x.region, x.run, issued).values():
             print(k)
         return 0
+    for f in turned_off(x.off):
+        fd = bundle['regions'][x.region]['fields'].get(f)
+        if fd is not None:
+            fd['off'] = True
+            log(f"{x.region}: {f} off (its source code moved since its training): the base's own")
     paths = sorted((os.path.join(x.members, f) for f in os.listdir(x.members) if f.endswith('.npz'))) if os.path.isdir(x.members) else []
     done = blend_run(x.hours, x.run, bundle, paths, x.region, x.out, issued, x.workers, x.build)
     return 0 if done is not None else 1

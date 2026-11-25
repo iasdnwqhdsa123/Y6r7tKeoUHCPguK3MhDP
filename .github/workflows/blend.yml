@@ -102,8 +102,10 @@ jobs:
             done
             echo "blend: $r $run, members: $(ls /tmp/members | tr '\n' ' ')"
             O="$RUNNER_TEMP/blend"
+            off="$(jq -r --arg r "$r" '(.fields_off[$r] // []) | join(",")' /tmp/pointer.json 2> /dev/null || true)"
             if ! python3 pipeline/blendleg.py run --hours "dist-data/$m/_hours" --run "$run" --bundle /tmp/bundle.json --sha256 "$SHA" \
-                 --members /tmp/members --region "$r" --out "$O" --issued "$issued" --workers 3 --build "${{ github.run_id }}-${{ github.run_attempt }}"; then
+                 --members /tmp/members --region "$r" --out "$O" --issued "$issued" --workers 3 --build "${{ github.run_id }}-${{ github.run_attempt }}" \
+                 --off "$off"; then
               echo "::warning::blend: $r $run not blended"; fail=1; continue
             fi
             ok=true

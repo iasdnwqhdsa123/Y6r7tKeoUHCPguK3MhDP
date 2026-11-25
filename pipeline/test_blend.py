@@ -255,6 +255,16 @@ class Blend(unittest.TestCase):
         bh = base_hour(rng, **kw)
         return (bh, mem, B.blend(bh, mem, b or self.b, native=native))
 
+    def test_a_field_the_guard_turned_off_is_the_bases(self):
+        import blendleg
+        self.assertEqual(blendleg.turned_off('t2, wind,bogus,'), ['t2', 'wind'])
+        b = copy.deepcopy(self.b)
+        b['regions']['conus']['fields']['t2']['off'] = True
+        bh, mem, res = self.run_blend(b=b)
+        self.assertNotIn('t2', res['fields_blended'])
+        self.assertIn('guard', res['fields_from_base']['t2'])
+        np.testing.assert_array_equal(res['codes']['t2'], bh['codes']['t2'])
+
     def test_it_stays_inside_the_debiased_members(self):
         bh, mem, res = self.run_blend()
         self.assertEqual(set(res['fields_blended']), set(B.FIELDS))
@@ -505,3 +515,92 @@ class Blend(unittest.TestCase):
         np.testing.assert_allclose(p, [B.CU_EPS, 1 - B.CU_EPS])
 if __name__ == '__main__':
     unittest.main()
+
+class Regrid(unittest.TestCase):
+
+    def setUp(self):
+        self.lat = np.arange(30.0, 40.01, 1.0)[::-1]
+        self.lon = np.arange(-100.0, -89.99, 1.0)
+        self.region = (-99.0, 32.0, -92.0, 38.0, 0.25)
+
+    def test_bilinear_is_exact_on_a_plane_and_skips_missing_cells(self):
+        Y, X = np.meshgrid(self.lat, self.lon, indexing='ij')
+        plane = (10 + 3 * (Y - 30) + 2 * (X + 100)).astype(np.float32)
+        rg = B.regridder(self.lat, self.lon, self.region, bilinear=True)
+        self.assertIsInstance(rg, B.Bilinear)
+        out = rg(plane)
+        tlon, tlat = build.target_grid(self.region)
+        gy, gx = np.meshgrid(tlat, tlon, indexing='ij')
+        np.testing.assert_allclose(out, 10 + 3 * (gy - 30) + 2 * (gx + 100), atol=0.0001)
+        holed = plane.copy()
+        holed[3, 4] = 255
+        out2 = rg(holed)
+        self.assertLessEqual(int((~np.isfinite(out2)).sum()), 1)
+        near_hole = np.isfinite(out2) & (np.abs(out2 - out) > 0.0001)
+        self.assertTrue(near_hole.any())
+
+    def test_codes_bilinear_but_presence_and_classes_nearest(self):
+        n, m = (len(self.lat), len(self.lon))
+        t2 = np.tile(np.arange(m, dtype=np.uint8) * 20, (n, 1))
+        cubase = np.full((n, m), 255, np.uint8)
+        cubase[:, :5] = 100
+        cls = np.tile((np.arange(m) % 3).astype(np.uint8), (n, 1))
+        codes = {'t2': t2, 'cubase': cubase, 'cuclass': cls}
+        rg = B.regridder(self.lat, self.lon, self.region, bilinear=True)
+        q = B.regrid_codes(codes, rg)
+        near = B.regrid_codes(codes, B.regridder(self.lat, self.lon, self.region))
+        self.assertGreater(len(np.unique(q['t2'])), len(np.unique(near['t2'])), "t2 between the source cells' codes")
+        np.testing.assert_array_equal(q['cubase'] != 255, near['cubase'] != 255)
+        np.testing.assert_array_equal(q['cuclass'], near['cuclass'])
+
+    def test_height_moved(self):
+        x = np.array([20.0, 20.0, 20.0])
+        np.testing.assert_allclose(B.height_moved('t2', x, [0, 1000, np.nan], [1000, 0, 500]), [13.5, 26.5, 20.0])
+        np.testing.assert_allclose(B.height_moved('td2', x, 0, 1000), 18.2)
+        np.testing.assert_array_equal(B.height_moved('wind', x, 0, 1000), x)
+
+class ReliefBands(unittest.TestCase):
+
+    def test_cells_by_relief_band(self):
+        bins = {'lead': [0, 6, 12], 'solar': ['night', [0, 12], [12, 24]], 'regime': list(B.REGIMES)}
+        n0 = B.n_cells(bins)
+        rb = dict(bins, relief=[0, 150, 500, 20000])
+        self.assertEqual(B.n_cells(rb), n0 * 3)
+        cond = {'lead_h': 7.0, 'solar_h': np.array([13.0, 13.0, 13.0, 13.0]), 'sun_elev': np.array([40.0] * 4), 'regime': np.array([1, 1, 1, -1]), 'relief5km': np.array([20.0, 300.0, np.nan, 900.0])}
+        plain = B.cell_index(cond, bins)
+        got = B.cell_index(cond, rb)
+        np.testing.assert_array_equal(got[:3], plain[:3] * 3 + np.array([0, 1, 0]))
+        self.assertEqual(got[3], -1)
+        self.assertTrue((got[:3] < B.n_cells(rb)).all())
+
+    def test_tpi_and_at_nodes(self):
+        e = np.full((21, 21), 1000.0)
+        e[10, 10] = 700.0
+        t = B.tpi(e, 0.01)
+        self.assertLess(t[10, 10], -250)
+        self.assertAlmostEqual(t[0, 0], 0.0, places=6)
+        breg = (-100.0, 40.0, -99.8, 40.2, 0.01)
+        np.testing.assert_allclose(B.at_nodes(e, breg, np.array([40.1, 45.0]), np.array([-99.9, -99.9])), [700.0, np.nan])
+
+class ScaleSeparated(unittest.TestCase):
+
+    def test_the_base_keeps_its_mesoscale(self):
+        ny, nx = (40, 40)
+        yy, xx = np.mgrid[0:ny, 0:nx]
+        large = 20 + 0.05 * xx
+        detail = np.where((xx > 18) & (xx < 22), 3.0, 0.0)
+        base = large + detail
+        coarse = large + 1.0
+        raw = {'hrrr': base, 'gfs': coarse}
+        W = np.stack([np.full((ny, nx), 0.3), np.full((ny, nx), 0.7)])
+        plain = 0.3 * base + 0.7 * coarse
+        out = B.scale_separated(plain, W, raw, 'hrrr', ['hrrr', 'gfs'], (ny, nx), 0.03)
+        self.assertGreater(float((out - plain)[20, 20]), 1.5)
+        np.testing.assert_allclose((out - plain)[10:30, 0:6], 0.0, atol=1e-09)
+        W1 = np.stack([np.ones((ny, nx)), np.zeros((ny, nx))])
+        np.testing.assert_allclose(B.scale_separated(base, W1, raw, 'hrrr', ['hrrr', 'gfs'], (ny, nx), 0.03), base, atol=1e-09)
+        sp = np.full((ny, nx), 0.5)
+        u, v = (np.full((ny, nx), 0.5), np.zeros((ny, nx)))
+        u[20, 20], sp[20, 20] = (-8.0, 8.0)
+        got = B.scale_separated(np.zeros((ny, nx)), W, {'hrrr': (sp, u, v), 'gfs': (sp, u, v)}, 'hrrr', ['hrrr', 'gfs'], (ny, nx), 0.03)
+        self.assertGreaterEqual(float(got.min()), 0.0)
