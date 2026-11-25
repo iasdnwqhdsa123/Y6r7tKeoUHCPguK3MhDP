@@ -117,6 +117,22 @@ class OpsRecord(unittest.TestCase):
         np.testing.assert_array_equal(vidx, idx)
         np.testing.assert_array_equal(vcodes, codes[:, :, :len(verify.FIELDS)])
 
+    def test_smoothed_station_fields(self):
+        self.assertTrue(set(verify.SMOOTHED) <= set(opslake.STATION_FIELDS))
+        self.assertEqual((verify.smooth_cells(0.03), verify.smooth_cells(0.1), verify.smooth_cells(0.25)), (6, 1, 0))
+        a = np.full((12, 12), 255, np.uint8)
+        a[2:10, 2:10] = np.arange(64).reshape(8, 8)
+
+        class H(dict):
+            files = property(lambda self: list(self))
+        h = H(t2=a)
+        got = verify.sample_hour(h, np.array([5, 2, 0]), np.array([5, 2, 0]), 0, ('t2', 't2_s'), 1)
+        self.assertEqual(list(got[:, 0]), [a[5, 5], a[2, 2], 255])
+        self.assertEqual(int(got[0, 1]), int(np.round(a[4:7, 4:7].mean())))
+        self.assertEqual(int(got[1, 1]), int(np.round(np.mean([a[2, 2], a[2, 3], a[3, 2], a[3, 3]]))))
+        self.assertEqual(int(got[2, 1]), 255)
+        np.testing.assert_array_equal(verify.box_mean_at(a, [5], [5], 0), [a[5, 5]])
+
     def test_slim_mask(self):
         lons, lats = build.target_grid(REGION)
         lat2d, lon2d = np.meshgrid(lats, lons, indexing='ij')
