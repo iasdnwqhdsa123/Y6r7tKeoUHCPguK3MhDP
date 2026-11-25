@@ -15,7 +15,7 @@ import build
 import opslake
 import verify
 UTC = timezone.utc
-REGIONS = {'conus': {'base': 'hrrr', 'model': 'blend', 'lead_max': 48, 'run_hours': (0, 6, 12, 18), 'box': None}, 'sh': {'base': 'ecmwf', 'model': 'blendsh', 'lead_max': 48, 'run_hours': (0, 12), 'box': (112.0, -49.0, 179.75, -18.5)}}
+REGIONS = {'conus': {'base': 'hrrr', 'model': 'blend', 'lead_max': 48, 'run_hours': (0, 6, 12, 18), 'box': None}, 'sh': {'base': 'ecmwf', 'model': 'blendsh', 'lead_max': 48, 'run_hours': (0, 12), 'box': (112.0, -49.0, 179.75, -18.5)}, 'alps': {'base': 'icond2', 'model': 'blendalps', 'lead_max': 48, 'run_hours': (0, 6, 12, 18), 'box': (5.5, 43.5, 16.0, 48.5)}}
 CLASS_CODES = ('cuclass',)
 KEEP_OUT = ('overdev', 'elevation')
 KEY = re.compile('^cache/blendin/v=(\\d+)/([a-z0-9]+)/(\\d{10})/([a-z]+)\\.npz$')

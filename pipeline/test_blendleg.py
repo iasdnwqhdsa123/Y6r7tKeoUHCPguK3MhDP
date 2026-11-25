@@ -153,6 +153,13 @@ class Regions(unittest.TestCase):
                 self.assertTrue(reg[0] <= w + reg[4] and reg[2] >= e - reg[4] and (reg[1] <= s + reg[4]) and (reg[3] >= n - reg[4]))
         self.assertEqual({k: v[0] for k, v in opslake.BLEND_REGIONS.items()}, {k: v['base'] for k, v in L.REGIONS.items()})
         self.assertEqual(opslake.BLEND_REGIONS['sh'][1], L.REGIONS['sh']['box'])
+        w = lambda m: sorted(opslake.blend_windows(m, build.REGIONS[m][:5]))
+        self.assertEqual(w('gfs'), ['conus'])
+        self.assertEqual(w('icon'), ['conus', 'sh'])
+        self.assertEqual(w('ecmwf'), ['alps', 'conus'])
+        self.assertEqual(w('arome'), ['alps'])
+        self.assertEqual(w('icond2'), [])
+        self.assertEqual(w('hrrr'), [])
 
 class Pointers(unittest.TestCase):
 

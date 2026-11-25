@@ -37,7 +37,7 @@ jobs:
           ops s3 cp "s3://$OPS_S3_BUCKET/$key" /tmp/bundle.json > /dev/null || { echo "::warning::blend: its bundle not read"; exit 0; }
           names="$(gh api "repos/${{ github.repository }}/actions/runs/$FORECAST_RUN/artifacts?per_page=100" --jq '[.artifacts[] | select(.expired | not) | .name] | join(" ")')"
           regions=""
-          for pair in conus:hrrr sh:ecmwf; do
+          for pair in conus:hrrr sh:ecmwf alps:icond2; do
             r="${pair%%:*}" m="${pair##*:}"
             jq -e --arg r "$r" '.regions[$r] != null' /tmp/bundle.json > /dev/null || continue
             case " $names " in *" store-$m "*) regions="$regions $pair" ;; esac
