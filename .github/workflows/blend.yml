@@ -1,0 +1,116 @@
+name: Blend
+on:
+  workflow_run:
+    workflows: ["Forecast data"]
+    types: [completed]
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: blend-shadow
+  cancel-in-progress: false
+jobs:
+  blend:
+    if: github.event.workflow_run.conclusion != 'skipped'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      GH_TOKEN: ${{ github.token }}
+      FORECAST_RUN: ${{ github.event.workflow_run.id }}
+      DATA_PATH_SECRET: ${{ secrets.DATA_PATH_SECRET }}
+      OPS_S3_BUCKET: ${{ secrets.OPS_S3_BUCKET || 'ops' }}
+      OPS_S3_ENDPOINT: ${{ secrets.R2_ENDPOINT || secrets.DATA_S3_ENDPOINT }}
+      OPS_S3_KEY: ${{ secrets.OPS_S3_KEY }}
+      OPS_S3_SECRET: ${{ secrets.OPS_S3_SECRET }}
+      AIR_CORRECTIONS: "0"
+      BLEND_SHADOW: ${{ vars.BLEND_SHADOW || 'on' }}
+    steps:
+      - name: A shadow bundle, and a base to blend?
+        id: go
+        run: |
+          ops() { AWS_ACCESS_KEY_ID="$OPS_S3_KEY" AWS_SECRET_ACCESS_KEY="$OPS_S3_SECRET" AWS_DEFAULT_REGION=auto AWS_MAX_ATTEMPTS=5 aws --endpoint-url "$OPS_S3_ENDPOINT" "$@"; }
+          [ "$BLEND_SHADOW" != off ] || { echo "blend: shadow off (BLEND_SHADOW)"; exit 0; }
+          [ -n "$OPS_S3_KEY" ] && [ -n "$OPS_S3_ENDPOINT" ] || { echo "blend: no bucket set"; exit 0; }
+          if ! ops s3 cp "s3://$OPS_S3_BUCKET/control/shadow/blend.json" /tmp/pointer.json > /dev/null 2>&1; then echo "blend: no shadow bundle"; exit 0; fi
+          id="$(jq -r .id /tmp/pointer.json)"; key="$(jq -r .bundle /tmp/pointer.json)"; sha="$(jq -r .sha256 /tmp/pointer.json)"
+          [[ "$id" =~ ^bl1-[0-9]{8}-[0-9a-f]{8}$ ]] && [[ "$sha" =~ ^[0-9a-f]{64}$ ]] || { echo "::warning::blend: the shadow pointer doesn't read"; exit 0; }
+          ops s3 cp "s3://$OPS_S3_BUCKET/$key" /tmp/bundle.json > /dev/null || { echo "::warning::blend: its bundle not read"; exit 0; }
+          names="$(gh api "repos/${{ github.repository }}/actions/runs/$FORECAST_RUN/artifacts?per_page=100" --jq '[.artifacts[] | select(.expired | not) | .name] | join(" ")')"
+          regions=""
+          for pair in conus:hrrr sh:ecmwf; do
+            r="${pair%%:*}" m="${pair##*:}"
+            jq -e --arg r "$r" '.regions[$r] != null' /tmp/bundle.json > /dev/null || continue
+            case " $names " in *" store-$m "*) regions="$regions $pair" ;; esac
+          done
+          regions="${regions# }"
+          [ -n "$regions" ] || { echo "blend: this run saved no region's base"; exit 0; }
+          { echo "go=true"; echo "id=$id"; echo "sha=$sha"; echo "regions=$regions"; } >> "$GITHUB_OUTPUT"
+          echo "blend: bundle $id, regions $regions"
+      - uses: actions/checkout@v7
+        if: steps.go.outputs.go == 'true'
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+      - uses: actions/setup-python@v7
+        if: steps.go.outputs.go == 'true'
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pipeline/requirements.txt
+      - name: Python packages
+        if: steps.go.outputs.go == 'true'
+        run: pip install -q -r pipeline/requirements.txt && cd pipeline && python -m unittest test_blend test_blendleg
+      - name: Make room
+        if: steps.go.outputs.go == 'true'
+        run: nohup sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/share/swift > /dev/null 2>&1 &
+      - name: Blend
+        if: steps.go.outputs.go == 'true'
+        env:
+          ID: ${{ steps.go.outputs.id }}
+          SHA: ${{ steps.go.outputs.sha }}
+          REGIONS: ${{ steps.go.outputs.regions }}
+        run: |
+          ops() { AWS_ACCESS_KEY_ID="$OPS_S3_KEY" AWS_SECRET_ACCESS_KEY="$OPS_S3_SECRET" AWS_DEFAULT_REGION=auto AWS_MAX_ATTEMPTS=5 aws --endpoint-url "$OPS_S3_ENDPOINT" "$@"; }
+          put() { # key, file: written once
+            local err
+            if err="$(ops s3api put-object --bucket "$OPS_S3_BUCKET" --key "$1" --body "$2" --if-none-match '*' 2>&1 > /dev/null)"; then return 0; fi
+            if grep -q "PreconditionFailed\|ConditionalRequestConflict\|(412)\|(409)" <<<"$err"; then echo "blend: $1 there already"; return 0; fi
+            echo "::warning::blend: $1 not sent: $err"; return 1
+          }
+          issued="$(date -u +%Y-%m-%dT%H:%M:%SZ)" fail=0
+          for pair in $REGIONS; do
+            r="${pair%%:*}" m="${pair##*:}"
+            rm -rf dist-data /tmp/store /tmp/members "$RUNNER_TEMP/blend"
+            mkdir -p dist-data /tmp/members
+            .github/scripts/fetch-artifact.sh "store-$m" "$FORECAST_RUN" /tmp/store || { echo "::warning::blend: store-$m not fetched"; fail=1; continue; }
+            f="$(ls /tmp/store/store-"$m".tar* 2> /dev/null | head -1 || true)"
+            case "$f" in
+              *.enc) openssl enc -d -aes-256-ctr -pbkdf2 -pass env:DATA_PATH_SECRET -in "$f" | tar -C dist-data -xf - ;;
+              ?*) tar -C dist-data -xf "$f" ;;
+              *) echo "::warning::blend: store-$m empty"; fail=1; continue ;;
+            esac
+            rm -rf /tmp/store
+            run="$(python3 pipeline/blendleg.py base --hours "dist-data/$m/_hours" --region "$r")"
+            [ -n "$run" ] || { echo "blend: $r: no whole $m run in the store"; continue; }
+            model="$(python3 -c "import sys; sys.path.insert(0, 'pipeline'); import blendleg; print(blendleg.REGIONS['$r']['model'])")"
+            P="shadow/blend/$ID/ops/$model/${run:0:8}/${run:8:2}/"
+            if ops s3api list-objects-v2 --bucket "$OPS_S3_BUCKET" --prefix "$P" --query "Contents[?ends_with(Key, '/done.json')].Key" --output text | grep -q done.json; then
+              echo "blend: $r $run blended already"; continue
+            fi
+            ops s3api list-objects-v2 --bucket "$OPS_S3_BUCKET" --prefix "cache/blendin/v=1/" --output json > /tmp/listing.json || echo '{}' > /tmp/listing.json
+            for k in $(python3 pipeline/blendleg.py plan --bundle /tmp/bundle.json --sha256 "$SHA" --listing /tmp/listing.json --region "$r" --run "$run" --issued "$issued"); do
+              ops s3 cp "s3://$OPS_S3_BUCKET/$k" "/tmp/members/$(echo "$k" | cut -d/ -f4)-$(echo "$k" | cut -d/ -f5).npz" > /dev/null || echo "::warning::blend: $k not fetched"
+            done
+            echo "blend: $r $run, members: $(ls /tmp/members | tr '\n' ' ')"
+            O="$RUNNER_TEMP/blend"
+            if ! python3 pipeline/blendleg.py run --hours "dist-data/$m/_hours" --run "$run" --bundle /tmp/bundle.json --sha256 "$SHA" \
+                 --members /tmp/members --region "$r" --out "$O" --issued "$issued" --workers 3 --build "${{ github.run_id }}-${{ github.run_attempt }}"; then
+              echo "::warning::blend: $r $run not blended"; fail=1; continue
+            fi
+            ok=true
+            while IFS= read -r x; do put "shadow/blend/$ID/${x#"$O"/}" "$x" || ok=false; done < <(find "$O" -type f -not -name done.json | sort)
+            if [ "$ok" = true ]; then
+              while IFS= read -r x; do put "shadow/blend/$ID/${x#"$O"/}" "$x" || ok=false; done < <(find "$O" -type f -name done.json | sort)
+            fi
+            [ "$ok" = true ] || fail=1
+          done
+          exit $fail
