@@ -354,7 +354,7 @@ class ICOND2(OpenMeteo):
                     f.cancel()
                 print(f"  f{fh:03d}: ICON-D2's own levels not read ({e!r})"[:200] + ': the hour without them', flush=True)
         if failed:
-            print(f'  f{fh:03d}: ICON-D2 from DWD unavailable: {'; '.join(failed[:3])}{(' …' if len(failed) > 3 else '')}', flush=True)
+            print(f"  f{fh:03d}: ICON-D2 from DWD unavailable: {'; '.join(failed[:3])}{(' …' if len(failed) > 3 else '')}", flush=True)
         return out
 
 @dataclass

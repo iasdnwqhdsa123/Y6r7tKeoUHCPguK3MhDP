@@ -15,7 +15,7 @@ def _missing_in(root: str, run_dir: str, days: dict, fields: list[str]) -> list[
         have = {n[:-5] for n in os.listdir(folder) if n.endswith('.pack')} | {n for n in os.listdir(folder) if os.path.isdir(os.path.join(folder, n))}
         gone = [f for f in ALWAYS if f in need and f not in have]
         if gone:
-            out.append(f'{run_dir}/{day}: no {', '.join(gone)}')
+            out.append(f"{run_dir}/{day}: no {', '.join(gone)}")
     return out
 
 def check_manifest(root: str, rel: str) -> list[str]:

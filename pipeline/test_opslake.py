@@ -216,7 +216,7 @@ class OpsRecord(unittest.TestCase):
         for dp, _, fs in os.walk(self.out):
             for f in fs:
                 self.assertLessEqual(os.stat(os.path.join(dp, f)).st_mtime_ns, last, f)
-        with open(os.path.join(self.out, 'ops', 'meta', f'stations-{d['stations_v']}.json')) as f:
+        with open(os.path.join(self.out, 'ops', 'meta', f"stations-{d['stations_v']}.json")) as f:
             self.assertEqual(json.load(f)['stations'], STATIONS)
 
     def test_one_process_the_same(self):

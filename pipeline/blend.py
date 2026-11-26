@@ -124,7 +124,7 @@ def _validate(b: dict) -> dict:
     if not isinstance(b, dict) or b.get('schema') != SCHEMA:
         raise BundleError(f'not a {SCHEMA}')
     if not ID.match(str(b.get('id', ''))):
-        raise BundleError(f'bundle id {b.get('id')!r}')
+        raise BundleError(f"bundle id {b.get('id')!r}")
     regions = b.get('regions')
     if not isinstance(regions, dict) or not regions:
         raise BundleError('no regions')
@@ -151,11 +151,11 @@ def _validate(b: dict) -> dict:
             if fn not in FIELDS:
                 raise BundleError(f'{w}: not a field the blend knows')
             if f.get('kind') not in KINDS:
-                raise BundleError(f'{w}: kind {f.get('kind')!r}')
+                raise BundleError(f"{w}: kind {f.get('kind')!r}")
             if f.get('move') not in (None, 'lapse') or (f.get('move') == 'lapse' and fn not in LAPSE):
-                raise BundleError(f'{w}: move {f.get('move')!r}')
+                raise BundleError(f"{w}: move {f.get('move')!r}")
             if f.get('scale') not in (None, True, False) or (f.get('scale') and fn not in SCALE_FIELDS):
-                raise BundleError(f'{w}: scale {f.get('scale')!r}')
+                raise BundleError(f"{w}: scale {f.get('scale')!r}")
             if f.get('gate') is not None:
                 raise BundleError(f'{w}: a gate (version 1 weighs by its table only)')
             if not isinstance(f.get('pass'), bool):
@@ -628,7 +628,7 @@ def blend(base_hour: dict, members: dict, bundle: dict, region: str='conus', nat
         if 'td2' in from_base and over.any():
             from_base['td2'] += '; held under the blended t2 where it was over it'
     wfields, wfailed = weight_fields(vals, cond, allm, bundle, region, up, ctx, native)
-    ages = [{'model': m, 'run': f'{_utc(allm[m]['run']):%Y-%m-%dT%HZ}', 'age_h': round(_hours(issued, allm[m]['run']), 2)} for m in avail]
+    ages = [{'model': m, 'run': f"{_utc(allm[m]['run']):%Y-%m-%dT%HZ}", 'age_h': round(_hours(issued, allm[m]['run']), 2)} for m in avail]
     return {'codes': q, 'fields_blended': [f for f in order if f in vals], 'fields_from_base': from_base, 'refused': refused, 'members': ages, 'weights': wfields, 'weights_failed': wfailed, 'weight_region': wreg, 'issued': issued, 'values': {f: v['out'] for f, v in vals.items()}, 'debiased': {f: v['x'] for f, v in vals.items()}, 'base_weights': {f: v['w'] for f, v in vals.items()}}
 
 def _field(f, fdef, allm, avail, base, valid, issued, ctx, cond, bundle, region, up, ground, native):

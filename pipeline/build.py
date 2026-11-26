@@ -1200,7 +1200,7 @@ def open_meteo_extra(src, run, fh, between=False, idx=None):
         take = None if idx is None else lambda a: [a[i] for i in idx]
         flat = om.read_flat(om.download(url, workers=8), {v for v, _ in names.values()}, take)
     except Exception as e:
-        log(f'  f{fh:03d}: no Open-Meteo {domain} hour ({e}): without {', '.join(names)}')
+        log(f"  f{fh:03d}: no Open-Meteo {domain} hour ({e}): without {', '.join(names)}")
         return {}
     return {canon: (flat[v], conv) for canon, (v, conv) in names.items() if v in flat}
 
@@ -1640,7 +1640,7 @@ def air_corrected(q, lat2d, lon2d, valid, model, step):
     import aircorr
     if _AIR is None:
         _AIR = aircorr.prepare(aircorr.load())
-        log(f'air corrections on (version {_AIR.get('version')}, built {_AIR.get('built')})')
+        log(f"air corrections on (version {_AIR.get('version')}, built {_AIR.get('built')})")
     return aircorr.correct_codes(q, ENC, quantize, lat2d, lon2d, valid, model, step, _AIR)
 
 def _process_hour(job, raw=None):
@@ -1786,9 +1786,9 @@ def pick_physics(q, compute, fh, keep=None):
         (near if share <= NATIVE_TOLERANCE and worst <= 1 else bad).append(f'{k} {diff.sum()} cells, {worst} code(s)')
     if bad:
         P = physics
-        log(f'::warning::physics: the C++ differs from physics.py on f{fh:03d} ({'; '.join(bad[:8])}), physics.py for this run')
+        log(f"::warning::physics: the C++ differs from physics.py on f{fh:03d} ({'; '.join(bad[:8])}), physics.py for this run")
         return
-    log(f'physics: C++ (matches physics.py on f{fh:03d}: {len(q) - len(near)} of {len(q)} fields identical' + (f'; {', '.join(near)}' if near else '') + f'; checked in {time.time() - t0:.1f}s)')
+    log(f'physics: C++ (matches physics.py on f{fh:03d}: {len(q) - len(near)} of {len(q)} fields identical' + (f"; {', '.join(near)}" if near else '') + f'; checked in {time.time() - t0:.1f}s)')
 PREFETCH_AHEAD = 2
 
 def lean_malloc():
@@ -1989,7 +1989,7 @@ def _process_quarters(fh):
         with open(stamp, 'w') as f:
             f.write(f'{run:%Y%m%d%H}')
         done.append(valid)
-    log(f'  q{fh:03d} quarter hours {', '.join((f'{t:%H%M}' for t in done)) or 'none'} in {time.time() - t0:.1f}s')
+    log(f"  q{fh:03d} quarter hours {', '.join((f'{t:%H%M}' for t in done)) or 'none'} in {time.time() - t0:.1f}s")
     return done
 ICOND2_QUARTER = ('tot_prec', 'snow_gsp', 'snow_con', 'grau_gsp', 'cape_ml')
 ICOND2_SNOW = ('snow_gsp', 'snow_con', 'grau_gsp')
@@ -2066,7 +2066,7 @@ def _process_icond2_quarters(fh):
         with open(stamp, 'w') as f:
             f.write(f'{run:%Y%m%d%H}')
         done.append(v)
-    log(f'  q{fh:03d} quarter hours {', '.join((f'{t:%H%M}' for t in done))} in {time.time() - t0:.1f}s')
+    log(f"  q{fh:03d} quarter hours {', '.join((f'{t:%H%M}' for t in done))} in {time.time() - t0:.1f}s")
     return done
 
 def _level_codes(grid, name, k):
@@ -2543,11 +2543,11 @@ def write_free(out, model, now=None, workers=1):
     hourly = [t for t in times if t > now + ahead]
     manifest = _publish_open(out, os.path.join(out, 'free', model), model, full, times, FREE_FIELDS, cutoff, workers, points=True, hourly=hourly)
     if manifest:
-        log(f'{model}: free window to {cutoff:%Y-%m-%d %HZ}: {len(times)} hours ({len(hourly)} by the hour), {len(manifest['fields'])} fields')
+        log(f"{model}: free window to {cutoff:%Y-%m-%d %HZ}: {len(times)} hours ({len(hourly)} by the hour), {len(manifest['fields'])} fields")
     now_times = [t for t in times if now - timedelta(hours=1) <= t <= now + NOW_AHEAD]
     nm = _publish_open(out, os.path.join(out, 'free', 'now', model), model, full, now_times, NOW_FIELDS, now + NOW_AHEAD, workers)
     if nm:
-        log(f'{model}: 3D window: {len(now_times)} hours, {len(nm['fields'])} fields')
+        log(f"{model}: 3D window: {len(now_times)} hours, {len(nm['fields'])} fields")
     return manifest
 
 def _free_soundings(rdir, run_dir, snd, times):
@@ -2579,7 +2579,7 @@ def _publish_open(out, fbase, model, full, times, fields, cutoff, workers, point
     if not times:
         log(f'{model}: no hours for {os.path.relpath(fbase, out)}')
         return None
-    free_id = f'{full['runId']}-{cutoff:%Y%m%d%H}'
+    free_id = f"{full['runId']}-{cutoff:%Y%m%d%H}"
     rdir = os.path.join(fbase, free_id)
     shutil.rmtree(rdir, ignore_errors=True)
     tile = full['grid']['tile']
@@ -2592,7 +2592,7 @@ def _publish_open(out, fbase, model, full, times, fields, cutoff, workers, point
     has_fronts = points and write_fronts(rdir, hours_dir, daily, around=times)
     hours, hpts = ([], {})
     if hourly:
-        folder = lambda t: f'h/{hour_token(model, free_id, f'{t:%Y%m%d%H}')}'
+        folder = lambda t: f"h/{hour_token(model, free_id, f'{t:%Y%m%d%H}')}"
         _, hp, hlp = write_tiles(rdir, hours_dir, sorted(hourly), tile, times[-1], only=fields, levels=levels, workers=workers, day_of=folder, elevation=False)
         for name, keys in hp.items():
             present.setdefault(name, set()).update(keys)
@@ -2905,11 +2905,11 @@ def main():
     has_fronts = write_fronts(build_dir, hours_dir, times)
     t0 = time.time()
     points = write_points(build_dir, hours_dir, times, done[0], workers=ww)
-    log(f'{src.id}: point packs ({(len(points['tiles']) if points else 0)}) in {_fmt_dur(time.time() - t0)}')
+    log(f"{src.id}: point packs ({(len(points['tiles']) if points else 0)}) in {_fmt_dur(time.time() - t0)}")
     t0 = time.time()
     soundings = write_soundings(build_dir, hours_dir, times, src, workers=ww)
     if soundings:
-        log(f'{src.id}: sounding packs ({sum((len(d['tiles']) for d in soundings['days'].values()))} blocks, {len(soundings['days'])} days) in {_fmt_dur(time.time() - t0)}')
+        log(f"{src.id}: sounding packs ({sum((len(d['tiles']) for d in soundings['days'].values()))} blocks, {len(soundings['days'])} days) in {_fmt_dur(time.time() - t0)}")
     ntx = -(-len(lons) // tile)
     nty = -(-len(lats) // tile)
     grid = {'west': float(lons[0]), 'north': float(lats[0]), 'step': region[4], 'nx': len(lons), 'ny': len(lats), 'tile': tile, 'ntx': ntx, 'nty': nty}

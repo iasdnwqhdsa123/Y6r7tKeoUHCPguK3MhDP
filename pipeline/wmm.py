@@ -87,4 +87,4 @@ if __name__ == '__main__':
     else:
         g = grid()
         flat = [v for row in g['values'] for v in row]
-        print(f'{g['model']} {g['year']}: {g['nx']} x {g['ny']} every {g['step']}°, {min(flat)} to {max(flat)}')
+        print(f"{g['model']} {g['year']}: {g['nx']} x {g['ny']} every {g['step']}°, {min(flat)} to {max(flat)}")

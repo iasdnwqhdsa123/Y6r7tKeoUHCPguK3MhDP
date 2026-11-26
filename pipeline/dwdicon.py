@@ -102,9 +102,9 @@ def index_from_links(path, shape=WORLD[3:], cells=CELLS):
             method = f._attributes.get('map_method', b'')
             method = method.decode() if isinstance(method, bytes) else str(method)
             if 'nearest' not in method.lower() or f.dimensions.get('num_wgts') != 1:
-                raise ValueError(f'not nearest-neighbour links ({method!r}, {f.dimensions.get('num_wgts')} weights)')
+                raise ValueError(f"not nearest-neighbour links ({method!r}, {f.dimensions.get('num_wgts')} weights)")
             if f.dimensions.get('src_grid_size') != cells or f.dimensions.get('dst_grid_size') != ny * nx:
-                raise ValueError(f'links for {f.dimensions.get('src_grid_size')} → {f.dimensions.get('dst_grid_size')} cells, not {cells} → {ny * nx}')
+                raise ValueError(f"links for {f.dimensions.get('src_grid_size')} → {f.dimensions.get('dst_grid_size')} cells, not {cells} → {ny * nx}")
             src = np.array(f.variables['src_address'][:], np.int64) - 1
             dst = np.array(f.variables['dst_address'][:], np.int64) - 1
     world = np.full(ny * nx, -1, np.int64)

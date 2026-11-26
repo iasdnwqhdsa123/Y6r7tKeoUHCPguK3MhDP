@@ -132,7 +132,7 @@ def main():
         t0 = time.time()
         log(f'chart overviews: {cid}')
         charts[cid] = build(cid, CHARTS[cid], tmp)
-        log(f'  {cid}: {charts[cid]['tiles']} tiles in {(time.time() - t0) / 60:.1f} min')
+        log(f"  {cid}: {charts[cid]['tiles']} tiles in {(time.time() - t0) / 60:.1f} min")
     final = os.path.join(root, 'charts')
     shutil.rmtree(final, ignore_errors=True)
     os.replace(tmp, final)

@@ -81,6 +81,7 @@ def _trim_entry(job):
 
 def trim_rows(src: str, dst: str, rows: list[int], W: int, workers: int | None=None):
     import struct
+    import multiprocessing
     from concurrent.futures import ProcessPoolExecutor
     with open(src, 'rb') as f:
         head = f.read(12)
@@ -94,7 +95,7 @@ def trim_rows(src: str, dst: str, rows: list[int], W: int, workers: int | None=N
     jobs = [(b, rows, W) for b in blobs]
     workers = workers or os.cpu_count() or 1
     if workers > 1 and n > 64:
-        with ProcessPoolExecutor(workers) as ex:
+        with ProcessPoolExecutor(workers, mp_context=multiprocessing.get_context('fork')) as ex:
             out = list(ex.map(_trim_entry, jobs, chunksize=max(1, n // (workers * 8))))
     else:
         out = [_trim_entry(j) for j in jobs]
@@ -221,7 +222,7 @@ def main(argv=None):
                 continue
             if re.fullmatch('\\d{10}', run_id):
                 t = run_time(run_id)
-                print(f'{day_for_run(model, t)} {model} {run_id} {('late' if late(model, t) else 'early')}')
+                print(f"{day_for_run(model, t)} {model} {run_id} {('late' if late(model, t) else 'early')}")
         return 0
     with open(a.keys) as f:
         keys = f.read().split()

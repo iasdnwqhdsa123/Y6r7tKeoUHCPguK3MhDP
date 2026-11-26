@@ -77,7 +77,7 @@ def limit(code: str | None, val: str | None, uom: str | None) -> str:
     ft = v / 0.3048 if u == 'M' else v
     if ft <= 0 and (code or '').upper() in ('HEI', ''):
         return 'SFC'
-    return f'{round(ft):,} ft{(' AGL' if (code or '').upper() == 'HEI' else '')}'
+    return f"{round(ft):,} ft{(' AGL' if (code or '').upper() == 'HEI' else '')}"
 
 def bearing_dist(lat0, lon0, lat, lon):
     k = math.cos(math.radians(lat0))
@@ -295,7 +295,7 @@ def build(out: str, today: date | None=None) -> dict:
             if done:
                 break
         if not done:
-            print(f'europe airspace: no snapshot for {suffix} ({', '.join(folders)})', flush=True)
+            print(f"europe airspace: no snapshot for {suffix} ({', '.join(folders)})", flush=True)
     key = os.environ.get('OPENAIP_API_KEY', '').strip()
     deadline = time.monotonic() + OPENAIP_BUDGET
     for area, countries in OPENAIP_AREAS.items() if key else ():
@@ -307,7 +307,7 @@ def build(out: str, today: date | None=None) -> dict:
                 items = openaip(cc, key, deadline)
                 if not items:
                     raise RuntimeError('no airspace records')
-                print(f'openaip {cc}: types {Counter((a.get('type') for a in items)).most_common(12)}, classes {Counter((a.get('icaoClass') for a in items)).most_common(8)}', flush=True)
+                print(f"openaip {cc}: types {Counter((a.get('type') for a in items)).most_common(12)}, classes {Counter((a.get('icaoClass') for a in items)).most_common(8)}", flush=True)
                 c, s = oa_features(items, cc)
                 got.append(f'openaip {cc}: {len(c)}+{len(s)}')
             except Exception as e:

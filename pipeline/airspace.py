@@ -115,7 +115,7 @@ def limit(val, uom, code) -> str:
         return '?'
     if uom == 'FL':
         return f'FL{round(v)}'
-    return f'{round(v):,} ft{(' AGL' if code == 'AGL' else '')}'
+    return f"{round(v):,} ft{(' AGL' if code == 'AGL' else '')}"
 
 def airspace_class(p: dict) -> str | None:
     c = str(p.get('CLASS') or '').strip().upper()
@@ -261,6 +261,6 @@ def main():
         stamp = datetime.now(timezone.utc) - (timedelta(days=7, hours=1) if retry else timedelta(0))
         json.dump({'updated': stamp.isoformat(timespec='seconds'), 'count': len(out), 'version': VERSION, 'source': 'FAA Class_Airspace'}, fh)
     open(os.path.join(args.out, '.changed'), 'w').close()
-    print(f'wrote {len(out)} features, {os.path.getsize(os.path.join(d, 'us.json')) / 1000000.0:.1f} MB')
+    print(f"wrote {len(out)} features, {os.path.getsize(os.path.join(d, 'us.json')) / 1000000.0:.1f} MB")
 if __name__ == '__main__':
     main()

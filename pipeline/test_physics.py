@@ -3430,7 +3430,7 @@ class AromeSource(unittest.TestCase):
             boxed = f.read((10.0, 0.0, 13.0, 2.0, 1.0), boxes=[(0, 1, 0, 2)])
             self.assertTrue(np.isnan(boxed[1:]).all() and np.isnan(boxed[0, 2:]).all())
             np.testing.assert_allclose(boxed[0, :2], [200, 199])
-        with mock.patch.object(mf, 'local', lambda u: u), mock.patch.object(mf, 'message', lambda path, key: f'{path.split('__')[3]}:{key[0]}:{key[1]}'):
+        with mock.patch.object(mf, 'local', lambda u: u), mock.patch.object(mf, 'message', lambda path, key: f"{path.split('__')[3]}:{key[0]}:{key[1]}"):
             from datetime import datetime, timezone
             run = datetime(2026, 11, 6, 15, tzinfo=timezone.utc)
             self.assertEqual(mf.hour_mean(run, 'SP3', 'sshf', 7, sign=-1.0), [(-1 / 3600, '07H12H:sshf:0-7'), (1 / 3600, '00H06H:sshf:0-6')])
@@ -4160,7 +4160,7 @@ class IconDwd(unittest.TestCase):
         self.assertTrue(np.isnan(b[1]).all() and np.isnan(b[0, 2]))
         np.testing.assert_allclose(b[0, :2], [283, 284])
         parts = [u.rsplit('/', 1)[1].split('.')[0].split('_') for u in asked if 'time-invariant' not in u]
-        self.assertEqual(sorted((f'{p[5]} {'_'.join(p[6:])}' for p in parts)), ['011 ASWDIFD_S', '011 ASWDIR_S', '011 TOT_PREC', '012 ASWDIFD_S', '012 ASWDIR_S', '012 TOT_PREC', '012 T_2M'])
+        self.assertEqual(sorted((f"{p[5]} {'_'.join(p[6:])}" for p in parts)), ['011 ASWDIFD_S', '011 ASWDIR_S', '011 TOT_PREC', '012 ASWDIFD_S', '012 ASWDIR_S', '012 TOT_PREC', '012 T_2M'])
         self.assertEqual(sum(('time-invariant' in u for u in asked)), 2)
         self.assertTrue(all((f.threads for f in out.values())))
         vals, _, asked, _ = self.step([('precipitation', ''), ('sw', '')], fh=1, prev=0, files=files)

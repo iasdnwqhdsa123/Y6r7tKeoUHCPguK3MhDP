@@ -12,7 +12,7 @@ def http_get(url, rng: tuple[int, int | None] | None=None, tries: int=6, timeout
     urls = [url] if isinstance(url, str) else list(url)
     headers = dict(UA)
     if rng:
-        headers['Range'] = f'bytes={rng[0]}-{('' if rng[1] is None else rng[1])}'
+        headers['Range'] = f"bytes={rng[0]}-{('' if rng[1] is None else rng[1])}"
     for attempt in range(tries):
         try:
             with urllib.request.urlopen(urllib.request.Request(urls[attempt % len(urls)], headers=headers), timeout=timeout) as r:
@@ -61,7 +61,7 @@ def select(rows: list[dict], wanted: list[tuple[str, str]]) -> dict[tuple[str, s
     for var, level in wanted:
         rx = re.compile(level)
         for r in rows:
-            if r['var'] == var and (rx.fullmatch(r['level']) or ('fcst' in r and rx.fullmatch(f'{r['level']} {r['fcst']}'))):
+            if r['var'] == var and (rx.fullmatch(r['level']) or ('fcst' in r and rx.fullmatch(f"{r['level']} {r['fcst']}"))):
                 out[var, level] = r
                 break
     return out

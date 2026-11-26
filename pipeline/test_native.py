@@ -525,7 +525,7 @@ class NativeSinkRate(unittest.TestCase):
             except ZeroDivisionError:
                 self.assertEqual(n, 1)
         for k, v in (('zi', s['zi'].astype(np.float64)), ('depth', s['depth'][:1]), ('rain', 0.0), ('ws', 1.0), ('ws', s['ws'].astype(np.float16)), ('lee', s['lee'][:, :1]), ('w', s['w'].astype(np.float64)), ('refd', s['refd'].astype(np.float64)), ('ws', np.asfortranarray(s['ws']))):
-            self.check(py, cx, dict(s, **{k: v}), native=False, msg=f'{k} {getattr(v, 'dtype', type(v))}')
+            self.check(py, cx, dict(s, **{k: v}), native=False, msg=f"{k} {getattr(v, 'dtype', type(v))}")
         self.check(py, py, s, native=False, msg='physics.Profile')
 
 def _derivs(shape, grid_step=0.03, lat0=38.0):
@@ -879,7 +879,7 @@ class NativeRunning(unittest.TestCase):
         a = RW.run_fields(f, grid, *ea, LL.lattice_cells(L, grid) if lattice else None, bars=bars, **kw)
         self.assertEqual(list(a), list(b))
         for k in a:
-            self.assertTrue(same(a[k], b[k]), f'{k} {grid['step']} seed {seed}')
+            self.assertTrue(same(a[k], b[k]), f"{k} {grid['step']} seed {seed}")
         for x, y in zip(ea, eb):
             for p, q in zip(x.areas, y.areas):
                 self.assertTrue(np.array_equal(p.loaded, q.loaded), f"{p.name}'s tiles, {grid['step']} seed {seed}")

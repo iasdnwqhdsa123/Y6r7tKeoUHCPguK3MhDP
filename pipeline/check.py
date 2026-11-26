@@ -119,10 +119,10 @@ def main():
         src = SOURCES[args.wait_for]
         run = datetime.strptime(args.run, '%Y%m%d%H').replace(tzinfo=timezone.utc)
         landed = wait_for(src, run, datetime.fromisoformat(args.until))
-        print(f'{src.id}: {run:%Y-%m-%d %HZ} {('complete' if landed else 'still not complete: building the newest on hand')}')
+        print(f"{src.id}: {run:%Y-%m-%d %HZ} {('complete' if landed else 'still not complete: building the newest on hand')}")
         if out:
             with open(out, 'a') as f:
-                f.write(f'landed={('true' if landed else 'false')}\n')
+                f.write(f"landed={('true' if landed else 'false')}\n")
         return
     if not args.data_url:
         ap.error('--data-url is required')
@@ -133,10 +133,10 @@ def main():
         have = cur.get('runId') if cur and cur.get('complete') else None
         newest = complete_run(src)
         build = still_to_build(have, newest, args.run, args.no_out, args.force)
-        print(f'{src.id}: published {have or '-'}, newest complete {(f'{newest:%Y%m%d%H}' if newest else '-')}' + (f", its slot's run {args.run}" if args.run else '') + (', its output not on hand' if args.no_out else '') + (' → build' if build else " → built and published meanwhile (another run's job): not built again"))
+        print(f"{src.id}: published {have or '-'}, newest complete {(f'{newest:%Y%m%d%H}' if newest else '-')}" + (f", its slot's run {args.run}" if args.run else '') + (', its output not on hand' if args.no_out else '') + (' → build' if build else " → built and published meanwhile (another run's job): not built again"))
         if out:
             with open(out, 'a') as f:
-                f.write(f'build={('true' if build else 'false')}\n')
+                f.write(f"build={('true' if build else 'false')}\n")
         return
     open_base = (args.open_url or base).rstrip('/')
     now = datetime.now(timezone.utc)
@@ -157,7 +157,7 @@ def main():
             build, wait = (have is None or missing or args.force or (newest is not None and f'{newest:%Y%m%d%H}' > have), None)
         else:
             build, wait = plan(mid, now, slot, newest, have, missing, args.force)
-        print(f'{mid}: published {have or '-'}, newest complete {(f'{newest:%Y%m%d%H}' if newest else '-')}' + (', its output not on hand' if missing else '') + (f' → waits for {wait[0]:%Y%m%d%H} until {wait[1]:%H:%M}' if wait else ' → build' if build else ''))
+        print(f"{mid}: published {have or '-'}, newest complete {(f'{newest:%Y%m%d%H}' if newest else '-')}" + (', its output not on hand' if missing else '') + (f' → waits for {wait[0]:%Y%m%d%H} until {wait[1]:%H:%M}' if wait else ' → build' if build else ''))
         if build:
             todo.append(mid)
         if wait:
@@ -169,7 +169,7 @@ def main():
         fm = published(f'{open_base}/free/{mid}/latest.json')
         until = fm and fm.get('freeUntil')
         behind = not until or (not args.missing_only and now + timedelta(hours=ahead + OPEN_SLACK_H) - FREE_EVERY >= datetime.fromisoformat(until))
-        print(f'free {mid}: until {until or '-'}{(' → refresh' if behind else '')}')
+        print(f"free {mid}: until {until or '-'}{(' → refresh' if behind else '')}")
         if behind:
             free.append(mid)
     ages = []
@@ -177,29 +177,29 @@ def main():
         meta = published(url)
         updated = meta and meta.get('updated')
         age = now - datetime.fromisoformat(updated) if updated and meta.get('version') == version else None
-        print(f'{name}: updated {updated or '-'}{('' if age is not None else ' (missing or new version)')}')
+        print(f"{name}: updated {updated or '-'}{('' if age is not None else ' (missing or new version)')}")
         ages.append(age)
     airspace = args.force or (any((a is None for a in ages)) if args.missing_only else map_data_due(ages, todo))
     cm = published(f'{open_base}/airspace/aviation/charts-low.json')
     charts = not (cm and cm.get('cycle') == cycle_of(now) and (cm.get('version') == CHART_TILES_VERSION))
-    print(f'chart overviews: cycle {(cm or {}).get('cycle', '-')}{(f' → {cycle_of(now)}' if charts else '')}')
+    print(f"chart overviews: cycle {(cm or {}).get('cycle', '-')}{(f' → {cycle_of(now)}' if charts else '')}")
     mapdata = airspace or charts or (outs is not None and 'mapdata' not in outs)
-    print(f'map data: {('refresh' if airspace else 'chart overviews' if charts else 'its output not on hand' if mapdata else 'keep')}')
+    print(f"map data: {('refresh' if airspace else 'chart overviews' if charts else 'its output not on hand' if mapdata else 'keep')}")
     matrix = todo + [m for m in free if m not in todo]
     if out:
         with open(out, 'a') as f:
             f.write(f'slot={slot[0]}\n')
-            f.write(f'models={' '.join(todo)}\n')
+            f.write(f"models={' '.join(todo)}\n")
             f.write(f'matrix={json.dumps(matrix)}\n')
             f.write(f'waits={json.dumps(waits)}\n')
             f.write(f'active={json.dumps([m for m in SOURCES if m not in PAUSED])}\n')
             f.write(f'required={json.dumps([m for m in REQUIRED if m not in PAUSED])}\n')
-            f.write(f'free={('true' if free else 'false')}\n')
+            f.write(f"free={('true' if free else 'false')}\n")
             f.write(f'free_models={json.dumps(free)}\n')
-            f.write(f'airspace={('true' if airspace else 'false')}\n')
-            f.write(f'aviation={('true' if airspace else 'false')}\n')
-            f.write(f'mapdata={('true' if mapdata else 'false')}\n')
-            f.write(f'any={('true' if matrix or mapdata else 'false')}\n')
+            f.write(f"airspace={('true' if airspace else 'false')}\n")
+            f.write(f"aviation={('true' if airspace else 'false')}\n")
+            f.write(f"mapdata={('true' if mapdata else 'false')}\n")
+            f.write(f"any={('true' if matrix or mapdata else 'false')}\n")
     print('build:', ' '.join(todo) or 'nothing', '| free window:', ' '.join(free) or '-', '| waits:', ' '.join((f'{m} {r}' for m, (r, _) in waits.items())) or '-')
 if __name__ == '__main__':
     main()

@@ -239,7 +239,7 @@ def magvar_grid(year: float | None=None, step: float=2.0) -> dict:
     north = min(88.0, math.ceil((max((a[3] for a in areas)) + pad) / step) * step)
     g = wmm.grid(year, step, south, north, keep=lambda lat, lon: in_forecast_area(lat, lon, pad))
     kept = sum((v is not None for row in g['values'] for v in row))
-    print(f'magvar: {g['model']} at {g['year']}, {g['nx']} x {g['ny']} every {step:g}°, {kept} nodes in the forecast areas', flush=True)
+    print(f"magvar: {g['model']} at {g['year']}, {g['nx']} x {g['ny']} every {step:g}°, {kept} nodes in the forecast areas", flush=True)
     return g
 
 def arcgis_json(url: str, params: dict | None=None, tries: int=10) -> dict:
@@ -265,7 +265,7 @@ def limit(val, uom, code) -> str:
         return str(val or '?')
     if str(uom or '').upper() == 'FL':
         return f'FL{round(v)}'
-    return f'{round(v):,} ft{(' AGL' if code in ('AGL', 'SFC') else '')}'
+    return f"{round(v):,} ft{(' AGL' if code in ('AGL', 'SFC') else '')}"
 
 def pick(p: dict, *names):
     for n in names:
@@ -287,7 +287,7 @@ def build_sua(d: str) -> int:
     match = sorted((s for s in services if 'special_use_airspace' in s['name'].lower() and 'pending' not in s['name'].lower()), key=lambda s: len(s['name']))
     if not match:
         raise RuntimeError('no Special Use Airspace service found')
-    url = f'{FAA_SERVICES}/{match[0]['name']}/{match[0].get('type', 'FeatureServer')}/0'
+    url = f"{FAA_SERVICES}/{match[0]['name']}/{match[0].get('type', 'FeatureServer')}/0"
     info = arcgis_json(url, {'f': 'json'})
     print('SUA:', url, '| fields:', [f['name'] for f in info.get('fields', [])], flush=True)
     feats, offset = ([], 0)

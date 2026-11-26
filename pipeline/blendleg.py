@@ -183,7 +183,7 @@ def blend_run(hours_dir: str, run: str, bundle: dict, member_paths: list, region
     shutil.rmtree(os.path.join(out, '_blended'), ignore_errors=True)
     if done is not None:
         done['blend'] = {'bundle': bundle['id'], 'region': region, 'issued': issued.strftime('%Y-%m-%dT%H:%M:%SZ'), 'members': sorted({m for v in took.values() if isinstance(v, dict) for m in v['members']}), 'hours': {k: v for k, v in took.items()}}
-        p = os.path.join(out, 'ops', cfg['model'], f'{r0:%Y%m%d}', f'{r0:%H}', f'b{done['build']}', 'done.json')
+        p = os.path.join(out, 'ops', cfg['model'], f'{r0:%Y%m%d}', f'{r0:%H}', f"b{done['build']}", 'done.json')
         with open(p, 'w') as f:
             json.dump(done, f, separators=(',', ':'))
     return done

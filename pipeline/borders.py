@@ -25,7 +25,7 @@ def main(tol: float=0.004, path: str=OUT) -> int:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, 'w') as f:
         json.dump(out, f, separators=(',', ':'))
-    print(f'borders: {len(out['s'])} state/province + {len(out['c'])} country lines, {os.path.getsize(path) / 1000.0:.0f} kB → {path}')
+    print(f"borders: {len(out['s'])} state/province + {len(out['c'])} country lines, {os.path.getsize(path) / 1000.0:.0f} kB → {path}")
     return len(out['s']) + len(out['c'])
 if __name__ == '__main__':
     main()

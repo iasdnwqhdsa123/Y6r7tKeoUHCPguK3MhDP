@@ -634,7 +634,7 @@ def cmd_score(a):
     out = {'generated': f'{datetime.now(UTC):%Y-%m-%dT%H:%MZ}', **sc}
     with open(a.out, 'w') as f:
         json.dump(out, f, indent=1)
-    log(f'{n_rows} forecasts paired with reports; {len(bad)} stations left out (every model off by {STATION_OFF:.0f} °C or more the same way: {', '.join(bad[:20])})')
+    log(f"{n_rows} forecasts paired with reports; {len(bad)} stations left out (every model off by {STATION_OFF:.0f} °C or more the same way: {', '.join(bad[:20])})")
     log("Errors count past the report's own precision; stations over 300 m from the model's ground left out of the surface.")
     log('Side by side: the same stations, hours and leads for every model.')
     for n in names:
@@ -645,16 +645,16 @@ def cmd_score(a):
             title, units = CONT[n]
             log(f'\n{title} (mean error, {units}; bias):')
             for s in lines:
-                log(f'  {s['region']:10} {s['lead']:9} n={s['n']:7}  ' + '  '.join((f'{m} {v['mae']:.2f} ({v['bias']:+.2f})' if units not in ('m', '°', '%') else f'{m} {v['mae']:.0f} ({v['bias']:+.0f})' for m, v in s['models'].items())))
+                log(f"  {s['region']:10} {s['lead']:9} n={s['n']:7}  " + '  '.join((f"{m} {v['mae']:.2f} ({v['bias']:+.2f})" if units not in ('m', '°', '%') else f"{m} {v['mae']:.0f} ({v['bias']:+.0f})" for m, v in s['models'].items())))
         else:
             log(f'\n{CAT[n]} (Heidke skill: 1 perfect, 0 none; POD/false alarms):')
             for s in lines:
                 ev = max((v['events'] for v in s['models'].values()))
-                log(f'  {s['region']:10} {s['lead']:9} n={s['n']:7} events {ev:6}  ' + '  '.join((f'{m} {(v['heidke'] if v['heidke'] is not None else '-')} ({v['pod']:.2f}/{v['far']:.2f})' for m, v in s['models'].items())))
+                log(f"  {s['region']:10} {s['lead']:9} n={s['n']:7} events {ev:6}  " + '  '.join((f"{m} {(v['heidke'] if v['heidke'] is not None else '-')} ({v['pod']:.2f}/{v['far']:.2f})" for m, v in s['models'].items())))
     log("\nBias by the sun's time, leads 1-48 h (each model's own pairs):")
     for s in by_sun:
         title, units = CONT[s['measure']]
-        log(f'  {s['region']:10} {s['part']:9} {title.split(',')[0]:16} ' + '  '.join((f'{m} {v['bias']:+.2f} {units}' for m, v in s['models'].items())))
+        log(f"  {s['region']:10} {s['part']:9} {title.split(',')[0]:16} " + '  '.join((f"{m} {v['bias']:+.2f} {units}" for m, v in s['models'].items())))
     return 0
 
 def main():

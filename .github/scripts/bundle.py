@@ -49,7 +49,7 @@ def cat(root, idx, out):
                 raise SystemExit(f'bundle: {rel}: longer than the index says ({n})')
         sent += n
     if sent != idx['size']:
-        raise SystemExit(f'bundle: {sent} bytes sent, the index says {idx['size']}')
+        raise SystemExit(f"bundle: {sent} bytes sent, the index says {idx['size']}")
 
 def main(argv=None):
     ap = argparse.ArgumentParser()

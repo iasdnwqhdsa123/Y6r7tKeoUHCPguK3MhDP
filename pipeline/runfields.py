@@ -163,9 +163,9 @@ def _pick(q, enc, grid, nodata, when):
             bad, near = ([f'it failed: {e!r}'], [])
         NATIVE = not bad
         if bad:
-            LOG(f'::warning::ridge/wave running: the C++ differs from leelattice.py and runwave.py on {when:%a %HZ} ({'; '.join(bad[:8])}), the Python for this run')
+            LOG(f"::warning::ridge/wave running: the C++ differs from leelattice.py and runwave.py on {when:%a %HZ} ({'; '.join(bad[:8])}), the Python for this run")
         else:
-            LOG(f'ridge/wave running: C++ (matches leelattice.py and runwave.py on {when:%a %HZ}: {len(out) - len(FINE) - len(near)} of {len(out) - len(FINE)} fields identical' + (f'; {', '.join(near)}' if near else '') + f'; checked in {time.time() - t0:.1f}s)')
+            LOG(f'ridge/wave running: C++ (matches leelattice.py and runwave.py on {when:%a %HZ}: {len(out) - len(FINE) - len(near)} of {len(out) - len(FINE)} fields identical' + (f"; {', '.join(near)}" if near else '') + f'; checked in {time.time() - t0:.1f}s)')
     return (out, q2)
 
 def publish(q, enc, grid, when, mid_by_ceil=False, agl_heights=True):

@@ -335,7 +335,7 @@ def score(d, paths, ts=None, procs=4):
         pod, sr = (c['w_hit'] / max(1, c['W']), c['o_hit'] / max(1, c['O']))
         pods, srs = (c['w_same'] / max(1, c['W']), c['o_same'] / max(1, c['O']))
         csi = lambda p, q: 1 / (1 / p + 1 / q - 1) if p > 0 and q > 0 else 0.0
-        print(f'  {region:5s} {name:8s} any POD {pod:.2f} SR {sr:.2f} CSI {csi(pod, sr):.3f} | same type POD {pods:.2f} SR {srs:.2f} CSI {csi(pods, srs):.3f} | ours {c['O'] * 25} km, WPC {c['W'] * 25} km')
+        print(f"  {region:5s} {name:8s} any POD {pod:.2f} SR {sr:.2f} CSI {csi(pod, sr):.3f} | same type POD {pods:.2f} SR {srs:.2f} CSI {csi(pods, srs):.3f} | ours {c['O'] * 25} km, WPC {c['W'] * 25} km")
     return tot
 
 def _score_tally(args):

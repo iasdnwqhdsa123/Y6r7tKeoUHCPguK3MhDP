@@ -152,7 +152,7 @@ def write(hours_dir, run, out, model=None, build_id=None, published=False, day_h
     model = model or os.path.basename(os.path.dirname(os.path.abspath(hours_dir)))
     region = region or build.REGIONS[model]
     if build_id is None:
-        build_id = f'{os.environ.get('GITHUB_RUN_ID', 'local')}-{os.environ.get('GITHUB_RUN_ATTEMPT', '1')}'
+        build_id = f"{os.environ.get('GITHUB_RUN_ID', 'local')}-{os.environ.get('GITHUB_RUN_ATTEMPT', '1')}"
     if blend_in is None:
         blend_in = os.environ.get('BLEND_IN', '1') != '0'
     if stations is None:
@@ -261,8 +261,8 @@ def write(hours_dir, run, out, model=None, build_id=None, published=False, day_h
     done = {'model': model, 'run': run, 'build': build_id, 'stations_v': stations_v, 'hours_v': build.HOURS_VERSION, 'phys': sha_of(phys_files()), 'complete': bool(complete), 'aircorr': os.environ.get('AIR_CORRECTIONS', '0') == '1', 'acc_class': os.environ.get('ACC_CLASS', ''), 'published': bool(published), 'published_t': published_t or datetime.now(UTC).strftime('%Y-%m-%dT%H:%M:%SZ') if published else None, 'leads': [ld for _, ld in hours], 'files': files, 'bytes': size, 'sec': round(time.time() - t0, 1)}
     with open(os.path.join(base, 'done.json'), 'w') as f:
         json.dump(done, f, separators=(',', ':'))
-    what = ', '.join((f'{k} {v['hours']} h' if 'hours' in v else f'{k} {next(iter(v.values()))}' for k, v in files.items()))
-    log(f'ops: {model} {run}: {what}, {size / 1000000.0:.1f} MB in {done['sec']} s')
+    what = ', '.join((f"{k} {v['hours']} h" if 'hours' in v else f'{k} {next(iter(v.values()))}' for k, v in files.items()))
+    log(f"ops: {model} {run}: {what}, {size / 1000000.0:.1f} MB in {done['sec']} s")
     return done
 
 def blend_windows(model, region):

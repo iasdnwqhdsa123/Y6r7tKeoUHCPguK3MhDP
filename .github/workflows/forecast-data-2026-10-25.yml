@@ -54,7 +54,7 @@ jobs:
 
   check:
     if: ${{ !(github.event_name == 'push' && (contains(github.event.head_commit.message, 'no run') || contains(github.event.head_commit.message, 'runs stopped'))) }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10 # (a run landing late is waited for in its model's job)
     permissions:
       contents: read
@@ -116,7 +116,7 @@ jobs:
     name: hours (${{ matrix.shard }})
     needs: check
     if: needs.check.outputs.any == 'true' && contains(format(' {0} ', needs.check.outputs.models), ' ecmwf ') && !inputs.recompute
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 150 # up to ~70 waiting for the run (check.py --wait-for)
     strategy:
       fail-fast: false
@@ -140,7 +140,7 @@ jobs:
       - uses: actions/setup-python@v7
         if: steps.need.outputs.build == 'true'
         with:
-          python-version: "3.12"
+          python-version: "3.14"
           cache: pip
           cache-dependency-path: pipeline/requirements.txt
       - run: pip install -r pipeline/requirements.txt
@@ -178,7 +178,7 @@ jobs:
   model:
     needs: check
     if: needs.check.outputs.matrix != '[]' && needs.check.outputs.matrix != ''
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 250 # up to ~70 waiting for its run (check.py lands), the build up to 150
     permissions:
       contents: read
@@ -233,7 +233,7 @@ jobs:
       - uses: actions/setup-python@v7
         if: steps.need.outputs.go == 'true'
         with:
-          python-version: "3.12"
+          python-version: "3.14"
           cache: pip
           cache-dependency-path: pipeline/requirements.txt
 
@@ -507,7 +507,7 @@ jobs:
   mapdata:
     needs: check
     if: needs.check.outputs.mapdata == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 60
     permissions:
       contents: read
@@ -516,7 +516,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
-          python-version: "3.12"
+          python-version: "3.14"
           cache: pip
           cache-dependency-path: pipeline/requirements.txt
 
@@ -631,7 +631,7 @@ jobs:
   publish:
     needs: [check, model, mapdata]
     if: always() && needs.check.outputs.any == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 60
     permissions:
       contents: read
@@ -654,7 +654,7 @@ jobs:
   cleanup:
     needs: [check, hours, model, mapdata, publish]
     if: always() && needs.check.result != 'skipped'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     permissions:
       contents: read

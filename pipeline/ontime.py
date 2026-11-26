@@ -24,7 +24,7 @@ def main():
         with urllib.request.urlopen(req, timeout=20) as r:
             runs = json.load(r)['workflow_runs']
         skip = stand_down(runs, cron, datetime.now(timezone.utc))
-        print(f'cron {cron!r}: {('the on-time trigger already ran this slot, standing down' if skip else 'no on-time run this slot, building')}')
+        print(f"cron {cron!r}: {('the on-time trigger already ran this slot, standing down' if skip else 'no on-time run this slot, building')}")
     except Exception as e:
         print(f"couldn't check recent runs ({e}): building")
     out = os.environ.get('GITHUB_OUTPUT')
