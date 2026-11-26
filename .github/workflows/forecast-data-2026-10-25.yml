@@ -32,6 +32,7 @@ on:
         default: ""
 
 env:
+  NODE_OPTIONS: "--disable-warning=DEP0005 --disable-warning=DEP0040 --disable-warning=DEP0169"
   DATA_PATH_SECRET: ${{ secrets.DATA_PATH_SECRET }}
   DATA_S3_BUCKET: ${{ secrets.DATA_S3_BUCKET }}
   DATA_S3_ENDPOINT: ${{ secrets.DATA_S3_ENDPOINT || secrets.ARCHIVE_S3_ENDPOINT }}
