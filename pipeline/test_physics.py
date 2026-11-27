@@ -2524,7 +2524,7 @@ class OverviewLevels(unittest.TestCase):
         self.assertEqual(g4, {'west': -124.925, 'north': 49.925, 'step': 0.2, 'nx': 293, 'ny': 131, 'tile': 200, 'ntx': 2, 'nty': 1})
         lon = lambda g, i: g['west'] + i * g['step']
         self.assertAlmostEqual(lon(g4, 10), np.mean([lon(hrrr, i) for i in range(40, 44)]), places=9)
-        self.assertEqual(build.OVERVIEW, {'hrrr': (2, 4, 8), 'icond2': (2, 4, 8), 'arome': (2, 4, 8)})
+        self.assertEqual(build.OVERVIEW, {'hrrr': (2, 4, 8), 'icond2': (2, 4, 8), 'arome': (2, 4, 8), 'hrdps': (2, 4, 8)})
         lons, lats = build.target_grid(build.REGIONS['hrrr'])
         fine = {'west': -125.0, 'north': 50.0, 'step': 0.03, 'nx': len(lons), 'ny': len(lats), 'tile': 100, 'ntx': 20, 'nty': 9}
         self.assertEqual([build.level_grid(fine, k)['step'] for k in build.OVERVIEW['hrrr']], [0.06, 0.12, 0.24])
@@ -3358,6 +3358,60 @@ class Regions(unittest.TestCase):
             np.testing.assert_allclose(got[k][keep], full[k][keep], rtol=1e-06, err_msg=k)
             self.assertTrue(np.isnan(got[k][~keep]).all(), k)
         self.assertIsNone(build.keep_windows('hrrr', region))
+
+class HrdpsSource(unittest.TestCase):
+
+    def test_steps_files_slots_and_switch(self):
+        from datetime import datetime, timezone
+        import check
+        from sources import DAYS, OPEN_AHEAD_H, PAUSED, SOURCES
+        src = SOURCES['hrdps']
+        self.assertEqual([fh for fh in range(0, 60) if src.fstep(fh)], list(range(1, 49)))
+        self.assertEqual((src.runs, DAYS['hrdps'], OPEN_AHEAD_H['hrdps']), ((0, 6, 12, 18), 2, 24))
+        run = datetime(2026, 11, 27, 18, tzinfo=timezone.utc)
+        self.assertEqual(src.url(run, 3), 'https://openmeteo.s3.amazonaws.com/data_spatial/cmc_gem_hrdps/2026/11/27/1800Z/2026-11-27T2100.om')
+        self.assertEqual(src.idx_url(run, 48), src.url(run, 48))
+        self.assertEqual(src.static_url(), 'https://openmeteo.s3.amazonaws.com/data/cmc_gem_hrdps/static/HSURF.om')
+        slots = {h: n for n, ms in check.SLOTS.items() for m, h in ms.items() if m == 'hrdps'}
+        self.assertEqual(slots, {0: '03:30', 6: '09:40', 12: '15:40', 18: '21:40'})
+        self.assertEqual([str(t) for t in check.lands('hrdps', 6)], ['3:21:00', '4:00:00'])
+        self.assertEqual('hrdps' in PAUSED, os.environ.get('HRDPS', '0') != '1')
+
+    def test_rotated_grid_finds_the_model_cells(self):
+        import om
+        from sources import HRDPS_ROTATED
+        g = om.RotatedGrid(*HRDPS_ROTATED)
+        for (lat, lon), (i, j) in {(46.853, -121.76): (244, 443), (51.05, -114.07): (420, 676), (45.5, -73.6): (530, 1878)}.items():
+            rlat, rlon = g.rotate(lat, lon)
+            self.assertEqual((round((float(rlat) - g.rlat0) / g.step), round((float(rlon) - g.rlon0) / g.step)), (i, j))
+        cells = np.arange(1290 * 2540, dtype=np.float32).reshape(1290, 2540)
+
+        class Arr:
+
+            def read_array(self, sl):
+                return cells[sl]
+        out = g.read(Arr(), (-121.76, 46.853, -121.76, 46.853 + 4.197, 4.197))
+        self.assertEqual(out.shape, (2, 1))
+        self.assertEqual(out[1, 0], cells[244, 443])
+        far = g.read(Arr(), (-104.99, 39.74, -104.99, 39.74, 1.0))
+        self.assertTrue(np.isnan(far).all())
+        boxed = g.read(Arr(), (-121.76, 46.853, -121.76, 46.853 + 4.197, 4.197), boxes=[(1, 2, 0, 1)])
+        self.assertTrue(np.isnan(boxed[0, 0]) and boxed[1, 0] == cells[244, 443])
+
+    def test_wind_from_speed_and_direction(self):
+        import om
+
+        class H:
+            names = {'wind_speed_850hPa': 0, 'wind_direction_850hPa': 0}
+            has = lambda self, n: n in self.names
+        u, v = (om.Field(H(), 'wind_u_component_850hPa'), om.Field(H(), 'wind_v_component_850hPa'))
+        self.assertEqual(u.needs(), ('wind_speed_850hPa', 'wind_direction_850hPa'))
+        vals = {'wind_speed_850hPa': np.array([10.0, 10.0]), 'wind_direction_850hPa': np.array([270.0, 180.0])}
+        get = lambda n: vals[n]
+        np.testing.assert_allclose(u.recipe[1](get), [10.0, 0.0], atol=1e-06)
+        np.testing.assert_allclose(v.recipe[1](get), [0.0, 10.0], atol=1e-06)
+        H.names = {'wind_u_component_850hPa': 0}
+        self.assertEqual(om.Field(H(), 'wind_u_component_850hPa').needs(), ('wind_u_component_850hPa',))
 
 class AromeSource(unittest.TestCase):
 
