@@ -795,6 +795,8 @@ class WindowedFields(unittest.TestCase):
         from datetime import datetime, timedelta, timezone
         from unittest import mock
         import check
+        from sources import PAUSED, REQUIRED, SOURCES
+        on = tuple((m for m in ('hrdps',) if m not in PAUSED))
         run = datetime(2026, 10, 12, 0, tzinfo=timezone.utc)
         now = datetime.now(timezone.utc)
         fresh = {'updated': now.isoformat()}
@@ -804,7 +806,7 @@ class WindowedFields(unittest.TestCase):
                 check.main()
                 return dict((line.strip().split('=', 1) for line in f if '=' in line))
 
-        def site(models=('hrrr', 'gfs', 'ecmwf', 'icon', 'icond2', 'arome'), free=True, maps=True, stale=False):
+        def site(models=('hrrr', 'gfs', 'ecmwf', 'icon', 'icond2', 'arome') + on, free=True, maps=True, stale=False):
 
             def pub(url):
                 if '/free/' in url:
@@ -819,13 +821,12 @@ class WindowedFields(unittest.TestCase):
         self.assertEqual(outputs(site(stale=True))['any'], 'true')
         self.assertEqual(outputs(site(stale=True), '--missing-only')['any'], 'false')
         o = outputs(site(models=(), free=False, maps=False), '--missing-only')
-        self.assertEqual((o['models'], o['free'], o['airspace']), ('hrrr gfs ecmwf icon icond2 arome', 'true', 'true'))
-        from sources import PAUSED, REQUIRED, SOURCES
+        self.assertEqual((o['models'], o['free'], o['airspace']), (' '.join(('hrrr', 'gfs', 'ecmwf', 'icon', 'icond2', 'arome') + on), 'true', 'true'))
         self.assertEqual(o['active'], json.dumps([m for m in SOURCES if m not in PAUSED]))
         self.assertEqual(json.loads(o['required']), ['hrrr', 'gfs'])
-        self.assertEqual(outputs(site(models=('hrrr', 'gfs', 'ecmwf', 'icond2', 'arome')), '--missing-only')['models'], 'icon')
-        self.assertEqual(outputs(site(models=('hrrr', 'gfs', 'icon', 'icond2', 'arome')), '--missing-only')['models'], 'ecmwf')
-        self.assertEqual(outputs(site(models=('hrrr', 'gfs', 'ecmwf', 'icon', 'icond2')), '--missing-only')['models'], 'arome')
+        self.assertEqual(outputs(site(models=('hrrr', 'gfs', 'ecmwf', 'icond2', 'arome') + on), '--missing-only')['models'], 'icon')
+        self.assertEqual(outputs(site(models=('hrrr', 'gfs', 'icon', 'icond2', 'arome') + on), '--missing-only')['models'], 'ecmwf')
+        self.assertEqual(outputs(site(models=('hrrr', 'gfs', 'ecmwf', 'icon', 'icond2') + on), '--missing-only')['models'], 'arome')
         o = outputs(site(maps=False), '--missing-only')
         self.assertEqual((o['models'], o['airspace'], o['any']), ('', 'true', 'true'))
 
