@@ -405,6 +405,34 @@ class Blend(unittest.TestCase):
         res = B.blend(bh, same, b)
         self.assertTrue(np.array_equal(res['codes']['cubase'], bh['codes']['cubase']))
 
+    def test_cumulus_by_day_alone(self):
+        night = VALID.replace(hour=9)
+        rng = np.random.default_rng(7)
+        mem = members(rng, runs={m: night - timedelta(hours=6) for m in ('gfs', 'ecmwf', 'icon')})
+        bh = base_hour(rng, valid=night, run=night - timedelta(hours=3))
+        lat, lon = B.grid2d(BASE_REGION)
+        self.assertTrue((build.sun_elevation(night.replace(tzinfo=None), lat, lon) < B.NIGHT_ELEV).all())
+        res = B.blend(bh, mem, self.b)
+        for k in ('cubase', 'cudepth'):
+            self.assertTrue(np.array_equal(res['codes'][k], bh['codes'][k]), k)
+        self.assertEqual(set(B.DAY_FIELDS), {'cu', 'cubase'})
+
+    def test_a_member_over_far_off_ground_takes_the_bases_wind_direction(self):
+        rng = np.random.default_rng(7)
+        mem = members(rng)
+        for m in mem:
+            c = mem[m]['codes']
+            c['elevation'] = build.quantize(B._dec(c, 'elevation') + 2 * B.WIND_DZ, *build.ENC['elevation'])
+            c['u_sfc'], c['v_sfc'] = (c['v_sfc'].copy(), c['u_sfc'].copy())
+        bh = base_hour(rng)
+        res = B.blend(bh, mem, self.b)
+        bu, bv = (B._dec(bh['codes'], 'u_sfc'), B._dec(bh['codes'], 'v_sfc'))
+        u, v = (B._dec(res['codes'], 'u_sfc'), B._dec(res['codes'], 'v_sfc'))
+        ok = (np.hypot(bu, bv) > 2) & (np.hypot(u, v) > 2)
+        self.assertGreater(ok.mean(), 0.5)
+        d = np.degrees(np.angle(np.exp(1j * (np.arctan2(v, u) - np.arctan2(bv, bu)))))[ok]
+        self.assertLess(float(np.percentile(np.abs(d), 95)), 6.0)
+
     def test_td2_held_under_t2_and_said_so(self):
         b = make_bundle()
         b['regions']['conus']['fields']['td2']['pass'] = False
